@@ -140,7 +140,7 @@ export function VisualPanel({ agentId }: { agentId: string }) {
         }
       >
         {tab === "persona" && <OverviewTab agentId={agentId} />}
-        {tab === "workflow" && <WorkflowTab />}
+        {tab === "workflow" && <WorkflowTab agentId={agentId} />}
         {tab === "voice" && <VoiceTab agentId={agentId} />}
         {tab === "kb" && <KnowledgeBaseTab agentId={agentId} />}
         {tab === "tools" && <ToolsTab />}

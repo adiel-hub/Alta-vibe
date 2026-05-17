@@ -35,6 +35,21 @@ const NodeTypeEnum = z.enum([
   "end",
 ]);
 
+/**
+ * Re-render `prompt` so its workflow footer reflects `next`. Shared between
+ * the in-chat workflow tools and the UI's direct-edit endpoint so both paths
+ * keep the agent's instructions in sync.
+ */
+export function composeSystemPromptWithWorkflow(
+  prompt: string,
+  next: WorkflowState,
+): string {
+  const marker = "\n\n--- WORKFLOW ---\n";
+  const idx = prompt.indexOf(marker);
+  const base = idx === -1 ? prompt : prompt.slice(0, idx);
+  return `${base}${marker}${renderWorkflowForPrompt(next)}`;
+}
+
 function renderWorkflowForPrompt(w: WorkflowState): string {
   if (w.nodes.length <= 1) return "(no workflow defined yet)";
   const lines: string[] = [];
@@ -58,14 +73,10 @@ async function persistWorkflowIntoPrompt(
   ctx: Parameters<Capability["tools"]>[0],
   nextWorkflow: WorkflowState,
 ): Promise<void> {
-  // Re-render the system prompt with the current workflow context appended.
-  // We keep the user-authored prompt verbatim and append a `--- WORKFLOW ---`
-  // marker so subsequent updates can replace the section cleanly.
-  const marker = "\n\n--- WORKFLOW ---\n";
-  const existing = ctx.config.system_prompt ?? "";
-  const idx = existing.indexOf(marker);
-  const base = idx === -1 ? existing : existing.slice(0, idx);
-  const next = `${base}${marker}${renderWorkflowForPrompt(nextWorkflow)}`;
+  const next = composeSystemPromptWithWorkflow(
+    ctx.config.system_prompt ?? "",
+    nextWorkflow,
+  );
   await patchAgent(ctx.elevenlabs_agent_id, { system_prompt: next });
   ctx.config.system_prompt = next;
 }

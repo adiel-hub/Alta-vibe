@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
+import { appFetch } from "@/lib/apiClient";
 import type {
+  AgentConfigCache,
   WorkflowEdge,
   WorkflowNode,
   WorkflowNodeType,
@@ -95,7 +97,7 @@ function layout(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
   return { positions, width: stageWidth, height: stageHeight };
 }
 
-export function WorkflowTab() {
+export function WorkflowTab({ agentId }: { agentId: string }) {
   const config = useAgentStore((s) => s.config);
   const liveNodeId = useAgentStore((s) => s.liveWorkflowNodeId);
   const inFlight = useAgentStore((s) => s.inFlight);
@@ -490,7 +492,199 @@ export function WorkflowTab() {
           </div>
         )}
       </div>
+
+      {/* Right-side node inspector — opens on node click. */}
+      {selectedId && (
+        <NodeInspector
+          agentId={agentId}
+          node={workflow.nodes.find((n) => n.id === selectedId) ?? null}
+          onClose={() => setSelectedId(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// ── Right-side inspector for the selected node ───────────────────────────
+//
+// Edits the node's label and the single "prompt-ish" data field that
+// matches its type (prompt for speak/condition, instruction for tool_call,
+// field for collect, expression for condition). Saves via the PATCH
+// endpoint, then applies the patch directly to the store so the UI doesn't
+// wait for a server round-trip.
+
+const PROMPT_FIELD: Partial<Record<WorkflowNodeType, string>> = {
+  speak: "prompt",
+  collect: "prompt",
+  condition: "expression",
+  tool_call: "instruction",
+  transfer: "instruction",
+};
+
+function NodeInspector({
+  agentId,
+  node,
+  onClose,
+}: {
+  agentId: string;
+  node: WorkflowNode | null;
+  onClose: () => void;
+}) {
+  const applyConfigDirect = useAgentStore((s) => s.applyConfigDirect);
+  const promptKey = node ? PROMPT_FIELD[node.type] : undefined;
+
+  const initialLabel = node?.label ?? "";
+  const initialPrompt =
+    node && promptKey ? ((node.data?.[promptKey] as string) ?? "") : "";
+
+  const [label, setLabel] = useState(initialLabel);
+  const [prompt, setPrompt] = useState(initialPrompt);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset when the selected node id changes.
+  useEffect(() => {
+    setLabel(initialLabel);
+    setPrompt(initialPrompt);
+    setError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node?.id]);
+
+  if (!node) return null;
+
+  const dirty = label !== initialLabel || prompt !== initialPrompt;
+
+  const save = async () => {
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const body: { label?: string; data?: Record<string, unknown> } = {};
+      if (label !== initialLabel) body.label = label;
+      if (promptKey && prompt !== initialPrompt) body.data = { [promptKey]: prompt };
+      const res = await appFetch(
+        `/api/agents/${agentId}/workflow/${node.id}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        const errBody = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(errBody?.error ?? `Save failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        revision: number;
+        patch: Partial<AgentConfigCache>;
+      };
+      applyConfigDirect(json.patch, json.revision);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <aside className="vb-el-inspector">
+      <header className="vb-el-inspector-head">
+        <span className={`vb-el-icon vb-el-icon-${node.type}`} aria-hidden>
+          {ICON[node.type]}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-(--color-muted-soft)">
+            {node.type} · {node.id}
+          </div>
+          <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
+            {node.label}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close inspector"
+          className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+        >
+          ✕
+        </button>
+      </header>
+
+      <div className="vb-el-inspector-body">
+        <div className="vb-field">
+          <div className="vb-field-label">Title</div>
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className="vb-field-input"
+            placeholder="Node title"
+          />
+        </div>
+
+        {promptKey ? (
+          <div className="vb-field">
+            <div className="vb-field-label">
+              {promptKey === "expression"
+                ? "Routing expression"
+                : promptKey === "instruction"
+                  ? "Instruction"
+                  : "Prompt"}
+            </div>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              className="vb-field-input vb-field-textarea"
+              rows={10}
+              placeholder={
+                promptKey === "expression"
+                  ? "e.g. issue_category"
+                  : "What this node should say or do…"
+              }
+            />
+            <p className="vb-field-hint">
+              {promptKey === "expression"
+                ? "Drives the router's branching. Variable names or short logical expressions."
+                : "Free-text instruction the agent follows when it reaches this node."}
+            </p>
+          </div>
+        ) : (
+          <p className="vb-field-hint">
+            This node has no prompt — it's a control point in the graph.
+          </p>
+        )}
+
+        {error && (
+          <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>
+            {error}
+          </p>
+        )}
+      </div>
+
+      <footer className="vb-el-inspector-foot">
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={saving}
+          className="rounded-md px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground-strong)"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={save}
+          disabled={!dirty || saving}
+          className="rounded-md bg-(--color-foreground-strong) px-3 py-1.5 text-xs font-semibold text-white disabled:bg-(--color-border-strong) disabled:text-(--color-muted-soft)"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </footer>
+    </aside>
   );
 }
 
