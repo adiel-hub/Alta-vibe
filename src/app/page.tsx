@@ -101,21 +101,6 @@ export default function Home() {
               </li>
             ))}
           </ol>
-
-          <ul className="hero-portrait-specs" aria-label="Capabilities">
-            <li>
-              <span>Latency</span>
-              <strong>~340 ms</strong>
-            </li>
-            <li>
-              <span>Languages</span>
-              <strong>32</strong>
-            </li>
-            <li>
-              <span>Voices</span>
-              <strong>1,800+</strong>
-            </li>
-          </ul>
         </div>
       </section>
 

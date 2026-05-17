@@ -20,7 +20,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
 
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6">
-      <Section title="Identity" meta="agent">
+      <Section title="Identity" meta="agent" busy={inFlight.has("name")}>
         <PersonaField
           agentId={agentId}
           field="name"
@@ -37,6 +37,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
           field="first_message"
           label="What the agent says when the call connects"
           value={config.first_message}
+          busy={inFlight.has("first_message")}
           multiline
           rows={3}
           placeholder="Hi! How can I help today?"
@@ -49,6 +50,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
           field="system_prompt"
           label="Full instruction set the agent follows"
           value={config.system_prompt}
+          busy={inFlight.has("system_prompt")}
           multiline
           rows={14}
           mono
@@ -103,6 +105,7 @@ function PersonaField({
   multiline,
   rows,
   mono,
+  busy,
   placeholder,
   hint,
 }: {
@@ -113,6 +116,7 @@ function PersonaField({
   multiline?: boolean;
   rows?: number;
   mono?: boolean;
+  busy?: boolean;
   placeholder?: string;
   hint?: string;
 }) {
