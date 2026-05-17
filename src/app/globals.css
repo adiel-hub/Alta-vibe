@@ -837,14 +837,14 @@ textarea, input, select {
   width: 100%;
 }
 .welcome-avatar {
-  margin: 0 0 24px;
-  width: 120px;
-  height: 120px;
+  margin: 0 0 32px;
+  width: 220px;
+  height: 220px;
   border-radius: 999px;
   overflow: hidden;
   background: var(--color-violet-100);
-  box-shadow: 0 0 0 10px rgba(124, 58, 237, 0.06),
-    0 12px 32px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 0 0 14px rgba(124, 58, 237, 0.06),
+    0 24px 56px rgba(0, 0, 0, 0.1);
   display: grid;
   place-items: center;
 }
@@ -869,18 +869,19 @@ textarea, input, select {
   margin-bottom: 22px;
 }
 .welcome-h1 {
-  font-family: var(--font-display);
+  font-family: var(--font-sans);
   font-size: 56px;
-  font-weight: 500;
+  font-weight: 700;
   line-height: 1.05;
-  letter-spacing: -0.025em;
+  letter-spacing: -0.035em;
   color: var(--color-foreground-strong);
   margin: 0 0 18px;
   text-wrap: balance;
 }
 .welcome-h1-soft {
   color: var(--color-muted);
-  font-style: italic;
+  font-weight: 500;
+  font-style: normal;
 }
 .welcome-sub {
   font-size: 16px;
