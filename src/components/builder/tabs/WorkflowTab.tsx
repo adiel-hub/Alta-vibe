@@ -121,7 +121,6 @@ export function WorkflowTab() {
   const nodeIdsKey = workflow?.nodes.map((n) => n.id).join("|") ?? "";
   useEffect(() => {
     setOverrides({});
-    setPan({ x: 0, y: 0 });
   }, [nodeIdsKey]);
 
   // Canvas pan: infinite-feeling playground via a translate transform on
@@ -152,6 +151,27 @@ export function WorkflowTab() {
     if (liveNodeId) setSelectedId(liveNodeId);
     else setSelectedId(workflow.nodes[0]?.id ?? null);
   }, [workflow, liveNodeId, selectedId]);
+
+  // Center the graph in the viewport. Start at top-center; if the graph
+  // grows taller than the viewport, anchor the bottom so new rows stay
+  // visible ("camera follows the build").
+  const recenter = () => {
+    const el = scrollRef.current;
+    if (!el || !baseLayout) return;
+    const vw = el.clientWidth;
+    const vh = el.clientHeight;
+    const gw = baseLayout.width * zoom;
+    const gh = baseLayout.height * zoom;
+    const targetX = (vw - gw) / 2;
+    const targetY =
+      gh + 80 < vh ? Math.max(40, (vh - gh) / 2 - 40) : vh - gh - 40;
+    setPan({ x: targetX, y: targetY });
+  };
+
+  useEffect(() => {
+    recenter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeIdsKey, zoom]);
 
   if (!workflow || !baseLayout) return null;
 
@@ -267,7 +287,7 @@ export function WorkflowTab() {
           title="Fit"
           onClick={() => {
             setZoom(1);
-            setPan({ x: 0, y: 0 });
+            recenter();
           }}
           aria-label="Fit to screen"
         >
@@ -289,16 +309,6 @@ export function WorkflowTab() {
           disabled
         >
           <IconCopy />
-        </button>
-        <span className="vb-el-sep" />
-        <button
-          className="vb-el-toolbtn vb-el-toolbtn-wide"
-          title="Templates"
-          aria-label="Templates"
-          disabled
-        >
-          <IconTemplates />
-          <span>Templates</span>
         </button>
         {inFlight.has("workflow") && (
           <span className="ml-3 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
@@ -542,16 +552,6 @@ function IconCopy() {
     <svg {...ICON_PROPS}>
       <rect x={9} y={9} width={11} height={11} rx={2} />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-function IconTemplates() {
-  return (
-    <svg {...ICON_PROPS}>
-      <rect x={3} y={3} width={7} height={7} rx={1} />
-      <rect x={14} y={3} width={7} height={7} rx={1} />
-      <rect x={3} y={14} width={7} height={7} rx={1} />
-      <rect x={14} y={14} width={7} height={7} rx={1} />
     </svg>
   );
 }
