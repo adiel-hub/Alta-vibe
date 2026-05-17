@@ -39,6 +39,17 @@ export type WidgetEntry = {
   result: unknown;
 };
 
+export type LiveTool = {
+  tool_use_id: string;
+  raw_name: string;
+  emoji: string;
+  label: string;
+  status: "running" | "success" | "error";
+  error_message?: string;
+  /** ms timestamp when status switched to terminal — used by UI to fade out. */
+  finished_at?: number;
+};
+
 type State = {
   agent: AgentDTO | null;
   config: AgentConfigCache | null;
@@ -53,6 +64,8 @@ type State = {
   widgets: Record<string, WidgetEntry>;
   /** Workflow node currently active during a live test call. */
   liveWorkflowNodeId: string | null;
+  /** Single morphing tool-status pill rendered in the chat. */
+  liveTool: LiveTool | null;
 };
 
 type Actions = {
@@ -89,6 +102,7 @@ type Actions = {
     result: unknown,
   ) => void;
   setLiveWorkflowNode: (nodeId: string | null) => void;
+  setLiveTool: (live: LiveTool | null) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -104,6 +118,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   lastSeq: -1,
   widgets: {},
   liveWorkflowNodeId: null,
+  liveTool: null,
 
   hydrate: (agent, turns, widgets) =>
     set({
@@ -119,6 +134,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       lastSeq: -1,
       widgets: Object.fromEntries((widgets ?? []).map((w) => [w.action_id, w])),
       liveWorkflowNodeId: null,
+      liveTool: null,
     }),
 
   applyPatch: (revision, patch) =>
@@ -263,4 +279,6 @@ export const useAgentStore = create<State & Actions>((set) => ({
     }),
 
   setLiveWorkflowNode: (nodeId) => set({ liveWorkflowNodeId: nodeId }),
+
+  setLiveTool: (live) => set({ liveTool: live }),
 }));

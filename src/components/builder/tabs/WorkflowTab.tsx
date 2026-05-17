@@ -181,13 +181,23 @@ export function WorkflowTab() {
               })}
             </g>
             {/* Nodes */}
-            {workflow.nodes.map((n) => {
+            {workflow.nodes.map((n, i) => {
               const p = laid.positions.get(n.id);
               if (!p) return null;
               const style = TYPE_STYLE[n.type];
               const isLive = liveNodeId === n.id;
               return (
-                <g key={n.id} transform={`translate(${p.x}, ${p.y})`}>
+                <g
+                  key={n.id}
+                  transform={`translate(${p.x}, ${p.y})`}
+                  style={{
+                    animation: `scale-in 0.35s cubic-bezier(0.2,0.8,0.2,1) ${Math.min(
+                      i,
+                      6,
+                    ) * 40}ms both`,
+                    transformOrigin: `${p.x + 90}px ${p.y + 32}px`,
+                  }}
+                >
                   <rect
                     width={NODE_W}
                     height={NODE_H}

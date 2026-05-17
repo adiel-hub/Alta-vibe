@@ -90,7 +90,7 @@ function ConnectIntegrationWidget({
     }
   };
   return (
-    <div className="rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4">
+    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4 shadow-md">
       <div className="flex items-center justify-between">
         <div>
           <h4 className="text-sm font-semibold">Connect {prettify(payload.provider)}</h4>
@@ -135,7 +135,7 @@ function ConfirmWidget({
   };
   const [busy, setBusy] = useState(false);
   return (
-    <div className="rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4">
+    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4 shadow-md">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm">{payload.question}</p>
         <StatusBadge status={widget.status} />
@@ -189,7 +189,7 @@ function PickOptionWidget({
   };
   const [busy, setBusy] = useState(false);
   return (
-    <div className="rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4">
+    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4 shadow-md">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm">{payload.question}</p>
         <StatusBadge status={widget.status} />

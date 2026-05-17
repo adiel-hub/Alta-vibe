@@ -72,10 +72,11 @@ export function CallLogsTab({ agentId }: { agentId: string }) {
         <p className="text-sm text-(--color-muted)">No calls yet.</p>
       ) : (
         <ul className="space-y-2">
-          {calls.map((c) => (
+          {calls.map((c, i) => (
             <li
               key={c.id}
-              className="rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2 text-sm"
+              style={{ animationDelay: `${Math.min(i, 8) * 30}ms` }}
+              className="animate-message-in hover-lift rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2 text-sm"
             >
               <button
                 onClick={() => setSelectedId(selectedId === c.id ? null : c.id)}

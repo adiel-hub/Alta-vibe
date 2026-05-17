@@ -101,13 +101,18 @@ export function KnowledgeBaseTab({ agentId }: { agentId: string }) {
           </p>
         ) : (
           <ul className="space-y-2">
-            {config.knowledge_base.map((doc) => (
-              <KbRow
+            {config.knowledge_base.map((doc, i) => (
+              <li
                 key={doc.id}
-                doc={doc}
-                onRename={(n) => rename(doc.id, n)}
-                onRemove={() => remove(doc.id)}
-              />
+                style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
+                className="animate-message-in"
+              >
+                <KbRow
+                  doc={doc}
+                  onRename={(n) => rename(doc.id, n)}
+                  onRemove={() => remove(doc.id)}
+                />
+              </li>
             ))}
           </ul>
         )}
@@ -155,7 +160,7 @@ function KbRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(doc.name);
   return (
-    <li className="flex items-center justify-between rounded-lg border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm">
+    <div className="hover-lift flex items-center justify-between rounded-lg border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm">
       {editing ? (
         <input
           value={draft}
@@ -198,6 +203,6 @@ function KbRow({
           remove
         </button>
       </div>
-    </li>
+    </div>
   );
 }

@@ -71,7 +71,7 @@ export function VisualPanel({ agentId }: { agentId: string }) {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto px-5 py-5">
+      <div key={tab} className="flex-1 overflow-y-auto px-5 py-5 tab-content">
         {tab === "overview" && <OverviewTab agentId={agentId} />}
         {tab === "workflow" && <WorkflowTab />}
         {tab === "voice" && <VoiceTab agentId={agentId} />}

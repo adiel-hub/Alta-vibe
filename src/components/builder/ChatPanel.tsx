@@ -6,6 +6,8 @@ import { attachToTurn, sendMessage } from "@/store/sseClient";
 import { appFetch } from "@/lib/apiClient";
 import type { ContentBlock } from "@/types/agent";
 import { ChatWidget } from "./ChatWidget";
+import { LiveToolPill } from "./LiveToolPill";
+import { Typewriter } from "./Typewriter";
 
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
@@ -16,7 +18,6 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
-  // Resume in-progress turn after page refresh.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -28,7 +29,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
         setSending(true);
         await attachToTurn(agentId, json.active.id, 0);
       } catch {
-        // swallow; user can send a new message
+        /* swallow */
       } finally {
         setSending(false);
       }
@@ -61,53 +62,72 @@ export function ChatPanel({ agentId }: { agentId: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-(--color-border) px-5 py-4">
+      <header className="border-b border-(--color-border) px-5 py-4 animate-fade-in">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-(--color-muted)">
           Alta · Builder chat
         </h2>
         <p className="text-xs text-(--color-muted)">
-          Tell Alta what to build. Anything you can do in the panel, you can ask for here.
+          Tell Alta what to build. Anything you can do in the panel, you can ask
+          for here.
           {activeJobId && (
-            <span className="ml-2 text-(--color-accent)">working…</span>
+            <span className="ml-2 inline-flex items-center gap-1 text-(--color-accent)">
+              <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-(--color-accent)" />
+              working
+            </span>
           )}
         </p>
       </header>
 
       <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
         {turns.length === 0 && !streaming && (
-          <div className="text-sm text-(--color-muted) space-y-1">
+          <div className="space-y-2 text-sm text-(--color-muted) animate-fade-in">
             <p>Try one of:</p>
-            <ul className="list-disc pl-5 space-y-1">
-              <li className="italic">&quot;Use a calm female voice and slow her down a bit.&quot;</li>
-              <li className="italic">&quot;Crawl https://docs.example.com (limit 12) into the knowledge base.&quot;</li>
-              <li className="italic">&quot;Create an in-call tool that looks up an order by id via POST to https://api.example.com/orders/lookup.&quot;</li>
-              <li className="italic">&quot;Extract order_number and resolved (boolean) from every call.&quot;</li>
-              <li className="italic">&quot;Place an outbound test call to +1 555-123-4567.&quot;</li>
+            <ul className="list-disc space-y-1 pl-5">
+              <li className="italic">
+                &quot;Sketch a workflow for triaging support calls.&quot;
+              </li>
+              <li className="italic">
+                &quot;Use a calm female voice and slow her down a touch.&quot;
+              </li>
+              <li className="italic">
+                &quot;Crawl https://docs.example.com into the knowledge base.&quot;
+              </li>
+              <li className="italic">
+                &quot;Connect HubSpot so the agent can look up callers.&quot;
+              </li>
+              <li className="italic">
+                &quot;Extract order_number and resolved (boolean) from every call.&quot;
+              </li>
             </ul>
           </div>
         )}
-        {turns.map((turn) => (
+        {turns.map((turn, i) => (
           <TurnView
             key={turn.id}
             role={turn.role}
             content={turn.content}
             agentId={agentId}
+            // Live-typewriter the final assistant turn while the run is still
+            // active; otherwise show fully.
+            live={false}
+            isLast={i === turns.length - 1}
           />
         ))}
-        {streaming && streaming.text && (
+        {streaming && (
           <TurnView
             role="assistant"
-            content={[{ type: "text", text: streaming.text }]}
-            streaming
+            content={[{ type: "text", text: streaming.text || "" }]}
+            agentId={agentId}
+            live
+            isLast
+            streamingHint={!streaming.text}
           />
         )}
-        {streaming && !streaming.text && (
-          <div className="text-xs italic text-(--color-muted)">thinking…</div>
-        )}
+        {streaming && <LiveToolPill />}
       </div>
 
       {error && (
-        <div className="border-t border-(--color-danger) bg-(--color-danger)/10 px-5 py-2 text-xs text-(--color-danger)">
+        <div className="border-t border-(--color-danger) bg-(--color-danger)/10 px-5 py-2 text-xs text-(--color-danger) animate-fade-in">
           {error}
         </div>
       )}
@@ -126,12 +146,12 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             rows={2}
             placeholder="Describe a change…"
             disabled={sending}
-            className="flex-1 resize-none rounded-xl border border-(--color-border) bg-(--color-panel) px-3 py-2 text-sm outline-none focus:border-(--color-accent)"
+            className="flex-1 resize-none rounded-xl border border-(--color-border) bg-(--color-panel) px-3 py-2 text-sm outline-none transition-colors focus:border-(--color-accent)"
           />
           <button
             onClick={send}
             disabled={sending || !input.trim()}
-            className="self-end rounded-xl bg-(--color-accent) px-4 py-2 text-sm font-semibold text-(--color-accent-foreground) hover:brightness-110"
+            className="self-end rounded-xl bg-(--color-accent) px-4 py-2 text-sm font-semibold text-(--color-accent-foreground) transition hover:brightness-110 active:scale-95"
           >
             {sending ? "…" : "Send"}
           </button>
@@ -144,23 +164,41 @@ export function ChatPanel({ agentId }: { agentId: string }) {
 function TurnView({
   role,
   content,
-  streaming,
   agentId,
+  live,
+  isLast,
+  streamingHint,
 }: {
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
-  streaming?: boolean;
   agentId?: string;
+  live: boolean;
+  isLast: boolean;
+  streamingHint?: boolean;
 }) {
   const isUser = role === "user";
   const isSystem = role === "system";
+
+  // Suppress assistant bubbles whose only content is now-hidden tool blocks
+  // (no text, no widget tool_use). Avoids ghost empty bubbles during
+  // streaming when the agent's pre-tool text is still in the streaming buffer.
+  if (role === "assistant" && !streamingHint) {
+    const hasVisible = content.some((b) => {
+      if (b.type === "text" && b.text.trim().length > 0) return true;
+      if (b.type === "tool_use" && b.name === "mcp__alta__request_user_action")
+        return true;
+      return false;
+    });
+    if (!hasVisible) return null;
+  }
+
   if (isSystem) {
     const text = content
       .map((b) => (b.type === "text" ? b.text : ""))
       .filter(Boolean)
       .join(" ");
     return (
-      <div className="flex justify-center">
+      <div className="flex justify-center animate-message-in">
         <div className="rounded-full bg-(--color-panel-soft) px-3 py-1 text-[10px] uppercase tracking-wider text-(--color-muted)">
           {text || "system"}
         </div>
@@ -168,43 +206,65 @@ function TurnView({
     );
   }
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+    <div
+      className={`animate-message-in ${
+        isUser ? "flex justify-end" : "flex justify-start"
+      }`}
+    >
       <div
         className={
           isUser
-            ? "max-w-[85%] rounded-2xl bg-(--color-accent) px-4 py-2 text-sm text-(--color-accent-foreground)"
-            : "max-w-[90%] space-y-2 rounded-2xl bg-(--color-panel) px-4 py-3 text-sm"
+            ? "max-w-[85%] rounded-2xl bg-(--color-accent) px-4 py-2 text-sm text-(--color-accent-foreground) shadow-sm"
+            : "max-w-[90%] space-y-2 rounded-2xl bg-(--color-panel) px-4 py-3 text-sm shadow-sm"
         }
       >
+        {streamingHint && (
+          <div className="flex items-center gap-1 text-xs italic text-(--color-muted)">
+            <span className="dot-flash" />
+            <span className="dot-flash" style={{ animationDelay: "120ms" }} />
+            <span className="dot-flash" style={{ animationDelay: "240ms" }} />
+            <span className="ml-2">thinking</span>
+          </div>
+        )}
         {content.map((block, i) => (
-          <ContentBlockView key={i} block={block} agentId={agentId} />
+          <BlockView
+            key={i}
+            block={block}
+            agentId={agentId}
+            live={live}
+            isLast={isLast && i === content.length - 1}
+          />
         ))}
-        {streaming && <span className="inline-block animate-pulse">▍</span>}
       </div>
     </div>
   );
 }
 
-function ContentBlockView({
+function BlockView({
   block,
   agentId,
+  live,
+  isLast,
 }: {
   block: ContentBlock;
   agentId?: string;
+  live: boolean;
+  isLast: boolean;
 }) {
   const widgets = useAgentStore((s) => s.widgets);
+
   if (block.type === "text") {
-    return <div className="whitespace-pre-wrap leading-relaxed">{block.text}</div>;
+    return (
+      <div className="whitespace-pre-wrap leading-relaxed">
+        <Typewriter text={block.text} live={live && isLast} />
+      </div>
+    );
   }
   if (block.type === "tool_use") {
-    // Interactive widget rendering: when the agent calls request_user_action,
-    // show the matching interactive widget instead of raw tool_use JSON.
+    // Only render interactive widgets inline. All other tool_use blocks
+    // are suppressed — their progress shows through the LiveToolPill.
     if (block.name === "mcp__alta__request_user_action" && agentId) {
       const input = block.input as { kind?: string; payload?: unknown } | undefined;
-      // Find the widget by scanning all widgets for one whose kind matches
-      // and whose payload was emitted around this tool call. The
-      // widget_inserted event carries the canonical action_id; we match on
-      // kind+payload as a best-effort fallback if event arrived first.
       const widget = Object.values(widgets).find(
         (w) =>
           w.kind === input?.kind &&
@@ -212,44 +272,10 @@ function ContentBlockView({
       );
       if (widget) return <ChatWidget agentId={agentId} widget={widget} />;
     }
-    return (
-      <div className="rounded-lg border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 font-mono text-xs">
-        <div className="text-(--color-muted)">→ {humanToolName(block.name)}</div>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
-          {JSON.stringify(block.input, null, 2)}
-        </pre>
-      </div>
-    );
+    return null;
   }
   if (block.type === "tool_result") {
-    const text =
-      typeof block.output === "string"
-        ? block.output
-        : Array.isArray(block.output)
-          ? (block.output as Array<{ type?: string; text?: string }>)
-              .map((b) => b.text ?? "")
-              .join("")
-          : JSON.stringify(block.output);
-    return (
-      <div
-        className={`rounded-lg border px-3 py-2 font-mono text-xs ${
-          block.is_error
-            ? "border-(--color-danger) bg-(--color-danger)/10"
-            : "border-(--color-success)/40 bg-(--color-success)/10"
-        }`}
-      >
-        <div className="text-(--color-muted)">{block.is_error ? "✖ error" : "✓ done"}</div>
-        <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
-          {text.slice(0, 1200)}
-          {text.length > 1200 ? "…" : ""}
-        </pre>
-      </div>
-    );
+    return null;
   }
   return null;
-}
-
-function humanToolName(raw: string): string {
-  const t = raw.replace(/^mcp__alta__/, "").replace(/_/g, " ");
-  return t.charAt(0).toUpperCase() + t.slice(1);
 }

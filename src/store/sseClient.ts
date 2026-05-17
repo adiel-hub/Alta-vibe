@@ -7,6 +7,7 @@ import {
   type SectionKey,
 } from "./agentStore";
 import { appFetch } from "@/lib/apiClient";
+import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 
 /**
  * Send a user message. Backend immediately persists the user turn + creates a
@@ -118,16 +119,40 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       const section = sectionForTool(event.name);
       if (section) s.setInFlight(section, true);
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
+      // Single morphing tool indicator in the chat.
+      const friendly = friendlyForTool(event.name);
+      s.setLiveTool({
+        tool_use_id: event.tool_use_id,
+        raw_name: event.name,
+        emoji: friendly.emoji,
+        label: friendly.label,
+        status: "running",
+      });
       break;
     }
-    case "tool_call_result":
+    case "tool_call_result": {
       s.appendToolCallResult(
         assistantTurnId,
         event.tool_use_id,
         event.output,
         event.is_error,
       );
+      const cur = s.liveTool;
+      if (cur && cur.tool_use_id === event.tool_use_id) {
+        const errMsg = event.is_error
+          ? typeof event.output === "string"
+            ? event.output
+            : extractErrorText(event.output)
+          : undefined;
+        s.setLiveTool({
+          ...cur,
+          status: event.is_error ? "error" : "success",
+          error_message: errMsg,
+          finished_at: Date.now(),
+        });
+      }
       break;
+    }
     case "state_patch":
       s.applyPatch(event.revision, event.patch);
       for (const key of Object.keys(event.patch)) {
@@ -152,11 +177,31 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       break;
     case "turn_aborted":
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
+      s.setLiveTool(null);
       break;
     case "turn_done":
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
+      // Leave the last success badge visible briefly, then clear.
+      setTimeout(() => {
+        const cur = useAgentStore.getState().liveTool;
+        if (cur && cur.status !== "running") {
+          useAgentStore.getState().setLiveTool(null);
+        }
+      }, 1_200);
       break;
   }
+}
+
+function extractErrorText(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    return (output as Array<{ type?: string; text?: string }>)
+      .map((b) => b.text ?? "")
+      .filter(Boolean)
+      .join(" ");
+  }
+  if (output && typeof output === "object") return JSON.stringify(output);
+  return String(output ?? "");
 }
 
 function sectionForTool(toolName: string): SectionKey | null {
