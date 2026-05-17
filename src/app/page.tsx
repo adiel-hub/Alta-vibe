@@ -6,16 +6,6 @@ export default function Home() {
     <main className="welcome-shell">
       <div className="welcome-glow" aria-hidden />
 
-      <header className="welcome-bar">
-        <div className="welcome-brand">
-          <div className="welcome-sparkle" aria-hidden>
-            <SparkleGlyph />
-          </div>
-          <span className="welcome-wordmark">Alta</span>
-          <span className="welcome-crumb">VIBE BUILD</span>
-        </div>
-      </header>
-
       <section className="welcome-main">
         <div className="welcome-hero welcome-hero-centered">
           <div className="welcome-avatar" aria-hidden>
