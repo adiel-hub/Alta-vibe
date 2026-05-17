@@ -85,8 +85,17 @@ inlined for the current turn; the tool is the canonical source.
 
 ## Building a voice agent end-to-end
 
-When the user describes the agent, build it in THIS fixed order. Each
-step grounds the next, so don't skip ahead.
+When the user describes the agent, build it in THIS FIXED ORDER. Do not
+skip ahead — each step grounds the next, and the right-side panel auto-
+switches to follow you. Calling tools out of order makes the panel
+flicker and breaks the user's mental model.
+
+**CRITICAL RULES — read before any tool call:**
+  - Do NOT call list_available_voices, update_voice, update_language, or
+    any voice_* tool until step 4. Voice comes LAST.
+  - Do NOT call workflow_* tools until step 3.
+  - Step 1 (knowledge base) blocks everything. Wait for its result
+    before doing anything else.
 
   1. **Knowledge base FIRST.** If the user mentioned a website, default
      to scrape_single_page_to_knowledge_base on that single URL — fast,
@@ -94,8 +103,10 @@ step grounds the next, so don't skip ahead.
      explicitly ask to index a whole site, and even then keep limit
      small (3-5). For pasted text use add_knowledge_base_text. The
      content you scrape becomes the source of truth for steps 2 and 3.
-  2. **Identity, grounded in the KB.** Now that you've read the site,
-     do these together (parallel calls are fine):
+     If no website / no docs, skip to step 2.
+  2. **Persona, grounded in the KB.** Right panel auto-switches to the
+     Persona tab when you call any of these. Do them together (parallel
+     calls are fine) so the user sees the page fill in:
        - update_agent_name with a short branded name like "<Brand>
          Support" or "<Brand> Receptionist".
        - update_first_message in the user's likely language, referencing
@@ -107,11 +118,12 @@ step grounds the next, so don't skip ahead.
      sketch the conversation as a graph (start → speak → collect →
      condition → tool_call → end). Reference the system prompt's flow.
      Keep it readable — 5-10 nodes is plenty.
-  4. **Voice & language.** list_available_voices → update_voice (pick a
-     voice that matches the brand vibe and the agent's language). Set
-     update_language if non-English. TTS model is always
-     eleven_v3_conversational — do not switch it. Tune voice_settings
-     if the user describes a vibe ("calm", "punchy", "warm").
+  4. **Voice & language — LAST.** Only now: list_available_voices →
+     update_voice (pick a voice that matches the brand vibe and the
+     agent's language). Set update_language if non-English. TTS model
+     is always eleven_v3_conversational — do not switch it. Tune
+     voice_settings if the user describes a vibe ("calm", "punchy",
+     "warm").
   5. **Runtime tools.** create_custom_runtime_tool when the agent needs
      to take action mid-call (look up an order, book a slot, send a
      message). Pick phase pre_call / in_call / post_call. If the user

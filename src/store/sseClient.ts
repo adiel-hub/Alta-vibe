@@ -130,7 +130,12 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       const section = sectionForTool(event.name);
       if (section) {
         s.setInFlight(section, true);
-        s.bumpActiveSection(section);
+        // Read-only "discovery" tools (list_*, read_*) shouldn't yank the
+        // panel away from whatever tab the user is on. Only auto-switch
+        // for tools that mutate state.
+        const bare = event.name.replace(/^mcp__alta__/, "");
+        const isDiscovery = /^(list_|read_)/.test(bare);
+        if (!isDiscovery) s.bumpActiveSection(section);
       }
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
       // Single morphing tool indicator in the chat.

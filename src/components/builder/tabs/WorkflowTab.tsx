@@ -71,34 +71,35 @@ function layout(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
   }
   for (const n of nodes) if (!depth.has(n.id)) depth.set(n.id, 0);
 
-  const rows = new Map<number, string[]>();
+  // Left-to-right: depth → column (x), sibling-in-depth → row (y).
+  const columns = new Map<number, string[]>();
   for (const n of nodes) {
     const d = depth.get(n.id) ?? 0;
-    const row = rows.get(d) ?? [];
-    row.push(n.id);
-    rows.set(d, row);
+    const col = columns.get(d) ?? [];
+    col.push(n.id);
+    columns.set(d, col);
   }
 
-  const widest = Math.max(
+  const tallest = Math.max(
     1,
-    ...Array.from(rows.values()).map((arr) => arr.length),
+    ...Array.from(columns.values()).map((arr) => arr.length),
   );
-  const stageWidth = PADDING * 2 + widest * NODE_W + (widest - 1) * COL_GAP;
+  const stageHeight = PADDING * 2 + tallest * NODE_H + (tallest - 1) * ROW_GAP;
 
   const positions = new Map<string, { x: number; y: number }>();
-  for (const [rowIdx, ids] of rows) {
-    const totalW = ids.length * NODE_W + (ids.length - 1) * COL_GAP;
-    const startX = (stageWidth - totalW) / 2;
+  for (const [colIdx, ids] of columns) {
+    const totalH = ids.length * NODE_H + (ids.length - 1) * ROW_GAP;
+    const startY = (stageHeight - totalH) / 2;
     ids.forEach((id, sib) => {
       positions.set(id, {
-        x: startX + sib * (NODE_W + COL_GAP),
-        y: PADDING + rowIdx * (NODE_H + ROW_GAP),
+        x: PADDING + colIdx * (NODE_W + COL_GAP),
+        y: startY + sib * (NODE_H + ROW_GAP),
       });
     });
   }
 
-  const maxRow = Math.max(0, ...Array.from(rows.keys()));
-  const stageHeight = PADDING * 2 + (maxRow + 1) * NODE_H + maxRow * ROW_GAP;
+  const maxCol = Math.max(0, ...Array.from(columns.keys()));
+  const stageWidth = PADDING * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP;
   return { positions, width: stageWidth, height: stageHeight };
 }
 
@@ -234,12 +235,12 @@ export function WorkflowTab() {
                 const a = laid.positions.get(e.from);
                 const b = laid.positions.get(e.to);
                 if (!a || !b) return null;
-                const x1 = a.x + NODE_W / 2;
-                const y1 = a.y + NODE_H;
-                const x2 = b.x + NODE_W / 2;
-                const y2 = b.y;
-                const midY = (y1 + y2) / 2;
-                const path = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+                const x1 = a.x + NODE_W;
+                const y1 = a.y + NODE_H / 2;
+                const x2 = b.x;
+                const y2 = b.y + NODE_H / 2;
+                const midX = (x1 + x2) / 2;
+                const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
                 const isLit =
                   selectedId !== null &&
                   (e.from === selectedId || e.to === selectedId);
@@ -258,8 +259,8 @@ export function WorkflowTab() {
                     />
                     {e.label && (
                       <text
-                        x={(x1 + x2) / 2 + 8}
-                        y={midY}
+                        x={midX}
+                        y={(y1 + y2) / 2 - 6}
                         fontSize={10}
                         fill="var(--color-muted)"
                         fontFamily="var(--font-mono)"
