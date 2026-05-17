@@ -126,14 +126,8 @@ export function WorkflowTab() {
 
   if (!workflow || !laid) return null;
 
-  const selected = workflow.nodes.find((n) => n.id === selectedId) ?? null;
-  const outgoing = workflow.edges.filter((e) => e.from === selectedId);
-  const incoming = workflow.edges.filter((e) => e.to === selectedId);
-
-  const nodeById = new Map(workflow.nodes.map((n) => [n.id, n]));
-
   return (
-    <div className="grid h-full grid-rows-[auto_1fr_auto] bg-(--color-panel-sunken)">
+    <div className="grid h-full grid-rows-[auto_1fr] bg-(--color-panel-sunken)">
       {/* Toolbar */}
       <div className="vb-flow-toolbar">
         <span className="vb-flow-title">Conversation workflow</span>
@@ -311,107 +305,7 @@ export function WorkflowTab() {
           </div>
         )}
       </div>
-
-      {/* Inspector */}
-      <div className="vb-flow-inspector">
-        {selected ? (
-          <>
-            <div className="vb-flow-inspector-head">
-              <span className="vb-flow-inspector-title">{selected.label}</span>
-              <span className={`vb-flow-inspector-kind`}>
-                <i
-                  style={{
-                    background:
-                      LEGEND.find((l) => l.kind === selected.type)?.color ??
-                      "var(--color-muted)",
-                  }}
-                />
-                {TYPE_LABEL[selected.type]}
-              </span>
-              <span className="ml-auto font-mono text-[10px] tracking-widest text-(--color-muted-soft)">
-                {selected.id}
-              </span>
-            </div>
-            <div className="vb-flow-inspector-body">
-              <NodeDataView node={selected} />
-              <div className="vb-field-grid mt-2">
-                <div className="vb-field">
-                  <div className="vb-field-label">Outgoing</div>
-                  <div className="vb-pill-list">
-                    {outgoing.length === 0 && (
-                      <span className="vb-field-hint">No outgoing edges.</span>
-                    )}
-                    {outgoing.map((e) => (
-                      <button
-                        key={e.id}
-                        type="button"
-                        onClick={() => setSelectedId(e.to)}
-                        className="vb-pill"
-                      >
-                        → {nodeById.get(e.to)?.label ?? e.to}
-                        {e.label ? ` · ${e.label}` : ""}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="vb-field">
-                  <div className="vb-field-label">Incoming</div>
-                  <div className="vb-pill-list">
-                    {incoming.length === 0 && (
-                      <span className="vb-field-hint">No incoming edges.</span>
-                    )}
-                    {incoming.map((e) => (
-                      <button
-                        key={e.id}
-                        type="button"
-                        onClick={() => setSelectedId(e.from)}
-                        className="vb-pill"
-                      >
-                        ← {nodeById.get(e.from)?.label ?? e.from}
-                        {e.label ? ` · ${e.label}` : ""}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="vb-flow-inspector-body text-(--color-muted)">
-            Select a node to inspect it.
-          </div>
-        )}
-      </div>
     </div>
   );
 }
 
-function NodeDataView({ node }: { node: WorkflowNode }) {
-  const data = node.data ?? {};
-  const entries = Object.entries(data);
-  if (entries.length === 0) {
-    return (
-      <p className="vb-field-hint">
-        No data fields on this node — it’s a control point in the graph.
-      </p>
-    );
-  }
-  return (
-    <div className="space-y-2">
-      {entries.map(([k, v]) => (
-        <div key={k} className="vb-field">
-          <div className="vb-field-label">{k}</div>
-          {typeof v === "string" ? (
-            <div className="vb-field-input vb-field-textarea" style={{ minHeight: 0 }}>
-              {v}
-            </div>
-          ) : (
-            <pre className="vb-field-input font-mono text-[11px] leading-relaxed whitespace-pre-wrap">
-              {JSON.stringify(v, null, 2)}
-            </pre>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
