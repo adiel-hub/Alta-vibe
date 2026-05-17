@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import type {
   WorkflowEdge,
@@ -109,13 +109,45 @@ export function WorkflowTab() {
   const inFlight = useAgentStore((s) => s.inFlight);
   const workflow = config?.workflow;
 
-  const laid = useMemo(() => {
+  const baseLayout = useMemo(() => {
     if (!workflow) return null;
     return layout(workflow.nodes, workflow.edges);
   }, [workflow]);
 
   const [zoom, setZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Per-node position overrides set by the user dragging nodes around.
+  // Local-only — Alta's next workflow patch (or a refresh) re-runs the
+  // auto-layout, which is fine: the graph stays readable.
+  const [overrides, setOverrides] = useState<Record<string, { x: number; y: number }>>(
+    {},
+  );
+
+  // Reset overrides when the workflow id-set changes meaningfully (e.g. new
+  // nodes added/removed) so the auto-layout gets a fresh canvas.
+  const nodeIdsKey = workflow?.nodes.map((n) => n.id).join("|") ?? "";
+  useEffect(() => {
+    setOverrides({});
+  }, [nodeIdsKey]);
+
+  // Canvas scroll/pan refs.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const panState = useRef<{
+    active: boolean;
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+  } | null>(null);
+  const dragState = useRef<{
+    nodeId: string;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
 
   // Auto-select the node Alta is currently animating, falls back to start.
   useEffect(() => {
@@ -125,7 +157,93 @@ export function WorkflowTab() {
     else setSelectedId(workflow.nodes[0]?.id ?? null);
   }, [workflow, liveNodeId, selectedId]);
 
-  if (!workflow || !laid) return null;
+  if (!workflow || !baseLayout) return null;
+
+  // Effective positions = baseLayout positions overridden by drag state.
+  const getPos = (id: string) =>
+    overrides[id] ?? baseLayout.positions.get(id) ?? { x: 0, y: 0 };
+
+  const laid = {
+    width: baseLayout.width,
+    height: baseLayout.height,
+    positions: new Map(
+      workflow.nodes.map((n) => [n.id, getPos(n.id)] as const),
+    ),
+  };
+
+  // ── Canvas pan: mousedown on empty area, move, up.
+  const onCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest(".vb-node")) return; // node handles its own
+    const el = scrollRef.current;
+    if (!el) return;
+    el.setPointerCapture?.(e.pointerId);
+    panState.current = {
+      active: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startScrollLeft: el.scrollLeft,
+      startScrollTop: el.scrollTop,
+    };
+    el.style.cursor = "grabbing";
+  };
+  const onCanvasPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (dragState.current) {
+      const dx = (e.clientX - dragState.current.startClientX) / zoom;
+      const dy = (e.clientY - dragState.current.startClientY) / zoom;
+      const nx = dragState.current.startX + dx;
+      const ny = dragState.current.startY + dy;
+      if (Math.abs(dx) + Math.abs(dy) > 2) dragState.current.moved = true;
+      setOverrides((prev) => ({
+        ...prev,
+        [dragState.current!.nodeId]: { x: nx, y: ny },
+      }));
+      return;
+    }
+    if (!panState.current?.active) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const dx = e.clientX - panState.current.startX;
+    const dy = e.clientY - panState.current.startY;
+    el.scrollLeft = panState.current.startScrollLeft - dx;
+    el.scrollTop = panState.current.startScrollTop - dy;
+  };
+  const endPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (panState.current?.active) {
+      panState.current = null;
+      if (el) el.style.cursor = "grab";
+      el?.releasePointerCapture?.(e.pointerId);
+    }
+    if (dragState.current) {
+      dragState.current = null;
+      if (el) el.style.cursor = "grab";
+    }
+  };
+
+  const onNodePointerDown = (
+    e: React.PointerEvent<HTMLButtonElement>,
+    nodeId: string,
+  ) => {
+    e.stopPropagation();
+    const pos = getPos(nodeId);
+    dragState.current = {
+      nodeId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startX: pos.x,
+      startY: pos.y,
+      moved: false,
+    };
+    scrollRef.current?.setPointerCapture?.(e.pointerId);
+  };
+  const onNodeClick = (e: React.MouseEvent<HTMLButtonElement>, nodeId: string) => {
+    // Suppress click if this was the end of a drag.
+    if (dragState.current?.moved) {
+      e.preventDefault();
+      return;
+    }
+    setSelectedId(nodeId);
+  };
 
   return (
     <div className="grid h-full grid-rows-[auto_1fr] bg-(--color-panel-sunken)">
@@ -177,7 +295,16 @@ export function WorkflowTab() {
       </div>
 
       {/* Canvas */}
-      <div className="vb-flow-canvas">
+      <div
+        ref={scrollRef}
+        className="vb-flow-canvas"
+        style={{ cursor: "grab", touchAction: "none" }}
+        onPointerDown={onCanvasPointerDown}
+        onPointerMove={onCanvasPointerMove}
+        onPointerUp={endPointer}
+        onPointerCancel={endPointer}
+        onPointerLeave={endPointer}
+      >
         {workflow.nodes.length <= 1 ? (
           <div className="flex h-full items-center justify-center text-[13px] text-(--color-muted)">
             Workflow will appear once Alta drafts it. Try “Sketch a workflow for
@@ -282,7 +409,8 @@ export function WorkflowTab() {
                 <button
                   key={n.id}
                   type="button"
-                  onClick={() => setSelectedId(n.id)}
+                  onPointerDown={(e) => onNodePointerDown(e, n.id)}
+                  onClick={(e) => onNodeClick(e, n.id)}
                   className={`vb-node ${isSel ? "selected" : ""} ${
                     isLive ? "lit-now" : ""
                   }`}
@@ -292,6 +420,8 @@ export function WorkflowTab() {
                     top: p.y,
                     width: NODE_W,
                     textAlign: "left",
+                    cursor: "grab",
+                    touchAction: "none",
                   }}
                 >
                   <div className={`kind ${n.type}`}>
