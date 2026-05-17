@@ -70,20 +70,32 @@ export const widgetsCapability: Capability = {
 
     tool(
       "request_user_action",
-      "Show an interactive widget in the chat and PAUSE waiting for the user's response. Use this when you need the user to (a) connect a third-party integration via OAuth, (b) confirm a destructive action, or (c) pick from a small set of options. After calling, your turn ends — the platform will resume your loop with the user's response.",
+      "Show an interactive widget in the chat and PAUSE waiting for the user's response. Use this when you need the user to (a) connect a third-party integration via OAuth — `payload` is an OBJECT: { provider_id: '<id>', reason: '<one line>' }; (b) confirm a destructive action — payload: { title, body, confirm_label?, destructive? }; or (c) pick from a small set of options — payload: { question, options: [{ id, label }] }. The `payload` argument MUST be a JSON OBJECT, not a string. After calling, your turn ends — the platform will resume your loop with the user's response.",
       {
         kind: z.enum(["connect_integration", "confirm", "pick_option"]),
-        payload: z.unknown(),
+        payload: z.record(z.string(), z.unknown()),
       },
       async ({ kind, payload }) => {
         try {
+          // Defensive: some models stringify nested objects when the schema
+          // isn't explicit about shape. Accept either object or
+          // JSON-stringified object so the agent doesn't get stuck retrying.
+          let raw: unknown = payload;
+          if (typeof raw === "string") {
+            try {
+              raw = JSON.parse(raw);
+            } catch {
+              // fall through; ConnectIntegrationPayload.parse will surface
+              // a typed error.
+            }
+          }
           let parsedPayload: unknown;
           if (kind === "connect_integration") {
-            parsedPayload = ConnectIntegrationPayload.parse(payload);
+            parsedPayload = ConnectIntegrationPayload.parse(raw);
           } else if (kind === "confirm") {
-            parsedPayload = ConfirmPayload.parse(payload);
+            parsedPayload = ConfirmPayload.parse(raw);
           } else {
-            parsedPayload = PickOptionPayload.parse(payload);
+            parsedPayload = PickOptionPayload.parse(raw);
           }
 
           const widgets = await widgetActionsCol();
