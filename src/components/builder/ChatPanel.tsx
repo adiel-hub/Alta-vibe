@@ -16,7 +16,6 @@ const log = createClientLogger("chat");
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
   const streaming = useAgentStore((s) => s.streaming);
-  const activeJobId = useAgentStore((s) => s.activeJobId);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,16 +105,8 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             <path d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z" />
           </svg>
         </span>
-        <div className="flex flex-col">
-          <span className="text-[13px] font-semibold text-(--color-foreground-strong)">
-            Alta
-          </span>
-          <span className="text-[11px] text-(--color-muted-soft)">
-            {activeJobId ? "working…" : "Builder chat"}
-          </span>
-        </div>
-        <span className="ml-auto inline-flex items-center gap-1 rounded-md bg-(--color-violet-100) px-2 py-1 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
-          {activeJobId ? "BUILDING" : "READY"}
+        <span className="text-[13px] font-semibold text-(--color-foreground-strong)">
+          Alta
         </span>
       </header>
 

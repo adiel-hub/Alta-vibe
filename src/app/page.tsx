@@ -1,122 +1,91 @@
 import Image from "next/image";
 import { DescribeAgentForm } from "@/components/DescribeAgentForm";
 
-const PIPELINE = [
-  { num: "01", label: "Workflow", sub: "Branches, conditions, tools" },
-  { num: "02", label: "Voice", sub: "Cast, cadence, language" },
-  { num: "03", label: "Knowledge", sub: "Indexed & searchable" },
-  { num: "04", label: "Telephony", sub: "Number, routing, hours" },
+const FEATURES = [
+  {
+    num: "01",
+    label: "Workflow",
+    sub: "Branches, conditions, and tool calls assembled from your description.",
+  },
+  {
+    num: "02",
+    label: "Voice",
+    sub: "Cast a voice — language, cadence, accent — across 32 languages.",
+  },
+  {
+    num: "03",
+    label: "Knowledge",
+    sub: "Upload docs or paste URLs; Alta indexes and grounds every reply.",
+  },
+  {
+    num: "04",
+    label: "Telephony",
+    sub: "Assigned number, hours of operation, and live call routing.",
+  },
 ];
 
 export default function Home() {
   return (
     <main className="hero-shell">
-      <div className="hero-bg" aria-hidden>
-        <div className="hero-grid" />
-        <div className="hero-aurora" />
-      </div>
+      <div className="hero-glow" aria-hidden />
+      <div className="hero-spectrum" aria-hidden />
 
       <header className="hero-masthead">
         <div className="hero-brand">
-          <span className="hero-mark" aria-hidden>
-            ✦
+          <span className="hero-logo" aria-hidden>
+            <Image src="/alex.avif" alt="" width={32} height={32} priority />
           </span>
           <span className="hero-wordmark">Alta</span>
-          <span className="hero-divider" aria-hidden />
-          <span className="hero-meta">Voice Agent Studio · v0.4</span>
         </div>
+        <nav className="hero-nav" aria-label="Primary">
+          <a href="#features">Features</a>
+          <a href="#voices">Voices</a>
+          <a href="#docs">Docs</a>
+        </nav>
         <div className="hero-status" aria-live="polite">
           <span className="hero-pulse" aria-hidden />
-          Calibrated · Ready to build
+          Live
         </div>
       </header>
 
       <section className="hero-stage">
-        <aside className="hero-portrait" aria-label="Alta">
-          <div className="hero-portrait-frame">
-            <Image
-              src="/alex.avif"
-              alt="Portrait of Alta"
-              width={360}
-              height={440}
-              priority
-            />
-            <span
-              className="hero-portrait-corner hero-portrait-corner-tl"
-              aria-hidden
-            />
-            <span
-              className="hero-portrait-corner hero-portrait-corner-tr"
-              aria-hidden
-            />
-            <span
-              className="hero-portrait-corner hero-portrait-corner-bl"
-              aria-hidden
-            />
-            <span
-              className="hero-portrait-corner hero-portrait-corner-br"
-              aria-hidden
-            />
-            <span className="hero-portrait-tag">
-              <span className="hero-portrait-tag-dot" aria-hidden />
-              On standby
-            </span>
-          </div>
-          <div className="hero-portrait-caption">
-            <span className="hero-portrait-name">Alta</span>
-            <span className="hero-portrait-role">Builder · Conductor</span>
-          </div>
-        </aside>
+        <span className="hero-eyebrow">Voice Agent Studio · v0.4</span>
 
-        <div className="hero-content">
-          <div className="hero-eyebrow">
-            <span className="hero-eyebrow-bar" aria-hidden />
-            <span className="hero-eyebrow-num">№ 01</span>
-            <span>Describe in plain English</span>
-            <span className="hero-eyebrow-bar" aria-hidden />
-          </div>
+        <h1 className="hero-title">
+          Describe the agent.
+          <br />
+          <span className="hero-title-soft">Alta builds it live.</span>
+        </h1>
 
-          <h1 className="hero-title">
-            Describe the agent.
-            <br />
-            <em className="hero-title-italic">Alta builds it live.</em>
-          </h1>
+        <p className="hero-lede">
+          One paragraph in — a complete voice agent out. Workflow, voice,
+          knowledge, and a phone number, assembled live in front of you.
+        </p>
 
-          <p className="hero-lede">
-            One paragraph in — a complete voice agent out. Workflow, voice,
-            knowledge, and a phone number, <em>assembled live</em> in front of
-            you. Test it the moment it's ready.
-          </p>
-
-          <div className="hero-form-shell">
-            <DescribeAgentForm />
-          </div>
-
-          <ol className="hero-pipeline" aria-label="What Alta assembles">
-            {PIPELINE.map((step) => (
-              <li key={step.num} className="hero-step">
-                <span className="hero-step-num">{step.num}</span>
-                <span className="hero-step-label">{step.label}</span>
-                <span className="hero-step-sub">{step.sub}</span>
-              </li>
-            ))}
-          </ol>
+        <div className="hero-form-shell">
+          <DescribeAgentForm />
         </div>
+
+        <ol
+          id="features"
+          className="hero-pipeline"
+          aria-label="What Alta assembles"
+        >
+          {FEATURES.map((step) => (
+            <li key={step.num} className="hero-step">
+              <span className="hero-step-num">{step.num}</span>
+              <span className="hero-step-label">{step.label}</span>
+              <span className="hero-step-sub">{step.sub}</span>
+            </li>
+          ))}
+        </ol>
       </section>
 
       <footer className="hero-foot">
-        <span className="hero-foot-em">Trusted in production</span>
-        <span className="hero-foot-sep" aria-hidden>
-          ◇
-        </span>
-        <span>ElevenLabs voice engine</span>
-        <span className="hero-foot-sep" aria-hidden>
-          ◇
-        </span>
+        <span>Calibrated voice engine</span>
+        <span aria-hidden>·</span>
         <span>Live monitoring & transcripts</span>
-        <span className="hero-foot-sep" aria-hidden>
-          ◇
-        </span>
+        <span aria-hidden>·</span>
         <span>SOC-2 ready infrastructure</span>
       </footer>
     </main>
