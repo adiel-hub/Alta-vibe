@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { requireSharedSecret } from "@/lib/auth";
-import { agentsCol } from "@/lib/mongodb";
 import { getKbDocumentContent, ElevenLabsError } from "@/lib/elevenlabs/client";
 
 export const runtime = "nodejs";
@@ -12,6 +11,11 @@ export const dynamic = "force-dynamic";
  *
  * Returns the indexed plain-text content of a KB document — what the agent
  * actually sees when this doc is retrieved during a call.
+ *
+ * No ownership check: the shared-secret gate is enough for the prototype,
+ * and the previous check raced against in-flight turns (the agent doc's
+ * config_cache.knowledge_base is only persisted to Mongo when the turn
+ * completes, so expanding a freshly-scraped doc mid-turn would 404).
  */
 export async function GET(
   req: NextRequest,
@@ -24,13 +28,6 @@ export async function GET(
   if (!ObjectId.isValid(id)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
-
-  // Confirm the doc belongs to an agent the caller actually has access to.
-  const agent = await (await agentsCol()).findOne({ _id: new ObjectId(id) });
-  if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const owns = agent.config_cache.knowledge_base.some((d) => d.id === docId);
-  if (!owns)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
     const { content } = await getKbDocumentContent(docId);

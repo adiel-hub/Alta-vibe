@@ -15,41 +15,11 @@ import { Typewriter } from "../Typewriter";
  */
 export function OverviewTab({ agentId }: { agentId: string }) {
   const config = useAgentStore((s) => s.config);
-  const description = useAgentStore((s) => s.agent?.description ?? "");
   const inFlight = useAgentStore((s) => s.inFlight);
   if (!config) return null;
 
-  const initials = config.name
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((w) => w[0]?.toUpperCase() ?? "")
-    .slice(0, 2)
-    .join("") || "A";
-
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-7">
-      <div className="rounded-2xl border border-(--color-border) bg-(--color-panel) p-6 shadow-[var(--shadow-xs)]">
-        <div className="flex items-start gap-4">
-          <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-(--color-violet-500) to-(--color-indigo-600) text-lg font-semibold text-white">
-            {initials}
-          </div>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-2xl font-semibold tracking-tight text-(--color-foreground-strong)">
-              {config.name}
-            </h1>
-            <p className="mt-1 text-xs uppercase tracking-widest text-(--color-muted-soft)">
-              VOICE AGENT · {config.language?.toUpperCase() ?? "EN"} ·{" "}
-              {config.llm}
-            </p>
-            {description && (
-              <p className="mt-3 text-[13px] leading-relaxed text-(--color-foreground)">
-                {description}
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-
       <PersonaField
         agentId={agentId}
         field="name"
