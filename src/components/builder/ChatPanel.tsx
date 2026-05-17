@@ -265,7 +265,7 @@ function TurnView({
         className={
           isUser
             ? "max-w-[85%] rounded-2xl bg-(--color-panel-soft) px-4 py-2 text-sm text-(--color-foreground-strong)"
-            : "max-w-[92%] space-y-2 rounded-2xl border border-(--color-panel-soft) bg-(--color-violet-100)/40 px-4 py-3 text-sm text-(--color-foreground)"
+            : "max-w-[92%] space-y-2 px-1 py-1 text-sm text-(--color-foreground)"
         }
       >
         {streamingHint && (
