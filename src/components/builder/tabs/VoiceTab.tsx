@@ -5,9 +5,34 @@ import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
 import type { AgentConfigCache } from "@/types/agent";
 
-const TTS_MODEL_OPTIONS = [
-  { id: "eleven_v3_conversational", label: "Expressive v3" },
-];
+const LLM_OPTIONS = {
+  Gemini: [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+  ],
+  OpenAI: [
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+  ],
+  Anthropic: [
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-3-7-sonnet",
+    "claude-3-5-sonnet",
+    "claude-3-haiku",
+  ],
+  Other: ["grok-beta", "custom-llm"],
+};
 
 const LANGUAGE_OPTIONS = [
   ["en", "English"],
@@ -41,7 +66,6 @@ export function VoiceTab({ agentId }: { agentId: string }) {
   const inFlight = useAgentStore((s) => s.inFlight);
   const applyConfigDirect = useAgentStore((s) => s.applyConfigDirect);
   const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceQuery, setVoiceQuery] = useState("");
   const [voicesLoading, setVoicesLoading] = useState(false);
   const [voicesError, setVoicesError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -88,16 +112,6 @@ export function VoiceTab({ agentId }: { agentId: string }) {
     }
   };
 
-  const filteredVoices = voiceQuery
-    ? voices.filter((v) =>
-        v.name.toLowerCase().includes(voiceQuery.toLowerCase()),
-      )
-    : voices.slice(0, 24);
-
-  const gender = currentVoice?.labels?.gender;
-  const accent = currentVoice?.labels?.accent;
-  const age = currentVoice?.labels?.age;
-
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6">
       {error && (
@@ -112,77 +126,42 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         busy={inFlight.has("voice")}
       >
         <div className="vb-field">
-          <div className="vb-field-label flex items-center justify-between">
-            <span>Current</span>
-            <span className="font-mono text-[10px] tracking-widest text-(--color-muted-soft)">
-              {currentVoice ? currentVoice.voice_id : config.voice_id}
-            </span>
-          </div>
-          <div className="vb-preview-line">
-            “{config.first_message || "Hi! How can I help today?"}”
-          </div>
-          <p className="vb-voice-style">
-            {currentVoice?.name ?? "—"}
-            {gender ? ` · ${gender}` : ""}
-            {accent ? ` · ${accent}` : ""}
-            {age ? ` · ${age}` : ""}
-          </p>
-        </div>
-
-        <div className="vb-field">
-          <div className="vb-field-label">Browse voices</div>
-          <input
-            type="text"
-            value={voiceQuery}
-            onChange={(e) => setVoiceQuery(e.target.value)}
-            placeholder="Search voices…"
-            className="vb-field-input"
-          />
+          <div className="vb-field-label">Voice</div>
           {voicesError && (
             <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>
               Voice list error: {voicesError}
             </p>
           )}
-          <div className="vb-voices" style={{ marginTop: 10 }}>
-            {voicesLoading && (
-              <p className="vb-field-hint">Loading voice catalogue…</p>
+          <select
+            value={config.voice_id}
+            disabled={voicesLoading || voices.length === 0}
+            onChange={(e) => patch({ voice_id: e.target.value })}
+            className="vb-field-input font-medium"
+          >
+            {voicesLoading && <option value="">Loading voices…</option>}
+            {!voicesLoading && !currentVoice && (
+              <option value={config.voice_id}>
+                {config.voice_id || "(unset)"}
+              </option>
             )}
-            {filteredVoices.map((v) => {
-              const on = v.voice_id === config.voice_id;
+            {voices.map((v) => {
+              const accent = v.labels?.accent;
+              const gender = v.labels?.gender;
+              const cat = v.category ?? "premade";
+              const meta = [cat, gender, accent].filter(Boolean).join(" · ");
               return (
-                <button
-                  key={v.voice_id}
-                  type="button"
-                  onClick={() => patch({ voice_id: v.voice_id })}
-                  className={`vb-voice ${on ? "on" : ""}`}
-                >
-                  <div className="top">
-                    <span className="play" aria-hidden>
-                      ▶
-                    </span>
-                    <span className="nm">{v.name}</span>
-                  </div>
-                  <div className="wave" aria-hidden>
-                    {Array.from({ length: 18 }).map((_, i) => (
-                      <span
-                        key={i}
-                        style={{
-                          height: `${4 + ((i * 17) % 11)}px`,
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <div className="vb-voice-meta">
-                    {v.category ?? "premade"}
-                    {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
-                  </div>
-                </button>
+                <option key={v.voice_id} value={v.voice_id}>
+                  {v.name}
+                  {meta ? `  —  ${meta}` : ""}
+                </option>
               );
             })}
-            {!voicesLoading && filteredVoices.length === 0 && (
-              <p className="vb-field-hint">No matches.</p>
-            )}
-          </div>
+          </select>
+          <p className="vb-field-hint">
+            {currentVoice
+              ? `${currentVoice.name} · ${currentVoice.voice_id}`
+              : config.voice_id || "Pick a voice."}
+          </p>
         </div>
       </Section>
 
@@ -272,42 +251,24 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         </div>
       </Section>
 
-      <Section title="Model & language" meta="TTS">
-        <div className="vb-field-grid">
-          <div className="vb-field">
-            <div className="vb-field-label">TTS model</div>
-            <select
-              value={config.tts_model}
-              onChange={(e) => patch({ tts_model: e.target.value })}
-              className="vb-field-input"
-            >
-              {TTS_MODEL_OPTIONS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            <p className="vb-field-hint">
-              Locked to v3 conversational — the most expressive ConvAI model.
-            </p>
-          </div>
-          <div className="vb-field">
-            <div className="vb-field-label">Language</div>
-            <select
-              value={config.language}
-              onChange={(e) => patch({ language: e.target.value })}
-              className="vb-field-input"
-            >
-              {LANGUAGE_OPTIONS.map(([code, name]) => (
-                <option key={code} value={code}>
-                  {name}
-                </option>
-              ))}
-            </select>
-            <p className="vb-field-hint">
-              Drives both transcription and TTS pronunciation.
-            </p>
-          </div>
+      <Section title="Language" meta="ASR + TTS">
+        <div className="vb-field">
+          <div className="vb-field-label">Language</div>
+          <select
+            value={config.language}
+            onChange={(e) => patch({ language: e.target.value })}
+            className="vb-field-input"
+          >
+            {LANGUAGE_OPTIONS.map(([code, name]) => (
+              <option key={code} value={code}>
+                {name}
+              </option>
+            ))}
+          </select>
+          <p className="vb-field-hint">
+            Drives both transcription and TTS pronunciation. TTS model is
+            locked to eleven_v3_conversational.
+          </p>
         </div>
       </Section>
 
@@ -315,15 +276,26 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         <div className="vb-field-grid">
           <div className="vb-field">
             <div className="vb-field-label">Model</div>
-            <input
-              type="text"
-              defaultValue={config.llm}
-              onBlur={(e) =>
-                e.target.value !== config.llm &&
-                patch({ llm: e.target.value })
-              }
+            <select
+              value={config.llm}
+              onChange={(e) => patch({ llm: e.target.value })}
               className="vb-field-input font-mono"
-            />
+            >
+              {!Object.values(LLM_OPTIONS)
+                .flat()
+                .includes(config.llm) && (
+                <option value={config.llm}>{config.llm}</option>
+              )}
+              {Object.entries(LLM_OPTIONS).map(([group, models]) => (
+                <optgroup key={group} label={group}>
+                  {models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
             <p className="vb-field-hint">
               The LLM that drives the agent during calls.
             </p>
