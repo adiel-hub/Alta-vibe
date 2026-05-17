@@ -17,15 +17,6 @@ export function LiveToolPill() {
   const stateClass =
     live.status === "running" ? "" : live.status === "success" ? "done" : "error";
 
-  // Strip our MCP prefix so the code chip reads like a verb.
-  const code = live.raw_name.replace(/^mcp__alta__/, "");
-  const label =
-    live.status === "running"
-      ? live.label
-      : live.status === "success"
-        ? `${live.label} · done`
-        : `${live.label} · failed`;
-
   return (
     <div
       // re-keying on status forces the slide-up + shimmer to restart.
@@ -36,8 +27,12 @@ export function LiveToolPill() {
         <span aria-hidden>
           <span className="spin" />
         </span>
-        <span className="step-label step-label-anim">{label}</span>
-        {code && <span className="step-code">{code}</span>}
+        {live.emoji && (
+          <span className="step-emoji" aria-hidden>
+            {live.emoji}
+          </span>
+        )}
+        <span className="step-label step-label-anim">{live.label}</span>
       </div>
       {live.status === "error" && live.error_message && (
         <span

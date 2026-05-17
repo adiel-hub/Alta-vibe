@@ -223,6 +223,11 @@
   border-top-color: #7c3aed;
   animation: vask-spin 0.8s linear infinite;
 }
+.aa-thinking .step-emoji {
+  font-size: 14px;
+  line-height: 1;
+  filter: saturate(1.1);
+}
 .aa-thinking .step-label {
   font-weight: 500;
   background: linear-gradient(
