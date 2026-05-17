@@ -43,5 +43,33 @@ export const llmCapability: Capability = {
           };
         }),
     ),
+
+    tool(
+      "set_max_tokens",
+      "Hard cap on the number of tokens the LLM may generate per turn. Use 0/unset for no cap. Lower values keep responses brief.",
+      { max_tokens: z.number().int().min(0).max(8_000) },
+      async ({ max_tokens }) =>
+        runToolStep(ctx, "llm", "set_max_tokens", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, { max_tokens });
+          return {
+            patch: {},
+            summary:
+              max_tokens === 0
+                ? "Removed max-tokens cap."
+                : `Max tokens set to ${max_tokens}.`,
+          };
+        }),
+    ),
+
+    tool(
+      "set_reasoning_effort",
+      "For reasoning-capable models (e.g. Claude thinking models, o-series), how much effort to spend on reasoning. Only takes effect on models that support it.",
+      { effort: z.enum(["low", "medium", "high"]) },
+      async ({ effort }) =>
+        runToolStep(ctx, "llm", "set_reasoning_effort", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, { reasoning_effort: effort });
+          return { patch: {}, summary: `Reasoning effort set to ${effort}.` };
+        }),
+    ),
   ],
 };

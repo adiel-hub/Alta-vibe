@@ -245,25 +245,60 @@ export type AgentPatch = {
   language?: string;
   llm?: string;
   temperature?: number;
+  max_tokens?: number;
+  reasoning_effort?: "low" | "medium" | "high";
+  thinking_budget?: number;
+  timezone?: string;
+  disable_first_message_interruptions?: boolean;
+  max_conversation_duration_message?: string;
+  dynamic_variables?: Record<string, string>;
   max_duration_seconds?: number;
+  text_only?: boolean;
+  source_attribution?: boolean;
   knowledge_base?: Array<{
     id: string;
     name: string;
     type: "url" | "file" | "text";
   }>;
-  tools?: Array<{
-    id?: string;
-    name: string;
-    type: "webhook" | "client" | "system";
-    description?: string;
-  }>;
+  /** Preferred way to attach tools: pass workspace tool ids. */
+  tool_ids?: string[];
   mcp_server_ids?: string[];
+  native_mcp_server_ids?: string[];
   data_collection?: Record<
     string,
     { type: "string" | "number" | "boolean"; description: string }
   >;
   evaluation_criteria?: Array<{ id: string; name: string; prompt: string }>;
+  // ASR
+  asr_quality?: "high" | "low";
+  asr_provider?: "elevenlabs" | "deepgram";
+  asr_keywords?: string[];
+  // Turn detection
+  turn_timeout?: number;
+  initial_wait_time?: number;
+  silence_end_call_timeout?: number;
+  turn_eagerness?: "low" | "standard" | "high";
+  speculative_turn?: boolean;
+  // v3 expressive
+  expressive_mode?: boolean;
+  suggested_audio_tags?: string[];
+  agent_output_audio_format?: string;
+  optimize_streaming_latency?: number;
+  text_normalisation_type?: "system_prompt" | "elevenlabs" | "off";
 };
+
+/**
+ * Whitelist of Conversational AI TTS fields. Anything our `voice_settings`
+ * object carries that isn't in this list is silently dropped on patch — this
+ * keeps legacy fields (`style`, `use_speaker_boost`) from polluting the wire
+ * payload to the Conversational AI endpoint, which only accepts a subset of
+ * the standalone TTS API's settings.
+ */
+const TTS_WIRE_FIELDS = new Set([
+  "stability",
+  "similarity_boost",
+  "speed",
+]);
 
 export async function patchAgent(
   agentId: string,
@@ -273,34 +308,88 @@ export async function patchAgent(
   const incoming: Record<string, unknown> = {};
   if (patch.name !== undefined) incoming.name = patch.name;
 
+  // --- agent.prompt -------------------------------------------------------
   const agentSlice: Record<string, unknown> = {};
   if (patch.first_message !== undefined) agentSlice.first_message = patch.first_message;
   if (patch.language !== undefined) agentSlice.language = patch.language;
+  if (patch.disable_first_message_interruptions !== undefined)
+    agentSlice.disable_first_message_interruptions = patch.disable_first_message_interruptions;
+  if (patch.max_conversation_duration_message !== undefined)
+    agentSlice.max_conversation_duration_message = patch.max_conversation_duration_message;
+  if (patch.dynamic_variables !== undefined) {
+    agentSlice.dynamic_variables = {
+      dynamic_variable_placeholders: patch.dynamic_variables,
+    };
+  }
+
   const promptSlice: Record<string, unknown> = {};
   if (patch.system_prompt !== undefined) promptSlice.prompt = patch.system_prompt;
   if (patch.llm !== undefined) promptSlice.llm = patch.llm;
   if (patch.temperature !== undefined) promptSlice.temperature = patch.temperature;
+  if (patch.max_tokens !== undefined) promptSlice.max_tokens = patch.max_tokens;
+  if (patch.reasoning_effort !== undefined)
+    promptSlice.reasoning_effort = patch.reasoning_effort;
+  if (patch.thinking_budget !== undefined)
+    promptSlice.thinking_budget = patch.thinking_budget;
+  if (patch.timezone !== undefined) promptSlice.timezone = patch.timezone;
   if (patch.knowledge_base !== undefined) promptSlice.knowledge_base = patch.knowledge_base;
-  if (patch.tools !== undefined) promptSlice.tools = patch.tools;
+  // Modern schema: reference tools by id, not inline. The inline `tools`
+  // field is deprecated upstream.
+  if (patch.tool_ids !== undefined) promptSlice.tool_ids = patch.tool_ids;
   if (patch.mcp_server_ids !== undefined) promptSlice.mcp_server_ids = patch.mcp_server_ids;
+  if (patch.native_mcp_server_ids !== undefined)
+    promptSlice.native_mcp_server_ids = patch.native_mcp_server_ids;
   if (Object.keys(promptSlice).length > 0) agentSlice.prompt = promptSlice;
 
+  // --- tts ----------------------------------------------------------------
   const ttsSlice: Record<string, unknown> = {};
   if (patch.voice_id !== undefined) ttsSlice.voice_id = patch.voice_id;
   if (patch.tts_model !== undefined) ttsSlice.model_id = patch.tts_model;
   if (patch.voice_settings) {
     for (const [k, v] of Object.entries(patch.voice_settings)) {
-      if (v !== undefined) ttsSlice[k] = v;
+      if (v !== undefined && TTS_WIRE_FIELDS.has(k)) ttsSlice[k] = v;
     }
   }
+  if (patch.expressive_mode !== undefined) ttsSlice.expressive_mode = patch.expressive_mode;
+  if (patch.suggested_audio_tags !== undefined)
+    ttsSlice.suggested_audio_tags = patch.suggested_audio_tags;
+  if (patch.agent_output_audio_format !== undefined)
+    ttsSlice.agent_output_audio_format = patch.agent_output_audio_format;
+  if (patch.optimize_streaming_latency !== undefined)
+    ttsSlice.optimize_streaming_latency = patch.optimize_streaming_latency;
+  if (patch.text_normalisation_type !== undefined)
+    ttsSlice.text_normalisation_type = patch.text_normalisation_type;
 
+  // --- asr ----------------------------------------------------------------
+  const asrSlice: Record<string, unknown> = {};
+  if (patch.asr_quality !== undefined) asrSlice.quality = patch.asr_quality;
+  if (patch.asr_provider !== undefined) asrSlice.provider = patch.asr_provider;
+  if (patch.asr_keywords !== undefined) asrSlice.keywords = patch.asr_keywords;
+
+  // --- turn ---------------------------------------------------------------
+  const turnSlice: Record<string, unknown> = {};
+  if (patch.turn_timeout !== undefined) turnSlice.turn_timeout = patch.turn_timeout;
+  if (patch.initial_wait_time !== undefined)
+    turnSlice.initial_wait_time = patch.initial_wait_time;
+  if (patch.silence_end_call_timeout !== undefined)
+    turnSlice.silence_end_call_timeout = patch.silence_end_call_timeout;
+  if (patch.turn_eagerness !== undefined) turnSlice.turn_eagerness = patch.turn_eagerness;
+  if (patch.speculative_turn !== undefined)
+    turnSlice.speculative_turn = patch.speculative_turn;
+
+  // --- conversation -------------------------------------------------------
   const conversationSlice: Record<string, unknown> = {};
   if (patch.max_duration_seconds !== undefined)
     conversationSlice.max_duration_seconds = patch.max_duration_seconds;
+  if (patch.text_only !== undefined) conversationSlice.text_only = patch.text_only;
+  if (patch.source_attribution !== undefined)
+    conversationSlice.source_attribution = patch.source_attribution;
 
   const conversationConfig: Record<string, unknown> = {};
   if (Object.keys(agentSlice).length > 0) conversationConfig.agent = agentSlice;
   if (Object.keys(ttsSlice).length > 0) conversationConfig.tts = ttsSlice;
+  if (Object.keys(asrSlice).length > 0) conversationConfig.asr = asrSlice;
+  if (Object.keys(turnSlice).length > 0) conversationConfig.turn = turnSlice;
   if (Object.keys(conversationSlice).length > 0)
     conversationConfig.conversation = conversationSlice;
   if (Object.keys(conversationConfig).length > 0) {
@@ -310,6 +399,7 @@ export async function patchAgent(
     );
   }
 
+  // --- platform_settings --------------------------------------------------
   const platformSlice: Record<string, unknown> = {};
   if (patch.data_collection !== undefined) {
     platformSlice.data_collection = patch.data_collection;
@@ -396,6 +486,190 @@ export async function renameKbDocument(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name }),
   });
+}
+
+/**
+ * Refresh a URL-based KB document — re-fetch from the source URL and
+ * re-index. Useful when the upstream content changes.
+ */
+export async function refreshKbDocument(documentId: string): Promise<void> {
+  await elFetch(`/v1/convai/knowledge-base/${documentId}/refresh`, {
+    method: "POST",
+    section: "knowledge_base",
+  });
+}
+
+/**
+ * Explicitly run RAG indexing on a document. Documents are auto-indexed but
+ * this lets the user trigger a re-index manually after content changes.
+ */
+export async function ragIndexKbDocument(
+  documentId: string,
+  model: string = "e5_mistral_7b_instruct",
+): Promise<void> {
+  await elFetch(`/v1/convai/knowledge-base/${documentId}/rag-index`, {
+    method: "POST",
+    section: "knowledge_base",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+}
+
+/**
+ * Semantic search across the entire workspace knowledge base.
+ * Returns the top-K matching chunks across documents.
+ */
+export async function searchKnowledgeBase(input: {
+  query: string;
+  agent_id?: string;
+  document_ids?: string[];
+  top_k?: number;
+}): Promise<{
+  results: Array<{
+    document_id: string;
+    document_name: string;
+    chunk_id: string;
+    content: string;
+    score: number;
+  }>;
+}> {
+  const res = await elFetch("/v1/convai/knowledge-base/search", {
+    method: "POST",
+    section: "knowledge_base",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      query: input.query,
+      agent_id: input.agent_id,
+      document_ids: input.document_ids,
+      top_k: input.top_k ?? 5,
+    }),
+  });
+  return (await res.json()) as {
+    results: Array<{
+      document_id: string;
+      document_name: string;
+      chunk_id: string;
+      content: string;
+      score: number;
+    }>;
+  };
+}
+
+/**
+ * List the dependent agents currently referencing a KB document. Useful
+ * before removing a document so we can warn the user it'll affect other
+ * agents in the workspace.
+ */
+export async function getKbDependentAgents(
+  documentId: string,
+): Promise<{ agent_id: string; agent_name: string }[]> {
+  const res = await elFetch(
+    `/v1/convai/knowledge-base/${documentId}/dependent-agents`,
+    { method: "GET", section: "knowledge_base" },
+  );
+  const json = (await res.json()) as {
+    dependent_agents?: Array<{ agent_id: string; agent_name?: string }>;
+  };
+  return (json.dependent_agents ?? []).map((a) => ({
+    agent_id: a.agent_id,
+    agent_name: a.agent_name ?? a.agent_id,
+  }));
+}
+
+// --- Batch calling ----------------------------------------------------------
+
+export type BatchCallRecipient = {
+  phone_number: string;
+  dynamic_variables?: Record<string, string>;
+};
+
+export async function submitBatchCall(input: {
+  call_name: string;
+  agent_id: string;
+  agent_phone_number_id: string;
+  recipients: BatchCallRecipient[];
+  scheduled_time_unix?: number;
+  target_concurrency_limit?: number;
+}): Promise<{ id: string }> {
+  const res = await elFetch("/v1/convai/batch-calling/submit", {
+    method: "POST",
+    section: "batch_calling",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      call_name: input.call_name,
+      agent_id: input.agent_id,
+      agent_phone_number_id: input.agent_phone_number_id,
+      recipients: input.recipients,
+      scheduled_time_unix: input.scheduled_time_unix,
+      target_concurrency_limit: input.target_concurrency_limit,
+    }),
+  });
+  return (await res.json()) as { id: string };
+}
+
+export async function getBatchCall(batchId: string): Promise<unknown> {
+  const res = await elFetch(`/v1/convai/batch-calling/${batchId}`, {
+    method: "GET",
+    section: "batch_calling",
+  });
+  return res.json();
+}
+
+export async function cancelBatchCall(batchId: string): Promise<void> {
+  await elFetch(`/v1/convai/batch-calling/${batchId}/cancel`, {
+    method: "POST",
+    section: "batch_calling",
+  });
+}
+
+// --- Workspace secrets ------------------------------------------------------
+
+export async function createWorkspaceSecret(input: {
+  name: string;
+  value: string;
+}): Promise<{ id: string; name: string }> {
+  const res = await elFetch("/v1/convai/secrets", {
+    method: "POST",
+    section: "secrets",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name: input.name, value: input.value, type: "new" }),
+  });
+  return (await res.json()) as { id: string; name: string };
+}
+
+export async function listWorkspaceSecrets(): Promise<
+  Array<{ id: string; name: string }>
+> {
+  const res = await elFetch("/v1/convai/secrets", {
+    method: "GET",
+    section: "secrets",
+  });
+  const json = (await res.json()) as {
+    secrets: Array<{ secret_id: string; name: string }>;
+  };
+  return json.secrets.map((s) => ({ id: s.secret_id, name: s.name }));
+}
+
+// --- Agent simulation -------------------------------------------------------
+
+export async function simulateConversation(input: {
+  agent_id: string;
+  simulation_specification: {
+    simulated_user_config: { first_message?: string; prompt: string };
+  };
+}): Promise<unknown> {
+  const res = await elFetch(
+    `/v1/convai/agents/${input.agent_id}/simulate-conversation`,
+    {
+      method: "POST",
+      section: "simulation",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        simulation_specification: input.simulation_specification,
+      }),
+    },
+  );
+  return res.json();
 }
 
 // --- Runtime tools (generic create) ----------------------------------------

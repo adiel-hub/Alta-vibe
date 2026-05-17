@@ -107,5 +107,76 @@ export const voiceCapability: Capability = {
           return { patch: { language }, summary: `Language set to ${language}.` };
         }),
     ),
+
+    // --- v3 expressive features ----------------------------------------
+    tool(
+      "set_expressive_mode",
+      "Enable audio tags for the eleven_v3 model — boosts emotional range using inline cues like [whispers], [excited], [pause]. Automatically disabled for non-v3 models.",
+      { enabled: z.boolean() },
+      async ({ enabled }) =>
+        runToolStep(ctx, "voice", "set_expressive_mode", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, { expressive_mode: enabled });
+          return {
+            patch: {},
+            summary: enabled ? "Expressive mode enabled." : "Expressive mode disabled.",
+          };
+        }),
+    ),
+
+    tool(
+      "set_suggested_audio_tags",
+      "List of audio tags (e.g. ['whispers', 'excited', 'sighs', 'laughs', 'pause']) the agent should consider using. Only applies with the eleven_v3 model. Agent can still use tags outside this list.",
+      { tags: z.array(z.string()).max(20) },
+      async ({ tags }) =>
+        runToolStep(ctx, "voice", "set_suggested_audio_tags", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, { suggested_audio_tags: tags });
+          return {
+            patch: {},
+            summary: `Suggested ${tags.length} audio tag${tags.length === 1 ? "" : "s"}.`,
+          };
+        }),
+    ),
+
+    tool(
+      "set_output_audio_format",
+      "Audio format the agent produces. Common: 'pcm_16000' (default), 'pcm_22050', 'pcm_44100', 'mp3_22050_32', 'mp3_44100_64', 'ulaw_8000' (telephony).",
+      { format: z.string() },
+      async ({ format }) =>
+        runToolStep(ctx, "voice", "set_output_audio_format", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            agent_output_audio_format: format,
+          });
+          return { patch: {}, summary: `Output audio format set to ${format}.` };
+        }),
+    ),
+
+    tool(
+      "set_optimize_streaming_latency",
+      "Latency optimisation level. 0 = best quality, 4 = lowest latency. Default 2.",
+      { level: z.number().int().min(0).max(4) },
+      async ({ level }) =>
+        runToolStep(ctx, "voice", "set_optimize_streaming_latency", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            optimize_streaming_latency: level,
+          });
+          return {
+            patch: {},
+            summary: `Latency optimisation set to level ${level}.`,
+          };
+        }),
+    ),
+
+    tool(
+      "set_text_normalisation",
+      "How numbers/dates are turned into spoken words. 'system_prompt' = LLM does it (free, more flexible). 'elevenlabs' = post-process (small latency, deterministic). 'off' = no normalisation.",
+      { mode: z.enum(["system_prompt", "elevenlabs", "off"]) },
+      async ({ mode }) =>
+        runToolStep(ctx, "voice", "set_text_normalisation", async () => {
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            text_normalisation_type: mode,
+          });
+          return { patch: {}, summary: `Text normalisation set to ${mode}.` };
+        }),
+    ),
   ],
 };

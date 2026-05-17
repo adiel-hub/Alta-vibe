@@ -20,6 +20,11 @@ import { workflowCapability } from "./workflow";
 import { workflowTrackingCapability } from "./workflow_tracking";
 import { widgetsCapability } from "./widgets";
 import { integrationsCapability } from "./integrations";
+import { turnDetectionCapability } from "./turn_detection";
+import { asrCapability } from "./asr";
+import { conversationFlowCapability } from "./conversation_flow";
+import { batchCallingCapability } from "./batch_calling";
+import { workspaceSecretsCapability } from "./workspace_secrets";
 
 export const CAPABILITIES: Capability[] = [
   identityCapability,
@@ -34,6 +39,11 @@ export const CAPABILITIES: Capability[] = [
   workflowTrackingCapability,
   widgetsCapability,
   integrationsCapability,
+  turnDetectionCapability,
+  asrCapability,
+  conversationFlowCapability,
+  batchCallingCapability,
+  workspaceSecretsCapability,
 ];
 
 /** Build the initial config_cache by merging every capability's default slice. */

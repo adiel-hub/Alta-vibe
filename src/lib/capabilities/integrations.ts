@@ -58,12 +58,7 @@ export const integrationsCapability: Capability = {
             (t) => !toolNamesToRemove.has(t.name) && t.provider !== provider,
           );
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tools: remainingTools.map((t) => ({
-              id: t.id,
-              name: t.name,
-              type: t.type,
-              description: t.description,
-            })),
+            tool_ids: remainingTools.map((t) => t.id),
           });
           return {
             patch: {

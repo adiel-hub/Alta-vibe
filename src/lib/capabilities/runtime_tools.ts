@@ -63,12 +63,7 @@ export const runtimeToolsCapability: Capability = {
           };
           const next = [...ctx.config.tools, entry];
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tools: next.map((t) => ({
-              id: t.id,
-              name: t.name,
-              type: t.type,
-              description: t.description,
-            })),
+            tool_ids: next.map((t) => t.id),
           });
           return {
             patch: { tools: next },
@@ -88,12 +83,7 @@ export const runtimeToolsCapability: Capability = {
           }
           const next = ctx.config.tools.filter((t) => t.id !== tool_id);
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tools: next.map((t) => ({
-              id: t.id,
-              name: t.name,
-              type: t.type,
-              description: t.description,
-            })),
+            tool_ids: next.map((t) => t.id),
           });
           await deleteRuntimeTool(tool_id).catch(() => {});
           return { patch: { tools: next }, summary: `Removed runtime tool.` };

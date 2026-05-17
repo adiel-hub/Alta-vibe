@@ -91,12 +91,7 @@ export async function registerProviderForAgent(
   ];
 
   await patchAgent(agent.elevenlabs_agent_id, {
-    tools: nextTools.map((t) => ({
-      id: t.id,
-      name: t.name,
-      type: t.type,
-      description: t.description,
-    })),
+    tool_ids: nextTools.map((t) => t.id),
   });
 
   await agents.updateOne(

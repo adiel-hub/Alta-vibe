@@ -48,12 +48,7 @@ export const workflowTrackingCapability: Capability = {
           };
           const next = [...ctx.config.tools, entry];
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tools: next.map((t) => ({
-              id: t.id,
-              name: t.name,
-              type: t.type,
-              description: t.description,
-            })),
+            tool_ids: next.map((t) => t.id),
           });
           return {
             patch: { tools: next },

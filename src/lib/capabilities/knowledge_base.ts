@@ -4,8 +4,12 @@ import {
   createKbFromText,
   createKbFromUrl,
   deleteKbDocument,
+  getKbDependentAgents,
   patchAgent,
+  ragIndexKbDocument,
+  refreshKbDocument,
   renameKbDocument,
+  searchKnowledgeBase,
 } from "@/lib/elevenlabs/client";
 import { crawlSite, scrapePage } from "@/lib/firecrawl/client";
 import type { KnowledgeBaseDocument } from "@/types/agent";
@@ -178,6 +182,82 @@ export const knowledgeBaseCapability: Capability = {
             summary: `Renamed document to "${name}".`,
           };
         }),
+    ),
+
+    tool(
+      "refresh_knowledge_base_document",
+      "Re-fetch a URL-based document from its source and re-index. Useful when upstream content changes (docs updates, FAQ edits, etc.).",
+      { document_id: z.string().min(1) },
+      async ({ document_id }) =>
+        runToolStep(ctx, "knowledge_base", "refresh_kb_doc", async () => {
+          await refreshKbDocument(document_id);
+          return { patch: {}, summary: "Document refreshed from source." };
+        }),
+    ),
+
+    tool(
+      "rag_index_knowledge_base_document",
+      "Force a fresh RAG index pass on a document. Documents are auto-indexed on add, but call this if you've tuned the embedding model or noticed missed retrievals.",
+      {
+        document_id: z.string().min(1),
+        embedding_model: z.string().optional(),
+      },
+      async ({ document_id, embedding_model }) =>
+        runToolStep(ctx, "knowledge_base", "rag_index_kb_doc", async () => {
+          await ragIndexKbDocument(document_id, embedding_model);
+          return { patch: {}, summary: "Document re-indexed for RAG." };
+        }),
+    ),
+
+    tool(
+      "search_knowledge_base",
+      "Run a semantic search across the knowledge base. Returns the top matching chunks with document name, content, and similarity score. Use this to verify whether a topic is covered before the user asks.",
+      {
+        query: z.string().min(2).max(500),
+        top_k: z.number().int().min(1).max(20).default(5),
+      },
+      async ({ query, top_k }) => {
+        try {
+          const result = await searchKnowledgeBase({
+            query,
+            agent_id: ctx.elevenlabs_agent_id,
+            top_k,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(result) }],
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          return {
+            content: [
+              { type: "text" as const, text: `search_knowledge_base failed: ${message}` },
+            ],
+            isError: true,
+          };
+        }
+      },
+    ),
+
+    tool(
+      "list_kb_document_dependent_agents",
+      "Before removing a document, see which other agents in the workspace also use it. Returns a list of dependent agent ids.",
+      { document_id: z.string().min(1) },
+      async ({ document_id }) => {
+        try {
+          const deps = await getKbDependentAgents(document_id);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(deps) }],
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          return {
+            content: [
+              { type: "text" as const, text: `list_kb_dependent_agents failed: ${message}` },
+            ],
+            isError: true,
+          };
+        }
+      },
     ),
   ],
 };
