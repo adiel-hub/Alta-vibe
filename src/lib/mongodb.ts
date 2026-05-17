@@ -1,5 +1,9 @@
 import { MongoClient, type Db, type Collection } from "mongodb";
-import type { AgentDocument, ChatMessageDocument } from "@/types/agent";
+import type {
+  AgentDocument,
+  ChatMessageDocument,
+  TurnJobDocument,
+} from "@/types/agent";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -40,6 +44,12 @@ export async function getDb(): Promise<Db> {
       db
         .collection<ChatMessageDocument>("chat_messages")
         .createIndex({ agent_id: 1, created_at: 1 }),
+      db
+        .collection<TurnJobDocument>("turn_jobs")
+        .createIndex({ agent_id: 1, started_at: -1 }),
+      db
+        .collection<TurnJobDocument>("turn_jobs")
+        .createIndex({ status: 1, started_at: -1 }),
     ]);
     globalThis.__altaVibeIndexesEnsured = true;
   }
@@ -52,4 +62,8 @@ export async function agentsCol(): Promise<Collection<AgentDocument>> {
 
 export async function messagesCol(): Promise<Collection<ChatMessageDocument>> {
   return (await getDb()).collection<ChatMessageDocument>("chat_messages");
+}
+
+export async function turnJobsCol(): Promise<Collection<TurnJobDocument>> {
+  return (await getDb()).collection<TurnJobDocument>("turn_jobs");
 }

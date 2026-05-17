@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Alta-Vibe",
-  description: "Vibe-code your ElevenLabs voice agent in plain English.",
+  title: "Alta",
+  description: "Build a voice agent by chat.",
 };
 
 export default function RootLayout({

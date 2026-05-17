@@ -2,16 +2,40 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
-import { streamChat } from "@/store/sseClient";
+import { attachToTurn, sendMessage } from "@/store/sseClient";
+import { appFetch } from "@/lib/apiClient";
 import type { ContentBlock } from "@/types/agent";
 
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
   const streaming = useAgentStore((s) => s.streaming);
+  const activeJobId = useAgentStore((s) => s.activeJobId);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  // Resume in-progress turn after page refresh.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await appFetch(`/api/agents/${agentId}/turns/active`);
+        if (!res.ok) return;
+        const json = (await res.json()) as { active: { id: string } | null };
+        if (cancelled || !json.active) return;
+        setSending(true);
+        await attachToTurn(agentId, json.active.id, 0);
+      } catch {
+        // swallow; user can send a new message
+      } finally {
+        setSending(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   useEffect(() => {
     if (scrollerRef.current) {
@@ -26,7 +50,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
     setSending(true);
     setError(null);
     try {
-      await streamChat(agentId, text);
+      await sendMessage(agentId, text);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Stream failed");
     } finally {
@@ -38,19 +62,27 @@ export function ChatPanel({ agentId }: { agentId: string }) {
     <div className="flex h-full flex-col">
       <header className="border-b border-(--color-border) px-5 py-4">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-(--color-muted)">
-          Builder Chat
+          Alta · Builder chat
         </h2>
         <p className="text-xs text-(--color-muted)">
-          Tell Claude what to change. The right panel updates as ElevenLabs confirms.
+          Tell Alta what to build. Anything you can do in the panel, you can ask for here.
+          {activeJobId && (
+            <span className="ml-2 text-(--color-accent)">working…</span>
+          )}
         </p>
       </header>
 
       <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
         {turns.length === 0 && !streaming && (
-          <div className="text-sm text-(--color-muted)">
-            Try: <span className="italic">&quot;Change the voice to something calm.&quot;</span>
-            <br />
-            Or: <span className="italic">&quot;Add https://docs.example.com to the knowledge base.&quot;</span>
+          <div className="text-sm text-(--color-muted) space-y-1">
+            <p>Try one of:</p>
+            <ul className="list-disc pl-5 space-y-1">
+              <li className="italic">&quot;Use a calm female voice and slow her down a bit.&quot;</li>
+              <li className="italic">&quot;Crawl https://docs.example.com (limit 12) into the knowledge base.&quot;</li>
+              <li className="italic">&quot;Create an in-call tool that looks up an order by id via POST to https://api.example.com/orders/lookup.&quot;</li>
+              <li className="italic">&quot;Extract order_number and resolved (boolean) from every call.&quot;</li>
+              <li className="italic">&quot;Place an outbound test call to +1 555-123-4567.&quot;</li>
+            </ul>
           </div>
         )}
         {turns.map((turn) => (
@@ -138,7 +170,7 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
   if (block.type === "tool_use") {
     return (
       <div className="rounded-lg border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 font-mono text-xs">
-        <div className="text-(--color-muted)">→ {block.name}()</div>
+        <div className="text-(--color-muted)">→ {humanToolName(block.name)}</div>
         <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
           {JSON.stringify(block.input, null, 2)}
         </pre>
@@ -146,6 +178,14 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
     );
   }
   if (block.type === "tool_result") {
+    const text =
+      typeof block.output === "string"
+        ? block.output
+        : Array.isArray(block.output)
+          ? (block.output as Array<{ type?: string; text?: string }>)
+              .map((b) => b.text ?? "")
+              .join("")
+          : JSON.stringify(block.output);
     return (
       <div
         className={`rounded-lg border px-3 py-2 font-mono text-xs ${
@@ -154,14 +194,18 @@ function ContentBlockView({ block }: { block: ContentBlock }) {
             : "border-(--color-success)/40 bg-(--color-success)/10"
         }`}
       >
-        <div className="text-(--color-muted)">{block.is_error ? "✖ error" : "✓ result"}</div>
+        <div className="text-(--color-muted)">{block.is_error ? "✖ error" : "✓ done"}</div>
         <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[11px]">
-          {typeof block.output === "string"
-            ? block.output
-            : JSON.stringify(block.output, null, 2)}
+          {text.slice(0, 1200)}
+          {text.length > 1200 ? "…" : ""}
         </pre>
       </div>
     );
   }
   return null;
+}
+
+function humanToolName(raw: string): string {
+  const t = raw.replace(/^mcp__alta__/, "").replace(/_/g, " ");
+  return t.charAt(0).toUpperCase() + t.slice(1);
 }

@@ -4,7 +4,6 @@ import { create } from "zustand";
 import type {
   AgentConfigCache,
   AgentDTO,
-  ChatMessageDTO,
   ContentBlock,
 } from "@/types/agent";
 
@@ -16,7 +15,11 @@ export type SectionKey =
   | "llm"
   | "knowledge_base"
   | "tools"
-  | "mcp";
+  | "mcp"
+  | "data"
+  | "evaluation"
+  | "phone"
+  | "limits";
 
 export type ChatTurn = {
   id: string;
@@ -32,11 +35,15 @@ type State = {
   errors: Record<string, string>;
   turns: ChatTurn[];
   streaming: { id: string; text: string } | null;
+  activeJobId: string | null;
+  activeAssistantTurnId: string | null;
+  lastSeq: number;
 };
 
 type Actions = {
   hydrate: (agent: AgentDTO, turns: ChatTurn[]) => void;
   applyPatch: (revision: number, patch: Partial<AgentConfigCache>) => void;
+  applyConfigDirect: (patch: Partial<AgentConfigCache>, revision: number) => void;
   setInFlight: (section: SectionKey, busy: boolean) => void;
   setError: (section: string, message: string | null) => void;
   appendUserTurn: (id: string, text: string) => void;
@@ -54,21 +61,8 @@ type Actions = {
     isError?: boolean,
   ) => void;
   finalizeAssistantTurn: () => void;
-};
-
-export const SECTION_FOR_TOOL: Record<string, SectionKey> = {
-  update_agent_name: "name",
-  update_system_prompt: "system_prompt",
-  update_first_message: "first_message",
-  list_available_voices: "voice",
-  update_voice: "voice",
-  update_llm_settings: "llm",
-  add_knowledge_base_url: "knowledge_base",
-  remove_knowledge_base_document: "knowledge_base",
-  add_runtime_webhook_tool: "tools",
-  remove_runtime_tool: "tools",
-  add_mcp_integration: "mcp",
-  remove_mcp_integration: "mcp",
+  setActiveTurn: (jobId: string | null, assistantTurnId: string | null) => void;
+  setLastSeq: (seq: number) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -79,6 +73,9 @@ export const useAgentStore = create<State & Actions>((set) => ({
   errors: {},
   turns: [],
   streaming: null,
+  activeJobId: null,
+  activeAssistantTurnId: null,
+  lastSeq: -1,
 
   hydrate: (agent, turns) =>
     set({
@@ -89,6 +86,9 @@ export const useAgentStore = create<State & Actions>((set) => ({
       streaming: null,
       inFlight: new Set(),
       errors: {},
+      activeJobId: null,
+      activeAssistantTurnId: null,
+      lastSeq: -1,
     }),
 
   applyPatch: (revision, patch) =>
@@ -97,6 +97,13 @@ export const useAgentStore = create<State & Actions>((set) => ({
       if (revision <= s.revision) return s;
       const merged: AgentConfigCache = { ...s.config, ...patch };
       return { config: merged, revision };
+    }),
+
+  applyConfigDirect: (patch, revision) =>
+    set((s) => {
+      if (!s.config) return s;
+      const merged: AgentConfigCache = { ...s.config, ...patch };
+      return { config: merged, revision: Math.max(s.revision, revision) };
     }),
 
   setInFlight: (section, busy) =>
@@ -200,4 +207,13 @@ export const useAgentStore = create<State & Actions>((set) => ({
       turns[idx] = next;
       return { streaming: null, turns };
     }),
+
+  setActiveTurn: (jobId, assistantTurnId) =>
+    set({
+      activeJobId: jobId,
+      activeAssistantTurnId: assistantTurnId,
+      lastSeq: jobId ? 0 : -1,
+    }),
+
+  setLastSeq: (seq) => set({ lastSeq: seq }),
 }));

@@ -56,7 +56,7 @@ export function DescribeAgentForm() {
       )}
       <div className="flex items-center justify-between">
         <p className="text-sm text-(--color-muted)">
-          We&apos;ll create a starter agent on ElevenLabs you can shape from here.
+          We&apos;ll spin up a starter agent you can shape from here.
         </p>
         <button
           type="submit"

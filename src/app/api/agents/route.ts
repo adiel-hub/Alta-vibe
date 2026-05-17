@@ -4,7 +4,11 @@ import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol } from "@/lib/mongodb";
 import { createAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import { seedAgentFromDescription } from "@/lib/seedAgent";
-import type { AgentConfigCache, AgentDocument } from "@/types/agent";
+import {
+  DEFAULT_VOICE_SETTINGS,
+  type AgentConfigCache,
+  type AgentDocument,
+} from "@/types/agent";
 
 export const runtime = "nodejs";
 
@@ -31,11 +35,18 @@ export async function POST(req: NextRequest) {
       first_message: seed.first_message,
       system_prompt: seed.system_prompt,
       voice_id: seed.voice_id,
+      voice_settings: { ...DEFAULT_VOICE_SETTINGS },
+      tts_model: "eleven_turbo_v2_5",
+      language: "en",
       llm: "gemini-2.0-flash",
       temperature: 0.5,
+      max_duration_seconds: 600,
       knowledge_base: [],
       tools: [],
       mcp_servers: [],
+      data_collection: [],
+      evaluation_criteria: [],
+      phone_numbers: [],
     };
 
     const now = new Date();

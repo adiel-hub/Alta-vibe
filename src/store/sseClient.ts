@@ -2,35 +2,76 @@
 
 import { nanoid } from "nanoid";
 import type { SSEEvent } from "@/types/agent";
-import { SECTION_FOR_TOOL, useAgentStore } from "./agentStore";
+import {
+  useAgentStore,
+  type SectionKey,
+} from "./agentStore";
+import { appFetch } from "@/lib/apiClient";
 
 /**
- * POSTs the user message to the chat SSE endpoint and dispatches every parsed
- * event into the Zustand store. Resolves when the stream finishes.
+ * Send a user message. Backend immediately persists the user turn + creates a
+ * turn_job, then starts background processing. We attach to the turn's SSE
+ * stream and drive the store from its events. If the user refreshes mid-turn,
+ * the page can call `attachToTurn(jobId, since)` to rejoin from any seq.
  */
-export async function streamChat(agentId: string, userText: string): Promise<void> {
+export async function sendMessage(agentId: string, userText: string): Promise<string> {
   const store = useAgentStore.getState();
   const userTurnId = nanoid();
   const assistantTurnId = nanoid();
   store.appendUserTurn(userTurnId, userText);
   store.appendAssistantDelta(assistantTurnId, "");
 
-  const secret = process.env.NEXT_PUBLIC_APP_SHARED_SECRET;
-  const res = await fetch(`/api/agents/${agentId}/chat`, {
+  const res = await appFetch(`/api/agents/${agentId}/chat`, {
     method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(secret ? { "x-app-secret": secret } : {}),
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ text: userText }),
   });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `Chat request failed (${res.status})`);
+  }
+  const { jobId } = (await res.json()) as { jobId: string };
+  store.setActiveTurn(jobId, assistantTurnId);
+  // Detached attach — caller awaits separately if needed
+  void attachToTurn(agentId, jobId, 0, assistantTurnId);
+  return jobId;
+}
+
+/**
+ * Attach to (or re-attach to) a turn's SSE stream. Replays events from `since`,
+ * then tails until the turn finishes. Idempotent w.r.t. seq because the server
+ * stamps event ids and we only forward events we haven't seen.
+ */
+export async function attachToTurn(
+  agentId: string,
+  jobId: string,
+  since: number,
+  assistantTurnIdOverride?: string,
+): Promise<void> {
+  const store = useAgentStore.getState();
+  let assistantTurnId = assistantTurnIdOverride ?? store.activeAssistantTurnId;
+  if (!assistantTurnId) {
+    assistantTurnId = nanoid();
+    store.appendAssistantDelta(assistantTurnId, "");
+  }
+  store.setActiveTurn(jobId, assistantTurnId);
+
+  const secret = process.env.NEXT_PUBLIC_APP_SHARED_SECRET;
+  const res = await fetch(
+    `/api/agents/${agentId}/turns/${jobId}/stream?since=${since}`,
+    {
+      headers: secret ? { "x-app-secret": secret } : undefined,
+    },
+  );
   if (!res.ok || !res.body) {
-    throw new Error(`Chat stream failed (${res.status})`);
+    store.setActiveTurn(null, null);
+    throw new Error(`Stream failed (${res.status})`);
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
+  let lastSeq = since - 1;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -40,31 +81,41 @@ export async function streamChat(agentId: string, userText: string): Promise<voi
     while ((idx = buf.indexOf("\n\n")) !== -1) {
       const block = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
-      handleBlock(assistantTurnId, block);
+      const parsed = parseBlock(block);
+      if (parsed && parsed.seq > lastSeq) {
+        handleEvent(assistantTurnId, parsed.event);
+        lastSeq = parsed.seq;
+        useAgentStore.getState().setLastSeq(lastSeq);
+      }
     }
   }
   useAgentStore.getState().finalizeAssistantTurn();
+  useAgentStore.getState().setActiveTurn(null, null);
 }
 
-function handleBlock(assistantTurnId: string, block: string) {
+function parseBlock(block: string): { seq: number; event: SSEEvent } | null {
+  let seq = -1;
   let data = "";
   for (const line of block.split("\n")) {
-    if (line.startsWith("data:")) data += line.slice(5).trim();
+    if (line.startsWith("id:")) seq = Number(line.slice(3).trim());
+    else if (line.startsWith("data:")) data += line.slice(5).trim();
   }
-  if (!data) return;
-  let event: SSEEvent;
+  if (!data || seq < 0) return null;
   try {
-    event = JSON.parse(data) as SSEEvent;
+    return { seq, event: JSON.parse(data) as SSEEvent };
   } catch {
-    return;
+    return null;
   }
+}
+
+function handleEvent(assistantTurnId: string, event: SSEEvent): void {
   const s = useAgentStore.getState();
   switch (event.type) {
     case "assistant_delta":
       s.appendAssistantDelta(assistantTurnId, event.text);
       break;
     case "tool_call_start": {
-      const section = SECTION_FOR_TOOL[event.name];
+      const section = sectionForTool(event.name);
       if (section) s.setInFlight(section, true);
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
       break;
@@ -79,9 +130,8 @@ function handleBlock(assistantTurnId: string, block: string) {
       break;
     case "state_patch":
       s.applyPatch(event.revision, event.patch);
-      // best-effort: clear in-flight for sections touched by this patch
       for (const key of Object.keys(event.patch)) {
-        const section = mapPatchKeyToSection(key);
+        const section = sectionForPatchKey(key);
         if (section) s.setInFlight(section, false);
       }
       break;
@@ -89,17 +139,33 @@ function handleBlock(assistantTurnId: string, block: string) {
       s.setError(event.section, event.message);
       break;
     case "turn_aborted":
+      for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       break;
     case "turn_done":
-      // clear any stuck in-flight markers
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       break;
   }
 }
 
-import type { SectionKey } from "./agentStore";
+function sectionForTool(toolName: string): SectionKey | null {
+  const t = toolName.replace(/^mcp__alta__/, "");
+  if (t.includes("voice") || t === "list_available_voices") return "voice";
+  if (t.includes("language") || t.includes("tts_model")) return "voice";
+  if (t.includes("llm") || t.includes("temperature")) return "llm";
+  if (t.includes("knowledge_base") || t.includes("scrape")) return "knowledge_base";
+  if (t.includes("data_collection")) return "data";
+  if (t.includes("evaluation")) return "evaluation";
+  if (t.includes("phone") || t.includes("outbound_call")) return "phone";
+  if (t.includes("mcp")) return "mcp";
+  if (t.includes("tool")) return "tools";
+  if (t.includes("name")) return "name";
+  if (t.includes("first_message")) return "first_message";
+  if (t.includes("system_prompt")) return "system_prompt";
+  if (t.includes("max_duration")) return "limits";
+  return null;
+}
 
-function mapPatchKeyToSection(key: string): SectionKey | null {
+function sectionForPatchKey(key: string): SectionKey | null {
   switch (key) {
     case "name":
       return "name";
@@ -108,6 +174,9 @@ function mapPatchKeyToSection(key: string): SectionKey | null {
     case "first_message":
       return "first_message";
     case "voice_id":
+    case "voice_settings":
+    case "tts_model":
+    case "language":
       return "voice";
     case "llm":
     case "temperature":
@@ -118,6 +187,14 @@ function mapPatchKeyToSection(key: string): SectionKey | null {
       return "tools";
     case "mcp_servers":
       return "mcp";
+    case "data_collection":
+      return "data";
+    case "evaluation_criteria":
+      return "evaluation";
+    case "phone_numbers":
+      return "phone";
+    case "max_duration_seconds":
+      return "limits";
     default:
       return null;
   }
