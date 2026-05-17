@@ -8,30 +8,22 @@ import type {
   WorkflowNodeType,
 } from "@/types/agent";
 
-const NODE_W = 200;
-const NODE_H = 60;
+const NODE_W = 260;
+const NODE_H = 96;
 const COL_GAP = 32;
-const ROW_GAP = 64;
+const ROW_GAP = 76;
 const PADDING = 32;
 
-const TYPE_LABEL: Record<WorkflowNodeType, string> = {
-  start: "start",
-  speak: "say",
-  collect: "ask",
-  condition: "router",
-  tool_call: "tool",
-  transfer: "transfer",
-  end: "end",
+/** Per-node glyph rendered inside the small circular badge on the card. */
+const ICON: Record<WorkflowNodeType, string> = {
+  start: "⚑",
+  speak: "🙂",
+  collect: "❓",
+  condition: "⤳",
+  tool_call: "🔧",
+  transfer: "↪",
+  end: "✕",
 };
-
-const LEGEND: Array<{ kind: WorkflowNodeType; color: string; label: string }> = [
-  { kind: "speak", color: "var(--color-indigo-500)", label: "Say" },
-  { kind: "collect", color: "var(--color-violet-500)", label: "Ask" },
-  { kind: "condition", color: "var(--color-orange-600)", label: "Router" },
-  { kind: "tool_call", color: "var(--color-green-alta)", label: "Tool" },
-  { kind: "transfer", color: "var(--color-amber-500)", label: "Transfer" },
-  { kind: "end", color: "var(--color-muted)", label: "End" },
-];
 
 /**
  * BFS top-down layout: depth → row, sibling-in-depth → column.
@@ -71,35 +63,35 @@ function layout(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
   }
   for (const n of nodes) if (!depth.has(n.id)) depth.set(n.id, 0);
 
-  // Left-to-right: depth → column (x), sibling-in-depth → row (y).
-  const columns = new Map<number, string[]>();
+  // Top-down: depth → row (y), sibling-in-depth → column (x).
+  const rows = new Map<number, string[]>();
   for (const n of nodes) {
     const d = depth.get(n.id) ?? 0;
-    const col = columns.get(d) ?? [];
-    col.push(n.id);
-    columns.set(d, col);
+    const row = rows.get(d) ?? [];
+    row.push(n.id);
+    rows.set(d, row);
   }
 
-  const tallest = Math.max(
+  const widest = Math.max(
     1,
-    ...Array.from(columns.values()).map((arr) => arr.length),
+    ...Array.from(rows.values()).map((arr) => arr.length),
   );
-  const stageHeight = PADDING * 2 + tallest * NODE_H + (tallest - 1) * ROW_GAP;
+  const stageWidth = PADDING * 2 + widest * NODE_W + (widest - 1) * COL_GAP;
 
   const positions = new Map<string, { x: number; y: number }>();
-  for (const [colIdx, ids] of columns) {
-    const totalH = ids.length * NODE_H + (ids.length - 1) * ROW_GAP;
-    const startY = (stageHeight - totalH) / 2;
+  for (const [rowIdx, ids] of rows) {
+    const totalW = ids.length * NODE_W + (ids.length - 1) * COL_GAP;
+    const startX = (stageWidth - totalW) / 2;
     ids.forEach((id, sib) => {
       positions.set(id, {
-        x: PADDING + colIdx * (NODE_W + COL_GAP),
-        y: startY + sib * (NODE_H + ROW_GAP),
+        x: startX + sib * (NODE_W + COL_GAP),
+        y: PADDING + rowIdx * (NODE_H + ROW_GAP),
       });
     });
   }
 
-  const maxCol = Math.max(0, ...Array.from(columns.keys()));
-  const stageWidth = PADDING * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP;
+  const maxRow = Math.max(0, ...Array.from(rows.keys()));
+  const stageHeight = PADDING * 2 + (maxRow + 1) * NODE_H + maxRow * ROW_GAP;
   return { positions, width: stageWidth, height: stageHeight };
 }
 
@@ -251,54 +243,67 @@ export function WorkflowTab() {
   };
 
   return (
-    <div className="grid h-full grid-rows-[auto_1fr] bg-(--color-panel-sunken)">
-      {/* Toolbar */}
-      <div className="vb-flow-toolbar">
-        <span className="vb-flow-title">Conversation workflow</span>
-        <span className="vb-flow-meta">
-          {workflow.nodes.length} nodes · {workflow.edges.length} edges
-        </span>
-        <span style={{ flex: 1 }} />
-        <div className="vb-flow-legend hidden md:flex">
-          {LEGEND.map((l) => (
-            <span key={l.kind}>
-              <i style={{ background: l.color }} /> {l.label}
-            </span>
-          ))}
-        </div>
-        <span className="vb-flow-sep" />
+    <div className="relative h-full bg-(--color-panel-sunken)">
+      {/* Floating toolbar — top-left of canvas, ElevenLabs-style icon bar */}
+      <div className="vb-el-toolbar">
         <button
-          className="vb-flow-iconbtn"
-          title="Zoom out"
-          onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
-        >
-          −
-        </button>
-        <span className="vb-flow-zoom">{Math.round(zoom * 100)}%</span>
-        <button
-          className="vb-flow-iconbtn"
+          className="vb-el-toolbtn"
           title="Zoom in"
           onClick={() => setZoom((z) => Math.min(2, +(z + 0.1).toFixed(2)))}
+          aria-label="Zoom in"
         >
-          +
+          <IconZoomIn />
         </button>
         <button
-          className="vb-flow-iconbtn"
+          className="vb-el-toolbtn"
+          title="Zoom out"
+          onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.1).toFixed(2)))}
+          aria-label="Zoom out"
+        >
+          <IconZoomOut />
+        </button>
+        <button
+          className="vb-el-toolbtn"
           title="Fit"
           onClick={() => {
             setZoom(1);
             setPan({ x: 0, y: 0 });
           }}
+          aria-label="Fit to screen"
         >
-          ⛶
+          <IconFit />
+        </button>
+        <span className="vb-el-sep" />
+        <button
+          className="vb-el-toolbtn"
+          title="Group selected"
+          aria-label="Group selected"
+          disabled
+        >
+          <IconGroup />
+        </button>
+        <button
+          className="vb-el-toolbtn"
+          title="Duplicate"
+          aria-label="Duplicate"
+          disabled
+        >
+          <IconCopy />
+        </button>
+        <span className="vb-el-sep" />
+        <button
+          className="vb-el-toolbtn vb-el-toolbtn-wide"
+          title="Templates"
+          aria-label="Templates"
+          disabled
+        >
+          <IconTemplates />
+          <span>Templates</span>
         </button>
         {inFlight.has("workflow") && (
-          <>
-            <span className="vb-flow-sep" />
-            <span className="font-mono text-[10px] tracking-widest text-(--color-violet-600)">
-              BUILDING…
-            </span>
-          </>
+          <span className="ml-3 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
+            BUILDING…
+          </span>
         )}
       </div>
 
@@ -310,7 +315,8 @@ export function WorkflowTab() {
           cursor: "grab",
           touchAction: "none",
           overflow: "hidden",
-          position: "relative",
+          position: "absolute",
+          inset: 0,
         }}
         onPointerDown={onCanvasPointerDown}
         onPointerMove={onCanvasPointerMove}
@@ -376,12 +382,13 @@ export function WorkflowTab() {
                 const a = laid.positions.get(e.from);
                 const b = laid.positions.get(e.to);
                 if (!a || !b) return null;
-                const x1 = a.x + NODE_W;
-                const y1 = a.y + NODE_H / 2;
-                const x2 = b.x;
-                const y2 = b.y + NODE_H / 2;
-                const midX = (x1 + x2) / 2;
-                const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
+                // Top-down: from bottom-center of `a` to top-center of `b`.
+                const x1 = a.x + NODE_W / 2;
+                const y1 = a.y + NODE_H;
+                const x2 = b.x + NODE_W / 2;
+                const y2 = b.y;
+                const midY = (y1 + y2) / 2;
+                const path = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
                 const isLit =
                   selectedId !== null &&
                   (e.from === selectedId || e.to === selectedId);
@@ -399,15 +406,18 @@ export function WorkflowTab() {
                       markerEnd={`url(#${isLit ? "vb-arrow-lit" : "vb-arrow"})`}
                     />
                     {e.label && (
-                      <text
-                        x={midX}
-                        y={(y1 + y2) / 2 - 6}
-                        fontSize={10}
-                        fill="var(--color-muted)"
-                        fontFamily="var(--font-mono)"
+                      <foreignObject
+                        x={(x1 + x2) / 2 - 90}
+                        y={midY - 12}
+                        width={180}
+                        height={24}
+                        style={{ overflow: "visible" }}
                       >
-                        {e.label}
-                      </text>
+                        <div className="vb-edge-pill">
+                          <span aria-hidden>↳</span>
+                          {e.label}
+                        </div>
+                      </foreignObject>
                     )}
                   </g>
                 );
@@ -419,30 +429,50 @@ export function WorkflowTab() {
               if (!p) return null;
               const isSel = n.id === selectedId;
               const isLive = liveNodeId === n.id;
+              // Pull a short description out of node.data — varies by type.
+              const desc =
+                (n.data?.prompt as string | undefined) ??
+                (n.data?.instruction as string | undefined) ??
+                (n.data?.field as string | undefined) ??
+                (n.data?.expression as string | undefined) ??
+                "";
+              const isTerminal = n.type === "start" || n.type === "end";
               return (
                 <button
                   key={n.id}
                   type="button"
                   onPointerDown={(e) => onNodePointerDown(e, n.id)}
                   onClick={(e) => onNodeClick(e, n.id)}
-                  className={`vb-node ${isSel ? "selected" : ""} ${
-                    isLive ? "lit-now" : ""
+                  className={`vb-el-node vb-el-${n.type} ${
+                    isSel ? "selected" : ""
+                  } ${isLive ? "lit-now" : ""} ${
+                    isTerminal ? "vb-el-terminal" : ""
                   }`}
                   style={{
                     position: "absolute",
                     left: p.x,
                     top: p.y,
-                    width: NODE_W,
+                    width: isTerminal ? 120 : NODE_W,
                     textAlign: "left",
                     cursor: "grab",
                     touchAction: "none",
+                    // Re-center terminal nodes since they're narrower.
+                    transform: isTerminal
+                      ? `translateX(${(NODE_W - 120) / 2}px)`
+                      : undefined,
                   }}
                 >
-                  <div className={`kind ${n.type}`}>
-                    <i />
-                    {TYPE_LABEL[n.type]}
-                  </div>
-                  <div className="label">{n.label}</div>
+                  <span className={`vb-el-icon vb-el-icon-${n.type}`} aria-hidden>
+                    {ICON[n.type]}
+                  </span>
+                  {isTerminal ? (
+                    <span className="vb-el-terminal-label">{n.label}</span>
+                  ) : (
+                    <div className="vb-el-body">
+                      <div className="vb-el-title">{n.label}</div>
+                      {desc && <div className="vb-el-desc">{desc}</div>}
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -451,6 +481,78 @@ export function WorkflowTab() {
         )}
       </div>
     </div>
+  );
+}
+
+// ── Inline SVG icons, sized to fit the 14px toolbar slot. ────────────────
+const ICON_PROPS = {
+  width: 14,
+  height: 14,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  "aria-hidden": true,
+} as const;
+
+function IconZoomIn() {
+  return (
+    <svg {...ICON_PROPS}>
+      <circle cx={11} cy={11} r={7} />
+      <line x1={21} y1={21} x2={16.65} y2={16.65} />
+      <line x1={11} y1={8} x2={11} y2={14} />
+      <line x1={8} y1={11} x2={14} y2={11} />
+    </svg>
+  );
+}
+function IconZoomOut() {
+  return (
+    <svg {...ICON_PROPS}>
+      <circle cx={11} cy={11} r={7} />
+      <line x1={21} y1={21} x2={16.65} y2={16.65} />
+      <line x1={8} y1={11} x2={14} y2={11} />
+    </svg>
+  );
+}
+function IconFit() {
+  return (
+    <svg {...ICON_PROPS}>
+      <polyline points="4 9 4 4 9 4" />
+      <polyline points="20 9 20 4 15 4" />
+      <polyline points="4 15 4 20 9 20" />
+      <polyline points="20 15 20 20 15 20" />
+    </svg>
+  );
+}
+function IconGroup() {
+  return (
+    <svg {...ICON_PROPS}>
+      <circle cx={6} cy={6} r={2} />
+      <circle cx={18} cy={6} r={2} />
+      <circle cx={12} cy={18} r={2} />
+      <path d="M6 8v2a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8" />
+      <line x1={12} y1={12} x2={12} y2={16} />
+    </svg>
+  );
+}
+function IconCopy() {
+  return (
+    <svg {...ICON_PROPS}>
+      <rect x={9} y={9} width={11} height={11} rx={2} />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+function IconTemplates() {
+  return (
+    <svg {...ICON_PROPS}>
+      <rect x={3} y={3} width={7} height={7} rx={1} />
+      <rect x={14} y={3} width={7} height={7} rx={1} />
+      <rect x={3} y={14} width={7} height={7} rx={1} />
+      <rect x={14} y={14} width={7} height={7} rx={1} />
+    </svg>
   );
 }
 

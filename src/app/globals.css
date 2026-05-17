@@ -975,6 +975,185 @@ textarea, input, select {
   font-size: 13px;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Workflow tab — ElevenLabs-style node cards, edge pills, floating toolbar
+   ────────────────────────────────────────────────────────────────────────── */
+
+.vb-el-toolbar {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+}
+.vb-el-toolbtn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  border-radius: 7px;
+  transition: background 0.15s, color 0.15s;
+}
+.vb-el-toolbtn:hover:not(:disabled) {
+  background: var(--color-panel-soft);
+  color: var(--color-foreground-strong);
+}
+.vb-el-toolbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.vb-el-toolbtn-wide {
+  width: auto;
+  padding: 0 10px;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+.vb-el-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--color-border);
+}
+
+/* Node card — ElevenLabs style: circular icon + title + description */
+.vb-el-node {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  box-shadow: var(--shadow-xs);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.vb-el-node:hover {
+  box-shadow: var(--shadow-sm);
+}
+.vb-el-node.selected {
+  border-color: var(--color-foreground-strong);
+  box-shadow:
+    0 0 0 3px rgba(17, 24, 39, 0.08),
+    var(--shadow-sm);
+}
+.vb-el-node.lit-now {
+  border-color: var(--color-violet-500);
+  box-shadow:
+    0 0 0 3px rgba(124, 58, 237, 0.2),
+    var(--shadow-sm);
+}
+.vb-el-icon {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  background: var(--color-panel-soft);
+  color: var(--color-foreground);
+  margin-top: 1px;
+}
+.vb-el-icon-start {
+  background: var(--color-panel-soft);
+  color: var(--color-foreground-strong);
+}
+.vb-el-icon-end {
+  background: rgba(220, 38, 38, 0.1);
+  color: var(--color-danger);
+}
+.vb-el-icon-speak {
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--color-indigo-700);
+}
+.vb-el-icon-collect {
+  background: var(--color-violet-100);
+  color: var(--color-violet-600);
+}
+.vb-el-icon-condition {
+  background: rgba(234, 88, 12, 0.1);
+  color: var(--color-orange-600);
+}
+.vb-el-icon-tool_call {
+  background: rgba(109, 165, 68, 0.12);
+  color: var(--color-green-alta);
+}
+.vb-el-icon-transfer {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--color-amber-500);
+}
+.vb-el-body {
+  min-width: 0;
+  flex: 1;
+}
+.vb-el-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-foreground-strong);
+  line-height: 1.3;
+}
+.vb-el-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-muted);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-wrap: pretty;
+}
+
+/* Terminal nodes (start, end) — narrower, single-line. */
+.vb-el-terminal {
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--color-panel);
+}
+.vb-el-terminal-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-foreground-strong);
+}
+
+/* Edge pill — dark rounded label rendered on top of an edge mid-point. */
+.vb-edge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--color-foreground-strong);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 999px;
+  line-height: 1.2;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
 /* Flow node (used by WorkflowTab). */
 .vb-node {
   background: var(--color-panel);
