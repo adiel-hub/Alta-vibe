@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: oklch(0.145 0 0);
+  --color-foreground: oklch(0.985 0 0);
+  --color-panel: oklch(0.205 0 0);
+  --color-panel-soft: oklch(0.235 0 0);
+  --color-border: oklch(0.32 0 0);
+  --color-accent: oklch(0.78 0.18 80);
+  --color-accent-foreground: oklch(0.145 0 0);
+  --color-muted: oklch(0.6 0 0);
+  --color-success: oklch(0.74 0.17 145);
+  --color-danger: oklch(0.65 0.22 27);
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+textarea,
+input {
+  font-family: inherit;
+}
