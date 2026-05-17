@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useAgentStore } from "@/store/agentStore";
 import { attachToTurn, sendMessage } from "@/store/sseClient";
 import { appFetch } from "@/lib/apiClient";
@@ -79,6 +80,27 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b border-(--color-border) px-4 py-3 animate-fade-in">
+        <Link
+          href="/"
+          aria-label="Back to home"
+          title="Back to home"
+          className="grid h-8 w-8 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+        </Link>
         <span className="grid h-7 w-7 place-items-center rounded-lg bg-(--color-violet-100) text-(--color-violet-600)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
             <path d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z" />
