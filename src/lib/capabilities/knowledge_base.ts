@@ -22,6 +22,25 @@ export const knowledgeBaseCapability: Capability = {
   defaultSlice: () => ({ knowledge_base: [] }),
   tools: (ctx) => [
     tool(
+      "read_website",
+      "Scrape a page and RETURN its text in the tool result — does NOT add it to the knowledge base. Use this early in a build to learn what a brand/product does so you can write a tailored Persona, Workflow, and (later) a curated KB document. For raw indexing prefer scrape_single_page_to_knowledge_base.",
+      { url: z.string().url(), max_chars: z.number().int().min(500).max(20_000).default(8_000) },
+      async ({ url, max_chars }) =>
+        runToolStep(ctx, "knowledge_base", "read_website", async () => {
+          const page = await scrapePage(url);
+          const text =
+            (page.markdown || page.title || "").trim().slice(0, max_chars) ||
+            "(empty page)";
+          return {
+            patch: {},
+            // Inline the scraped content into the summary so the agent sees
+            // it in its tool_result without us having to widen runToolStep.
+            summary: `Source: ${url}\n\n${text}`,
+          };
+        }),
+    ),
+
+    tool(
       "add_knowledge_base_url",
       "Index a single URL into the agent's knowledge base for RAG.",
       { url: z.string().url(), name: z.string().optional() },

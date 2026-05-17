@@ -16,6 +16,21 @@ const COL_GAP = 32;
 const ROW_GAP = 76;
 const PADDING = 32;
 
+/** Options offered in the "+" popup when adding a node below an existing one. */
+const ADD_NODE_MENU: Array<{
+  type: WorkflowNodeType;
+  label: string;
+  hint: string;
+  defaultLabel: string;
+}> = [
+  { type: "speak", label: "Say", hint: "Agent speaks a line.", defaultLabel: "Speak" },
+  { type: "collect", label: "Ask", hint: "Collect a field from the caller.", defaultLabel: "Collect" },
+  { type: "condition", label: "Router", hint: "Branch on a variable or rule.", defaultLabel: "Route" },
+  { type: "tool_call", label: "Tool", hint: "Run a runtime tool.", defaultLabel: "Tool call" },
+  { type: "transfer", label: "Transfer", hint: "Hand off to another agent or number.", defaultLabel: "Transfer" },
+  { type: "end", label: "End", hint: "End the call.", defaultLabel: "End call" },
+];
+
 /** Per-node glyph rendered inside the small circular badge on the card. */
 const ICON: Record<WorkflowNodeType, string> = {
   start: "⚑",
@@ -65,35 +80,35 @@ function layout(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
   }
   for (const n of nodes) if (!depth.has(n.id)) depth.set(n.id, 0);
 
-  // Top-down: depth → row (y), sibling-in-depth → column (x).
-  const rows = new Map<number, string[]>();
+  // Left-to-right: depth → column (x), sibling-in-depth → row (y).
+  const columns = new Map<number, string[]>();
   for (const n of nodes) {
     const d = depth.get(n.id) ?? 0;
-    const row = rows.get(d) ?? [];
-    row.push(n.id);
-    rows.set(d, row);
+    const col = columns.get(d) ?? [];
+    col.push(n.id);
+    columns.set(d, col);
   }
 
-  const widest = Math.max(
+  const tallest = Math.max(
     1,
-    ...Array.from(rows.values()).map((arr) => arr.length),
+    ...Array.from(columns.values()).map((arr) => arr.length),
   );
-  const stageWidth = PADDING * 2 + widest * NODE_W + (widest - 1) * COL_GAP;
+  const stageHeight = PADDING * 2 + tallest * NODE_H + (tallest - 1) * ROW_GAP;
 
   const positions = new Map<string, { x: number; y: number }>();
-  for (const [rowIdx, ids] of rows) {
-    const totalW = ids.length * NODE_W + (ids.length - 1) * COL_GAP;
-    const startX = (stageWidth - totalW) / 2;
+  for (const [colIdx, ids] of columns) {
+    const totalH = ids.length * NODE_H + (ids.length - 1) * ROW_GAP;
+    const startY = (stageHeight - totalH) / 2;
     ids.forEach((id, sib) => {
       positions.set(id, {
-        x: startX + sib * (NODE_W + COL_GAP),
-        y: PADDING + rowIdx * (NODE_H + ROW_GAP),
+        x: PADDING + colIdx * (NODE_W + COL_GAP),
+        y: startY + sib * (NODE_H + ROW_GAP),
       });
     });
   }
 
-  const maxRow = Math.max(0, ...Array.from(rows.keys()));
-  const stageHeight = PADDING * 2 + (maxRow + 1) * NODE_H + maxRow * ROW_GAP;
+  const maxCol = Math.max(0, ...Array.from(columns.keys()));
+  const stageWidth = PADDING * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP;
   return { positions, width: stageWidth, height: stageHeight };
 }
 
@@ -110,6 +125,10 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
 
   const [zoom, setZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** Which node currently has its "+ add child" popup open. */
+  const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
+  /** Per-node pending state (so we can grey out actions during PATCH). */
+  const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
 
   // Per-node position overrides set by the user dragging nodes around.
   // Local-only — Alta's next workflow patch (or a refresh) re-runs the
@@ -155,6 +174,18 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       setSelectedId(null);
     }
   }, [workflow, selectedId]);
+
+  // Close the "+ add child" popup when clicking outside.
+  useEffect(() => {
+    if (!addMenuFor) return;
+    const onDocDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(".vb-el-add-menu, .vb-el-plus")) return;
+      setAddMenuFor(null);
+    };
+    document.addEventListener("pointerdown", onDocDown);
+    return () => document.removeEventListener("pointerdown", onDocDown);
+  }, [addMenuFor]);
 
   // Center the graph in the viewport. Start at top-center; if the graph
   // grows taller than the viewport, anchor the bottom so new rows stay
@@ -264,6 +295,67 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       return;
     }
     setSelectedId(nodeId);
+  };
+
+  const applyConfigDirect = useAgentStore.getState().applyConfigDirect;
+
+  const addChildNode = async (
+    parentId: string,
+    type: WorkflowNodeType,
+    label: string,
+  ) => {
+    setPendingNodeId(parentId);
+    setAddMenuFor(null);
+    try {
+      const res = await appFetch(`/api/agents/${agentId}/workflow`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type, label, after_node_id: parentId }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error ?? `Add failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        revision: number;
+        patch: Partial<AgentConfigCache>;
+      };
+      applyConfigDirect(json.patch, json.revision);
+    } catch (err) {
+      // Quiet failure: surface via console for now; the panel inspector has
+      // a proper error UI but the inline action does not yet.
+      console.error("add node failed", err);
+    } finally {
+      setPendingNodeId(null);
+    }
+  };
+
+  const deleteNode = async (nodeId: string) => {
+    setPendingNodeId(nodeId);
+    try {
+      const res = await appFetch(
+        `/api/agents/${agentId}/workflow/${nodeId}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error ?? `Delete failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        revision: number;
+        patch: Partial<AgentConfigCache>;
+      };
+      applyConfigDirect(json.patch, json.revision);
+      if (selectedId === nodeId) setSelectedId(null);
+    } catch (err) {
+      console.error("delete node failed", err);
+    } finally {
+      setPendingNodeId(null);
+    }
   };
 
   return (
@@ -396,13 +488,13 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 const a = laid.positions.get(e.from);
                 const b = laid.positions.get(e.to);
                 if (!a || !b) return null;
-                // Top-down: from bottom-center of `a` to top-center of `b`.
-                const x1 = a.x + NODE_W / 2;
-                const y1 = a.y + NODE_H;
-                const x2 = b.x + NODE_W / 2;
-                const y2 = b.y;
-                const midY = (y1 + y2) / 2;
-                const path = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+                // Left-to-right: from right-center of `a` to left-center of `b`.
+                const x1 = a.x + NODE_W;
+                const y1 = a.y + NODE_H / 2;
+                const x2 = b.x;
+                const y2 = b.y + NODE_H / 2;
+                const midX = (x1 + x2) / 2;
+                const path = `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
                 const isLit =
                   selectedId !== null &&
                   (e.from === selectedId || e.to === selectedId);
@@ -421,8 +513,8 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     />
                     {e.label && (
                       <foreignObject
-                        x={(x1 + x2) / 2 - 90}
-                        y={midY - 12}
+                        x={midX - 90}
+                        y={(y1 + y2) / 2 - 12}
                         width={180}
                         height={24}
                         style={{ overflow: "visible" }}
@@ -443,7 +535,6 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
               if (!p) return null;
               const isSel = n.id === selectedId;
               const isLive = liveNodeId === n.id;
-              // Pull a short description out of node.data — varies by type.
               const desc =
                 (n.data?.prompt as string | undefined) ??
                 (n.data?.instruction as string | undefined) ??
@@ -451,45 +542,143 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 (n.data?.expression as string | undefined) ??
                 "";
               const isTerminal = n.type === "start" || n.type === "end";
+              const nodeWidth = isTerminal ? 120 : NODE_W;
+              const offsetX = isTerminal ? (NODE_W - 120) / 2 : 0;
+              const isPending = pendingNodeId === n.id;
+              const menuOpen = addMenuFor === n.id;
+              const canDelete = n.id !== "start";
               return (
-                <button
+                <div
                   key={n.id}
-                  type="button"
-                  onPointerDown={(e) => onNodePointerDown(e, n.id)}
-                  onClick={(e) => onNodeClick(e, n.id)}
-                  className={`vb-el-node vb-el-${n.type} ${
-                    isSel ? "selected" : ""
-                  } ${isLive ? "lit-now" : ""} ${
-                    isTerminal ? "vb-el-terminal" : ""
-                  }`}
+                  className="vb-el-node-wrap"
                   style={{
                     position: "absolute",
-                    left: p.x,
+                    left: p.x + offsetX,
                     top: p.y,
-                    width: isTerminal ? 120 : NODE_W,
-                    textAlign: "left",
-                    cursor: "grab",
-                    touchAction: "none",
-                    // Re-center terminal nodes since they're narrower.
-                    transform: isTerminal
-                      ? `translateX(${(NODE_W - 120) / 2}px)`
-                      : undefined,
+                    width: nodeWidth,
                   }}
                 >
-                  <span className={`vb-el-icon vb-el-icon-${n.type}`} aria-hidden>
-                    {ICON[n.type]}
-                  </span>
-                  {isTerminal ? (
-                    <span dir="auto" className="vb-el-terminal-label">{n.label}</span>
-                  ) : (
-                    <div className="vb-el-body">
-                      <div dir="auto" className="vb-el-title">{n.label}</div>
-                      {desc && (
-                        <div dir="auto" className="vb-el-desc">{desc}</div>
-                      )}
+                  <button
+                    type="button"
+                    onPointerDown={(e) => onNodePointerDown(e, n.id)}
+                    onClick={(e) => onNodeClick(e, n.id)}
+                    className={`vb-el-node vb-el-${n.type} ${
+                      isSel ? "selected" : ""
+                    } ${isLive ? "lit-now" : ""} ${
+                      isTerminal ? "vb-el-terminal" : ""
+                    }`}
+                    style={{
+                      width: nodeWidth,
+                      textAlign: "left",
+                      cursor: "grab",
+                      touchAction: "none",
+                      opacity: isPending ? 0.6 : 1,
+                    }}
+                  >
+                    <span
+                      className={`vb-el-icon vb-el-icon-${n.type}`}
+                      aria-hidden
+                    >
+                      {ICON[n.type]}
+                    </span>
+                    {isTerminal ? (
+                      <span dir="auto" className="vb-el-terminal-label">
+                        {n.label}
+                      </span>
+                    ) : (
+                      <div className="vb-el-body">
+                        <div dir="auto" className="vb-el-title">
+                          {n.label}
+                        </div>
+                        {desc && (
+                          <div dir="auto" className="vb-el-desc">
+                            {desc}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </button>
+
+                  {/* Right-side actions: copy (stub) + trash. Hidden until hover. */}
+                  <div className="vb-el-node-side-actions">
+                    <button
+                      type="button"
+                      title="Duplicate (coming soon)"
+                      aria-label="Duplicate"
+                      disabled
+                      className="vb-el-side-btn"
+                    >
+                      <IconCopy />
+                    </button>
+                    {canDelete && (
+                      <button
+                        type="button"
+                        title="Delete node"
+                        aria-label="Delete node"
+                        disabled={isPending}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void deleteNode(n.id);
+                        }}
+                        className="vb-el-side-btn vb-el-side-btn-danger"
+                      >
+                        <IconTrash />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Bottom "+ add child" — hidden until hover. */}
+                  {n.type !== "end" && (
+                    <button
+                      type="button"
+                      title="Add a node after this one"
+                      aria-label="Add a node"
+                      disabled={isPending}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAddMenuFor((cur) => (cur === n.id ? null : n.id));
+                      }}
+                      className={`vb-el-plus ${menuOpen ? "vb-el-plus-on" : ""}`}
+                    >
+                      +
+                    </button>
+                  )}
+
+                  {/* Popup menu rooted at the "+" button. */}
+                  {menuOpen && (
+                    <div
+                      className="vb-el-add-menu"
+                      role="menu"
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      {ADD_NODE_MENU.map((opt) => (
+                        <button
+                          key={opt.type}
+                          type="button"
+                          role="menuitem"
+                          className="vb-el-add-menu-item"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void addChildNode(n.id, opt.type, opt.defaultLabel);
+                          }}
+                        >
+                          <span
+                            className={`vb-el-icon vb-el-icon-${opt.type}`}
+                            aria-hidden
+                          >
+                            {ICON[opt.type]}
+                          </span>
+                          <span className="vb-el-add-menu-label">
+                            {opt.label}
+                          </span>
+                          <span className="vb-el-add-menu-hint">
+                            {opt.hint}
+                          </span>
+                        </button>
+                      ))}
                     </div>
                   )}
-                </button>
+                </div>
               );
             })}
           </div>
@@ -752,6 +941,17 @@ function IconCopy() {
     <svg {...ICON_PROPS}>
       <rect x={9} y={9} width={11} height={11} rx={2} />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+function IconTrash() {
+  return (
+    <svg {...ICON_PROPS}>
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
   );
 }

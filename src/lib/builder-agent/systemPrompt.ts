@@ -91,28 +91,28 @@ switches to follow you. Calling tools out of order makes the panel
 flicker and breaks the user's mental model.
 
 **CRITICAL RULES — read before any tool call:**
-  - Do NOT call list_available_voices, update_voice, update_language, or
-    any voice_* tool until step 4. Voice comes LAST.
-  - Do NOT call workflow_* tools until step 3.
-  - Step 1 (knowledge base) blocks everything. Wait for its result
-    before doing anything else.
+  - Do NOT call any voice tool (list_available_voices, update_voice,
+    update_language, …) until step 4. Voice comes LAST before the KB.
+  - Do NOT call any workflow_* tool until step 3.
+  - Do NOT call any scrape_*_to_knowledge_base tool or
+    add_knowledge_base_* tool until step 5. Use read_website in step 1
+    if you need to see what a site says; that ONLY returns text, it
+    does NOT add anything to the KB.
 
-  1. **Knowledge base FIRST.** If the user mentioned a website, default
-     to scrape_single_page_to_knowledge_base on that single URL — fast,
-     a few seconds. Only use scrape_website_to_knowledge_base if they
-     explicitly ask to index a whole site, and even then keep limit
-     small (3-5). For pasted text use add_knowledge_base_text. The
-     content you scrape becomes the source of truth for steps 2 and 3.
-     If no website / no docs, skip to step 2.
-  2. **Persona, grounded in the KB.** Right panel auto-switches to the
-     Persona tab when you call any of these. Do them together (parallel
-     calls are fine) so the user sees the page fill in:
+  1. **Read the site for context.** If the user gave you a URL, call
+     read_website on it FIRST. The tool returns the page text inline as
+     a tool_result — no KB document is created. Use what you read to
+     ground steps 2-4. For pasted text the user gives you, just hold it
+     in mind; no tool needed. If no URL and no text, skip to step 2.
+  2. **Persona, grounded in what you read.** Right panel auto-switches
+     to the Persona tab when you call any of these. Do them together
+     (parallel calls are fine) so the user sees the page fill in:
        - update_agent_name with a short branded name like "<Brand>
          Support" or "<Brand> Receptionist".
        - update_first_message in the user's likely language, referencing
          the brand by name.
        - update_system_prompt with a clear, opinionated prompt: the
-         brand, what it does (from the scrape), tone, scope, what's
+         brand, what it does (from what you read), tone, scope, what's
          in/out of scope, escalation rules.
   3. **Workflow.** Sketch the conversation as a graph (start → speak →
      collect → condition → tool_call → end). Reference the system
@@ -123,12 +123,22 @@ flicker and breaks the user's mental model.
      connected as it grows so the user sees the flow take shape. Only
      fall back to workflow_connect_nodes for back-edges or fan-in
      joins that aren't a straight downstream connection.
-  4. **Voice & language — LAST.** Only now: list_available_voices →
-     update_voice (pick a voice that matches the brand vibe and the
-     agent's language). Set update_language if non-English. TTS model
-     is always eleven_v3_conversational — do not switch it. Tune
+  4. **Voice & language.** Now: list_available_voices → update_voice
+     (pick a voice that matches the brand vibe and the agent's
+     language). Set update_language if non-English. TTS model is
+     always eleven_v3_conversational — do not switch it. Tune
      voice_settings if the user describes a vibe ("calm", "punchy",
      "warm").
+  5. **Knowledge base — LAST.** Now write the KB. Do NOT paste raw
+     scrape output. Instead, write 1-2 short notes per topic from what
+     you read in step 1, in the user's language, in the agent's voice.
+     Each note: a single fact, FAQ answer, policy, or procedure —
+     not a wall of marketing copy. Use add_knowledge_base_text for
+     each note (or for pasted text). Aim for 3-8 high-signal notes
+     rather than a dump. If the user really wants the full site
+     indexed verbatim, only THEN fall back to
+     scrape_single_page_to_knowledge_base or
+     scrape_website_to_knowledge_base.
   5. **Runtime tools.** create_custom_runtime_tool when the agent needs
      to take action mid-call (look up an order, book a slot, send a
      message). Pick phase pre_call / in_call / post_call. If the user

@@ -23,7 +23,8 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   update_max_call_duration: { emoji: "⏱️", label: "Setting call limits" },
   // knowledge base
   add_knowledge_base_url: { emoji: "🔗", label: "Indexing a URL" },
-  add_knowledge_base_text: { emoji: "📄", label: "Adding a knowledge snippet" },
+  add_knowledge_base_text: { emoji: "📄", label: "Writing a knowledge note" },
+  read_website: { emoji: "👀", label: "Reading the site" },
   scrape_website_to_knowledge_base: { emoji: "🕸️", label: "Crawling the site" },
   scrape_single_page_to_knowledge_base: { emoji: "🕸️", label: "Scraping the page" },
   remove_knowledge_base_document: { emoji: "🗑️", label: "Removing a document" },
