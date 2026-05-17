@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
 import type { AgentConfigCache } from "@/types/agent";
+import { Typewriter } from "../Typewriter";
 
 /**
  * Persona tab — the "doc page" version of the agent's identity.
@@ -115,8 +116,30 @@ function PersonaField({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Track when Alta replaces the value externally so we can play a
+  // type-out animation for ~1s before letting the user edit again.
+  const [showTypewriter, setShowTypewriter] = useState(false);
+  const lastValueRef = useRef(value);
+  const typewriterTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     if (!dirty) setDraft(value);
+  }, [value, dirty]);
+
+  // Detect external value change → fire typewriter overlay.
+  useEffect(() => {
+    if (dirty) return;
+    if (value === lastValueRef.current) return;
+    lastValueRef.current = value;
+    setShowTypewriter(true);
+    if (typewriterTimerRef.current) clearTimeout(typewriterTimerRef.current);
+    // Hide the overlay once the animation has had time to finish.
+    // Typewriter runs at ~90 cps, so we wait min(1500ms, length/90 * 1000 + 400).
+    const ms = Math.min(2400, Math.max(800, (value.length / 90) * 1000 + 400));
+    typewriterTimerRef.current = setTimeout(() => setShowTypewriter(false), ms);
+    return () => {
+      if (typewriterTimerRef.current) clearTimeout(typewriterTimerRef.current);
+    };
   }, [value, dirty]);
 
   const save = async () => {
@@ -183,31 +206,48 @@ function PersonaField({
           )}
         </span>
       </div>
-      {multiline ? (
-        <textarea
-          value={draft}
-          rows={rows ?? 4}
-          placeholder={placeholder}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            setDirty(true);
-          }}
-          className={`vb-field-input vb-field-textarea ${
-            mono ? "vb-field-prompt" : ""
-          }`}
-        />
-      ) : (
-        <input
-          type="text"
-          value={draft}
-          placeholder={placeholder}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            setDirty(true);
-          }}
-          className="vb-field-input"
-        />
-      )}
+      <div className={busy ? "alta-editing" : undefined}>
+        {showTypewriter ? (
+          // Read-only overlay while we type the new value in. Once the
+          // animation finishes, fall through to the regular editable input.
+          <div
+            className={`vb-field-input vb-field-textarea ${
+              mono ? "vb-field-prompt" : ""
+            } alta-typing-caret`}
+            style={{
+              minHeight: multiline ? `${(rows ?? 4) * 1.5}em` : undefined,
+              whiteSpace: "pre-wrap",
+              cursor: "default",
+            }}
+          >
+            <Typewriter text={value} live cps={120} />
+          </div>
+        ) : multiline ? (
+          <textarea
+            value={draft}
+            rows={rows ?? 4}
+            placeholder={placeholder}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setDirty(true);
+            }}
+            className={`vb-field-input vb-field-textarea ${
+              mono ? "vb-field-prompt" : ""
+            }`}
+          />
+        ) : (
+          <input
+            type="text"
+            value={draft}
+            placeholder={placeholder}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setDirty(true);
+            }}
+            className="vb-field-input"
+          />
+        )}
+      </div>
       {hint && <p className="vb-field-hint">{hint}</p>}
       {error && (
         <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>
