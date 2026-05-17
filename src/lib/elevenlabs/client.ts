@@ -499,6 +499,21 @@ export async function renameKbDocument(
 }
 
 /**
+ * Fetch the indexed text content of a KB document. Used by the UI to
+ * preview what the agent will actually see when this doc is retrieved.
+ */
+export async function getKbDocumentContent(
+  documentId: string,
+): Promise<{ content: string }> {
+  const res = await elFetch(
+    `/v1/convai/knowledge-base/${documentId}/content`,
+    { method: "GET", section: "knowledge_base", headers: { accept: "text/plain" } },
+  );
+  const content = await res.text();
+  return { content };
+}
+
+/**
  * Refresh a URL-based KB document — re-fetch from the source URL and
  * re-index. Useful when the upstream content changes.
  */
