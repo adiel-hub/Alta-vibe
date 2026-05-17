@@ -7,6 +7,10 @@
  * Docs: https://docs.firecrawl.dev/api-reference
  */
 
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("firecrawl");
+
 export class FirecrawlError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -28,6 +32,8 @@ export type ScrapedPage = {
 };
 
 export async function scrapePage(url: string): Promise<ScrapedPage> {
+  const t0 = Date.now();
+  log.info("scrape page", { url });
   const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
     method: "POST",
     headers: {
@@ -41,6 +47,7 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
     }),
   });
   if (!res.ok) {
+    log.error("scrape failed", { url, status: res.status, ms: Date.now() - t0 });
     throw new FirecrawlError(res.status, `Scrape failed (${res.status})`);
   }
   const json = (await res.json()) as {
@@ -49,6 +56,11 @@ export async function scrapePage(url: string): Promise<ScrapedPage> {
       metadata?: { title?: string; sourceURL?: string };
     };
   };
+  log.info("scrape ok", {
+    url,
+    ms: Date.now() - t0,
+    bytes: json.data?.markdown?.length ?? 0,
+  });
   return {
     url: json.data?.metadata?.sourceURL ?? url,
     title: json.data?.metadata?.title ?? url,
@@ -61,6 +73,8 @@ export async function crawlSite(input: {
   limit?: number;
   includeOnlyPaths?: string[];
 }): Promise<ScrapedPage[]> {
+  log.info("crawl start", { startUrl: input.startUrl, limit: input.limit ?? 8 });
+  const tStart = Date.now();
   const body = {
     url: input.startUrl,
     limit: input.limit ?? 8,
@@ -76,9 +90,11 @@ export async function crawlSite(input: {
     body: JSON.stringify(body),
   });
   if (!start.ok) {
+    log.error("crawl start failed", { status: start.status });
     throw new FirecrawlError(start.status, `Crawl start failed (${start.status})`);
   }
   const { id } = (await start.json()) as { id: string };
+  log.debug("crawl job started", { crawlId: id });
 
   // Poll until done (cap ~ 90 s)
   const deadline = Date.now() + 90_000;
@@ -96,15 +112,23 @@ export async function crawlSite(input: {
       }>;
     };
     if (status.status === "failed") {
+      log.error("crawl failed", { crawlId: id, ms: Date.now() - tStart });
       throw new FirecrawlError(500, "Crawl failed");
     }
     if (status.status === "completed") {
-      return (status.data ?? []).map((d) => ({
+      const pages = (status.data ?? []).map((d) => ({
         url: d.metadata?.sourceURL ?? input.startUrl,
         title: d.metadata?.title ?? d.metadata?.sourceURL ?? input.startUrl,
         markdown: d.markdown ?? "",
       }));
+      log.info("crawl complete", {
+        crawlId: id,
+        pages: pages.length,
+        ms: Date.now() - tStart,
+      });
+      return pages;
     }
   }
+  log.error("crawl timeout", { crawlId: id, ms: Date.now() - tStart });
   throw new FirecrawlError(504, "Crawl timed out");
 }

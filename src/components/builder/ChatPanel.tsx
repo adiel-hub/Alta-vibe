@@ -4,10 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { attachToTurn, sendMessage } from "@/store/sseClient";
 import { appFetch } from "@/lib/apiClient";
+import { createClientLogger } from "@/lib/clientLogger";
 import type { ContentBlock } from "@/types/agent";
 import { ChatWidget } from "./ChatWidget";
 import { LiveToolPill } from "./LiveToolPill";
 import { Typewriter } from "./Typewriter";
+
+const log = createClientLogger("chat");
 
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
@@ -25,11 +28,20 @@ export function ChatPanel({ agentId }: { agentId: string }) {
         const res = await appFetch(`/api/agents/${agentId}/turns/active`);
         if (!res.ok) return;
         const json = (await res.json()) as { active: { id: string } | null };
-        if (cancelled || !json.active) return;
+        if (cancelled || !json.active) {
+          log.debug("no active turn to resume", { agent_id: agentId });
+          return;
+        }
+        log.info("resuming active turn", {
+          agent_id: agentId,
+          job_id: json.active.id,
+        });
         setSending(true);
         await attachToTurn(agentId, json.active.id, 0);
-      } catch {
-        /* swallow */
+      } catch (err) {
+        log.warn("resume failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       } finally {
         setSending(false);
       }
@@ -48,12 +60,16 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   const send = async () => {
     const text = input.trim();
     if (!text || sending) return;
+    log.debug("user send", { text_len: text.length });
     setInput("");
     setSending(true);
     setError(null);
     try {
       await sendMessage(agentId, text);
     } catch (err) {
+      log.error("send error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       setError(err instanceof Error ? err.message : "Stream failed");
     } finally {
       setSending(false);

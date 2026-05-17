@@ -18,6 +18,7 @@ import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol, widgetActionsCol } from "@/lib/mongodb";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { registerProviderForAgent } from "@/lib/integrations/registerProviderTools";
+import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,10 +32,15 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; actionId: string }> },
 ) {
+  const log = createLogger("widget", {
+    route: "POST /widgets/[actionId]/resolve",
+    req_id: newRequestId(),
+  });
   const guard = requireSharedSecret(req);
   if (guard) return guard;
 
   const { id, actionId } = await params;
+  log.info("resolve", { agent_id: id, action_id: actionId });
   if (!ObjectId.isValid(id) || !ObjectId.isValid(actionId)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
@@ -62,6 +68,7 @@ export async function POST(
     if (action.kind === "connect_integration") {
       const provider = (action.payload as { provider?: string }).provider;
       if (provider) {
+        log.info("integration connect", { provider });
         try {
           const { added_tools } = await registerProviderForAgent(
             id,
@@ -69,10 +76,12 @@ export async function POST(
             // Stub credentials — real OAuth would populate these via callback.
             { access_token: "stub_token_dev_only", connected_via: "stub" },
           );
+          log.info("integration registered", { provider, added_tools });
           summary = `Connected ${provider}.`;
           effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent.`;
         } catch (err) {
           const message = err instanceof Error ? err.message : "register failed";
+          log.error("integration register failed", { provider, message });
           summary = `Failed to connect ${provider}: ${message}`;
           effectMessage = `User attempted to connect ${provider} but registration failed: ${message}`;
         }

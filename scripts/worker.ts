@@ -17,6 +17,9 @@
 import { ObjectId } from "mongodb";
 import { turnJobsCol } from "@/lib/mongodb";
 import { processTurnJob, reapStuckJobs } from "@/lib/turn-jobs/runner";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("worker");
 
 const POLL_INTERVAL_MS = Number(process.env.WORKER_POLL_INTERVAL_MS ?? "1000");
 const MAX_CONCURRENT = Number(process.env.WORKER_MAX_CONCURRENT ?? "4");
@@ -45,7 +48,7 @@ async function tick() {
       const uniq = new Set(stale.map((s) => (s.agent_id as ObjectId).toHexString()));
       for (const a of uniq) await reapStuckJobs(new ObjectId(a));
     } catch (err) {
-      console.error("[worker] reap error", err);
+      log.error("reap error", { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -60,10 +63,18 @@ async function tick() {
     .project({ _id: 1 })
     .toArray();
 
+  if (candidates.length > 0) {
+    log.debug("claimed", { count: candidates.length, in_flight: inFlight });
+  }
   for (const c of candidates) {
     inFlight++;
     processTurnJob(c._id as ObjectId)
-      .catch((err) => console.error("[worker] processTurnJob error", err))
+      .catch((err) =>
+        log.error("processTurnJob error", {
+          job_id: (c._id as ObjectId).toHexString(),
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      )
       .finally(() => {
         inFlight--;
       });
@@ -71,15 +82,17 @@ async function tick() {
 }
 
 async function main() {
-  console.log(
-    `[worker] starting · maxConcurrent=${MAX_CONCURRENT} · pollMs=${POLL_INTERVAL_MS}`,
-  );
+  log.info("starting", {
+    max_concurrent: MAX_CONCURRENT,
+    poll_ms: POLL_INTERVAL_MS,
+    reap_ms: REAP_INTERVAL_MS,
+  });
   process.on("SIGTERM", () => {
-    console.log("[worker] SIGTERM received; finishing in-flight jobs");
+    log.info("SIGTERM received; finishing in-flight jobs");
     shuttingDown = true;
   });
   process.on("SIGINT", () => {
-    console.log("[worker] SIGINT received; finishing in-flight jobs");
+    log.info("SIGINT received; finishing in-flight jobs");
     shuttingDown = true;
   });
 
@@ -87,20 +100,22 @@ async function main() {
     try {
       await tick();
     } catch (err) {
-      console.error("[worker] tick error", err);
+      log.error("tick error", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
   while (inFlight > 0) {
-    console.log(`[worker] waiting on ${inFlight} job(s) before exit`);
+    log.info("waiting before exit", { in_flight: inFlight });
     await new Promise((r) => setTimeout(r, 1000));
   }
-  console.log("[worker] clean exit");
+  log.info("clean exit");
   process.exit(0);
 }
 
 main().catch((err) => {
-  console.error("[worker] fatal", err);
+  log.error("fatal", { error: err instanceof Error ? err.message : String(err) });
   process.exit(1);
 });

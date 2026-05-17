@@ -4,6 +4,9 @@ import { useState } from "react";
 import { useConversation } from "@elevenlabs/react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
+import { createClientLogger } from "@/lib/clientLogger";
+
+const log = createClientLogger("test-call");
 
 export function TestCallTab({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
@@ -14,10 +17,15 @@ export function TestCallTab({ agentId }: { agentId: string }) {
   const setLiveNode = useAgentStore((s) => s.setLiveWorkflowNode);
 
   const conversation = useConversation({
-    onError: (e: unknown) =>
-      setError(typeof e === "string" ? e : "Conversation error"),
+    onError: (e: unknown) => {
+      log.error("conversation error", {
+        error: typeof e === "string" ? e : String(e),
+      });
+      setError(typeof e === "string" ? e : "Conversation error");
+    },
     onMessage: (msg: { message?: string; source?: string }) => {
       if (msg.message && msg.source) {
+        log.trace("transcript", { role: msg.source, len: msg.message.length });
         setTranscript((t) => [
           ...t,
           {
@@ -27,15 +35,17 @@ export function TestCallTab({ agentId }: { agentId: string }) {
         ]);
       }
     },
-    onDisconnect: () => setLiveNode(null),
+    onDisconnect: () => {
+      log.info("conversation disconnected");
+      setLiveNode(null);
+    },
     clientTools: {
-      // The deployed agent calls this whenever it enters a new workflow
-      // node. We light up that node in the right-panel workflow visualizer.
       report_workflow_state: async ({
         node_id,
       }: {
         node_id?: string;
       }): Promise<string> => {
+        log.debug("workflow node entered", { node_id });
         if (typeof node_id === "string") setLiveNode(node_id);
         return "tracked";
       },
@@ -43,6 +53,7 @@ export function TestCallTab({ agentId }: { agentId: string }) {
   });
 
   const start = async () => {
+    log.info("starting test call", { agent_id: agentId });
     setError(null);
     setStarting(true);
     setTranscript([]);
@@ -52,7 +63,11 @@ export function TestCallTab({ agentId }: { agentId: string }) {
       if (!tokenRes.ok) throw new Error(`Token failed (${tokenRes.status})`);
       const json = (await tokenRes.json()) as { signed_url: string };
       await conversation.startSession({ signedUrl: json.signed_url });
+      log.info("test call connected");
     } catch (err) {
+      log.error("start failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       setError(err instanceof Error ? err.message : "Failed to start session");
     } finally {
       setStarting(false);
@@ -60,6 +75,7 @@ export function TestCallTab({ agentId }: { agentId: string }) {
   };
 
   const stop = async () => {
+    log.info("ending test call");
     await conversation.endSession();
     setLiveNode(null);
   };

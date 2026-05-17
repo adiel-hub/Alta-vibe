@@ -6,6 +6,9 @@ import type {
   TurnJobDocument,
   WidgetActionDocument,
 } from "@/types/agent";
+import { createLogger } from "./logger";
+
+const log = createLogger("mongo");
 
 declare global {
   // eslint-disable-next-line no-var
@@ -26,11 +29,14 @@ function getDbName(): string {
 
 async function getClient(): Promise<MongoClient> {
   if (globalThis.__altaVibeMongoClient) return globalThis.__altaVibeMongoClient;
+  log.info("connecting", { db: getDbName() });
+  const t0 = Date.now();
   const client = new MongoClient(getUri(), {
     maxPoolSize: 10,
     serverSelectionTimeoutMS: 10_000,
   });
   await client.connect();
+  log.info("connected", { ms: Date.now() - t0 });
   globalThis.__altaVibeMongoClient = client;
   return client;
 }
@@ -59,6 +65,7 @@ export async function getDb(): Promise<Db> {
         .collection<IntegrationDocument>("integrations")
         .createIndex({ agent_id: 1, provider: 1 }, { unique: true }),
     ]);
+    log.info("indexes ensured");
     globalThis.__altaVibeIndexesEnsured = true;
   }
   return db;

@@ -22,6 +22,7 @@ import { agentsCol } from "@/lib/mongodb";
 import { createAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import { defaultAgentConfig } from "@/lib/capabilities";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
+import { createLogger, newRequestId } from "@/lib/logger";
 import type { AgentDocument } from "@/types/agent";
 
 export const runtime = "nodejs";
@@ -40,14 +41,18 @@ const Body = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  const log = createLogger("api", { route: "POST /api/agents", req_id: newRequestId() });
+  log.info("request");
   const guard = requireSharedSecret(req);
   if (guard) return guard;
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) {
+    log.warn("invalid body");
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
   const { description } = parsed.data;
+  log.debug("creating agent", { desc_len: description.length });
 
   try {
     const configCache = defaultAgentConfig();
@@ -88,18 +93,25 @@ export async function POST(req: NextRequest) {
       }
     });
 
+    log.info("agent created", {
+      mongo_id: insert.insertedId.toHexString(),
+      voice_agent_id: agent_id,
+      first_turn_job_id: jobId.toHexString(),
+    });
     return NextResponse.json({
       id: insert.insertedId.toHexString(),
       jobId: jobId.toHexString(),
     });
   } catch (err) {
     if (err instanceof ElevenLabsError) {
+      log.error("provider error", { status: err.status, message: err.message });
       return NextResponse.json(
         { error: err.message, section: err.section },
         { status: err.status },
       );
     }
     const message = err instanceof Error ? err.message : "Unknown error";
+    log.error("create failed", { message });
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -157,6 +157,61 @@ is wrong or Railway's public networking is off.
 
 ---
 
+## Logging
+
+Both server (Vercel + Railway worker) and browser side log through a tiny
+zero-dep logger you can turn dialled up or down per environment.
+
+### Server env vars
+
+```
+LOG_LEVEL              trace | debug | info | warn | error | off   (default: info)
+LOG_CATEGORIES         "*"  ·  "api,turn-job"  ·  "*,!sse"           (default: *)
+LOG_FORMAT             pretty | json   (default: json in prod, pretty in dev)
+LOG_INCLUDE_TIMESTAMPS / LEVEL / CATEGORY    "false" to drop  (defaults: true)
+```
+
+Categories: `api · auth · mongo · voice-provider · firecrawl · agent-sdk ·
+turn-job · capability` (also `capability:voice`, `capability:knowledge_base`, …) ·
+`widget · integration · sse · worker`.
+
+Useful recipes:
+
+| Goal                                  | Set                                         |
+| ------------------------------------- | ------------------------------------------- |
+| Quiet steady-state in prod            | `LOG_LEVEL=info`                            |
+| Trace a stuck turn                    | `LOG_LEVEL=debug,LOG_CATEGORIES=turn-job,agent-sdk,capability` |
+| Watch provider chatter only           | `LOG_CATEGORIES=voice-provider,firecrawl`   |
+| Everything-everywhere debug           | `LOG_LEVEL=trace,LOG_CATEGORIES=*`          |
+| Drop SSE noise but keep the rest      | `LOG_CATEGORIES=*,!sse`                     |
+
+In production, `json` format streams structured records that Vercel and
+Railway both parse for filtering/search — recommended.
+
+### Browser env vars
+
+```
+NEXT_PUBLIC_LOG_LEVEL          (same scale as server)
+NEXT_PUBLIC_LOG_CATEGORIES     (same syntax)
+```
+
+Browser categories: `sse-client · store · chat · widget · workflow ·
+test-call · ui`. Outputs to the DevTools console with CSS styling so you
+can grep by level/category easily.
+
+### Where logs actually fire
+
+- Every API route logs entry + outcome + duration
+- Every voice-provider HTTP call logs status + ms
+- Every Firecrawl scrape/crawl logs page count + total ms
+- Every capability tool call logs op + ms + success/failure + patched fields
+- Every Claude Agent SDK turn logs session start/end + every tool_use /
+  tool_result event
+- Every SSE event logs as `trace` (browser) so you can see the stream
+- Every widget action logs lifecycle (created → resolved → integration
+  registered)
+- Worker logs every tick, claim, and concurrency change
+
 ## Troubleshooting
 
 - **`Unauthorized` on every API call**: `APP_SHARED_SECRET` set on the

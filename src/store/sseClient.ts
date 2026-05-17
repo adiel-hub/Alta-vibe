@@ -8,6 +8,9 @@ import {
 } from "./agentStore";
 import { appFetch } from "@/lib/apiClient";
 import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
+import { createClientLogger } from "@/lib/clientLogger";
+
+const log = createClientLogger("sse-client");
 
 /**
  * Send a user message. Backend immediately persists the user turn + creates a
@@ -16,6 +19,7 @@ import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
  * the page can call `attachToTurn(jobId, since)` to rejoin from any seq.
  */
 export async function sendMessage(agentId: string, userText: string): Promise<string> {
+  log.info("send", { agent_id: agentId, text_len: userText.length });
   const store = useAgentStore.getState();
   const userTurnId = nanoid();
   const assistantTurnId = nanoid();
@@ -29,9 +33,11 @@ export async function sendMessage(agentId: string, userText: string): Promise<st
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    log.error("send failed", { status: res.status });
     throw new Error(body?.error ?? `Chat request failed (${res.status})`);
   }
   const { jobId } = (await res.json()) as { jobId: string };
+  log.info("turn enqueued", { job_id: jobId });
   store.setActiveTurn(jobId, assistantTurnId);
   // Detached attach — caller awaits separately if needed
   void attachToTurn(agentId, jobId, 0, assistantTurnId);
@@ -49,6 +55,7 @@ export async function attachToTurn(
   since: number,
   assistantTurnIdOverride?: string,
 ): Promise<void> {
+  log.info("attach", { agent_id: agentId, job_id: jobId, since });
   const store = useAgentStore.getState();
   let assistantTurnId = assistantTurnIdOverride ?? store.activeAssistantTurnId;
   if (!assistantTurnId) {
@@ -65,6 +72,7 @@ export async function attachToTurn(
     },
   );
   if (!res.ok || !res.body) {
+    log.error("attach failed", { status: res.status });
     store.setActiveTurn(null, null);
     throw new Error(`Stream failed (${res.status})`);
   }
@@ -90,6 +98,7 @@ export async function attachToTurn(
       }
     }
   }
+  log.info("stream end", { job_id: jobId, last_seq: lastSeq });
   useAgentStore.getState().finalizeAssistantTurn();
   useAgentStore.getState().setActiveTurn(null, null);
 }
@@ -110,12 +119,14 @@ function parseBlock(block: string): { seq: number; event: SSEEvent } | null {
 }
 
 function handleEvent(assistantTurnId: string, event: SSEEvent): void {
+  log.trace("event", { type: event.type });
   const s = useAgentStore.getState();
   switch (event.type) {
     case "assistant_delta":
       s.appendAssistantDelta(assistantTurnId, event.text);
       break;
     case "tool_call_start": {
+      log.debug("tool_call_start", { name: event.name });
       const section = sectionForTool(event.name);
       if (section) s.setInFlight(section, true);
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
@@ -131,6 +142,7 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       break;
     }
     case "tool_call_result": {
+      log.debug("tool_call_result", { is_error: event.is_error === true });
       s.appendToolCallResult(
         assistantTurnId,
         event.tool_use_id,
@@ -154,6 +166,10 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       break;
     }
     case "state_patch":
+      log.debug("state_patch", {
+        revision: event.revision,
+        keys: Object.keys(event.patch),
+      });
       s.applyPatch(event.revision, event.patch);
       for (const key of Object.keys(event.patch)) {
         const section = sectionForPatchKey(key);
@@ -161,9 +177,14 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       }
       break;
     case "state_error":
+      log.warn("state_error", { section: event.section, message: event.message });
       s.setError(event.section, event.message);
       break;
     case "widget_inserted":
+      log.info("widget_inserted", {
+        action_id: event.action_id,
+        kind: event.kind,
+      });
       s.upsertWidget({
         action_id: event.action_id,
         kind: event.kind,
@@ -173,13 +194,19 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       });
       break;
     case "widget_resolved":
+      log.info("widget_resolved", {
+        action_id: event.action_id,
+        status: event.status,
+      });
       s.resolveWidget(event.action_id, event.status, event.result);
       break;
     case "turn_aborted":
+      log.warn("turn_aborted", { reason: event.reason });
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       s.setLiveTool(null);
       break;
     case "turn_done":
+      log.info("turn_done", { revision: event.revision });
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       // Leave the last success badge visible briefly, then clear.
       setTimeout(() => {

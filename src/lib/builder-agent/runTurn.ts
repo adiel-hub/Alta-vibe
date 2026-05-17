@@ -9,6 +9,7 @@ import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createBuilderTools } from "./tools";
 import { BUILDER_SYSTEM_PROMPT } from "./systemPrompt";
 import { CAPABILITIES } from "@/lib/capabilities";
+import { createLogger } from "@/lib/logger";
 import type {
   AgentConfigCache,
   ContentBlock,
@@ -86,6 +87,15 @@ export async function runTurn(
   input: RunTurnInput,
   emit: (event: SSEEvent) => void,
 ): Promise<RunTurnResult> {
+  const log = createLogger("agent-sdk", {
+    agent_id: input.elevenlabsAgentId,
+    turn_job_id: input.turnJobId,
+  });
+  log.info("session start", {
+    user_msg_len: input.userMessage.length,
+    transcript_turns: input.transcript.length,
+    starting_revision: input.startingRevision,
+  });
   let revision = input.startingRevision;
   const config: AgentConfigCache = JSON.parse(JSON.stringify(input.currentConfig));
   const assistantContent: ContentBlock[] = [];
@@ -115,6 +125,7 @@ export async function runTurn(
 
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => {
+    log.warn("hard timeout, aborting", { ms: HARD_TIMEOUT_MS });
     emit({ type: "turn_aborted", reason: "hard timeout (90s)" });
     abortController.abort();
   }, HARD_TIMEOUT_MS);
@@ -133,12 +144,16 @@ export async function runTurn(
     });
 
     for await (const message of result) {
-      forwardMessage(message, emit, assistantContent);
+      forwardMessage(message, emit, assistantContent, log);
     }
   } finally {
     clearTimeout(timeoutHandle);
   }
 
+  log.info("session end", {
+    ending_revision: revision,
+    blocks: assistantContent.length,
+  });
   emit({ type: "turn_done", revision });
   return { endingRevision: revision, finalConfig: config, assistantContent };
 }
@@ -147,6 +162,7 @@ function forwardMessage(
   message: SDKMessage,
   emit: (event: SSEEvent) => void,
   assistantContent: ContentBlock[],
+  log: ReturnType<typeof createLogger>,
 ): void {
   // partial deltas (assistant text streaming)
   if (
@@ -178,6 +194,10 @@ function forwardMessage(
         typeof block.id === "string" &&
         typeof block.name === "string"
       ) {
+        log.debug("tool_use", {
+          name: block.name,
+          tool_use_id: block.id,
+        });
         assistantContent.push({
           type: "tool_use",
           id: block.id,
@@ -203,6 +223,9 @@ function forwardMessage(
       if (block.type === "tool_result" && typeof block.tool_use_id === "string") {
         const output = block.content ?? block.output;
         const isError = block.is_error === true;
+        log.debug(isError ? "tool_result error" : "tool_result", {
+          tool_use_id: block.tool_use_id,
+        });
         assistantContent.push({
           type: "tool_result",
           tool_use_id: block.tool_use_id,

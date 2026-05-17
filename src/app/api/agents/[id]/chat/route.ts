@@ -11,6 +11,7 @@ import { z } from "zod";
 import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol } from "@/lib/mongodb";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
+import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,11 +23,17 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const log = createLogger("api", {
+    route: "POST /api/agents/[id]/chat",
+    req_id: newRequestId(),
+  });
+  log.info("request");
   const guard = requireSharedSecret(req);
   if (guard) return guard;
 
   const { id } = await params;
   if (!ObjectId.isValid(id)) {
+    log.warn("invalid agent id", { id });
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   const _id = new ObjectId(id);
@@ -37,9 +44,13 @@ export async function POST(
   }
 
   const agent = await (await agentsCol()).findOne({ _id });
-  if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!agent) {
+    log.warn("agent not found", { id });
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
   const jobId = await enqueueTurnJob(_id, parsed.data.text);
+  log.info("enqueued", { job_id: jobId.toHexString(), agent_id: id });
 
   // Run the turn in the background. On Vercel this is `waitUntil`-backed and
   // continues after we send the response.

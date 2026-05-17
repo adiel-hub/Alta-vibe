@@ -15,7 +15,10 @@ import {
   messagesCol,
   turnJobsCol,
 } from "@/lib/mongodb";
+import { createLogger } from "@/lib/logger";
 import type { ContentBlock, SSEEvent, StoredTurnEvent } from "@/types/agent";
+
+const log = createLogger("turn-job");
 
 export const STUCK_THRESHOLD_MS = 90_000;
 
@@ -49,6 +52,12 @@ export async function enqueueTurnJob(
     created_at: now,
   } as never);
 
+  log.info("enqueued", {
+    job_id: insert.insertedId.toHexString(),
+    agent_id: agentId.toHexString(),
+    role,
+    msg_len: userMessage.length,
+  });
   return insert.insertedId;
 }
 
@@ -59,8 +68,19 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     { $set: { status: "running", started_at: new Date(), last_event_at: new Date() } },
     { returnDocument: "after" },
   );
-  if (!claim) return;
+  if (!claim) {
+    log.debug("claim missed (already running or done)", {
+      job_id: jobId.toHexString(),
+    });
+    return;
+  }
   const job = claim;
+  const tStart = Date.now();
+  const tlog = log.child({
+    job_id: jobId.toHexString(),
+    agent_id: job.agent_id.toHexString(),
+  });
+  tlog.info("turn start");
 
   const agents = await agentsCol();
   const agent = await agents.findOne({ _id: job.agent_id });
@@ -171,6 +191,11 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
       { _id: jobId },
       { $set: { status: "done", finished_at: new Date() } },
     );
+    tlog.info("turn done", {
+      ms: Date.now() - tStart,
+      revision_after: result.endingRevision,
+      events_emitted: localSeq,
+    });
   } catch (err) {
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -178,6 +203,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     }
     await flush().catch(() => {});
     const message = err instanceof Error ? err.message : "Turn failed";
+    tlog.error("turn failed", { ms: Date.now() - tStart, message });
     bufferedEmit({ type: "state_error", section: "turn", message });
     bufferedEmit({ type: "turn_aborted", reason: message });
     await flush().catch(() => {});
@@ -212,7 +238,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
 export async function reapStuckJobs(agentId: ObjectId): Promise<void> {
   const jobs = await turnJobsCol();
   const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
-  await jobs.updateMany(
+  const res = await jobs.updateMany(
     {
       agent_id: agentId,
       status: { $in: ["queued", "running"] },
@@ -226,4 +252,10 @@ export async function reapStuckJobs(agentId: ObjectId): Promise<void> {
       },
     },
   );
+  if (res.modifiedCount > 0) {
+    log.warn("reaped stuck jobs", {
+      agent_id: agentId.toHexString(),
+      count: res.modifiedCount,
+    });
+  }
 }

@@ -14,6 +14,7 @@
  * picks up its slice, and the panel renders the corresponding tab.
  */
 import type { SSEEvent, AgentConfigCache } from "@/types/agent";
+import { createLogger } from "@/lib/logger";
 
 export type ToolContext = {
   agentMongoId: string;
@@ -52,14 +53,27 @@ export async function runToolStep<T>(
   op: string,
   fn: () => Promise<{ patch: Partial<AgentConfigCache>; summary: string; data?: T }>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const log = createLogger(`capability:${section}`, {
+    agent_id: ctx.elevenlabs_agent_id,
+    turn_job_id: ctx.turn_job_id,
+    op,
+  });
+  const t0 = Date.now();
+  log.debug("tool start");
   try {
     const { patch, summary } = await fn();
     Object.assign(ctx.config, patch);
     const revision = ctx.bumpRevision();
     ctx.emit({ type: "state_patch", revision, patch });
+    log.info("tool ok", {
+      ms: Date.now() - t0,
+      revision,
+      patched: Object.keys(patch),
+    });
     return { content: [{ type: "text", text: summary }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    log.error("tool failed", { ms: Date.now() - t0, message });
     ctx.emit({ type: "state_error", section, message });
     return {
       content: [

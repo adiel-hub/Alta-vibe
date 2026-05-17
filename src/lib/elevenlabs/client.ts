@@ -1,4 +1,7 @@
 import { deepMergeConfig } from "./patchConfig";
+import { createLogger } from "@/lib/logger";
+
+const log = createLogger("voice-provider");
 import {
   DEFAULT_VOICE_SETTINGS,
   type AgentConfigCache,
@@ -43,11 +46,16 @@ async function elFetch(
   headers.set("xi-api-key", apiKey());
   if (!headers.has("accept")) headers.set("accept", "application/json");
 
+  const method = rest.method ?? "GET";
   let attempt = 0;
+  const t0 = Date.now();
   while (true) {
+    log.debug("request", { method, path, section, attempt });
     const res = await fetch(`${BASE_URL}${path}`, { ...rest, headers });
     if (res.status === 429 && attempt < 3) {
-      await new Promise((r) => setTimeout(r, 2 ** attempt * 500));
+      const wait = 2 ** attempt * 500;
+      log.warn("rate limited; backing off", { path, section, attempt, wait });
+      await new Promise((r) => setTimeout(r, wait));
       attempt++;
       continue;
     }
@@ -64,8 +72,23 @@ async function elFetch(
           "detail" in body &&
           String((body as { detail: unknown }).detail)) ||
         `Voice provider ${section} request failed (${res.status})`;
+      log.error("response error", {
+        method,
+        path,
+        section,
+        status: res.status,
+        ms: Date.now() - t0,
+        message,
+      });
       throw new ElevenLabsError(res.status, section, message, body);
     }
+    log.debug("response ok", {
+      method,
+      path,
+      section,
+      status: res.status,
+      ms: Date.now() - t0,
+    });
     return res;
   }
 }

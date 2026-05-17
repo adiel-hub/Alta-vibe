@@ -4,6 +4,9 @@ import { useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore, type WidgetEntry } from "@/store/agentStore";
 import { attachToTurn } from "@/store/sseClient";
+import { createClientLogger } from "@/lib/clientLogger";
+
+const log = createClientLogger("widget");
 
 export function ChatWidget({
   agentId,
@@ -44,6 +47,11 @@ async function resolveWidget(
   status: "done" | "cancelled" | "failed",
   result?: unknown,
 ): Promise<void> {
+  log.info("resolve", {
+    kind: widget.kind,
+    action_id: widget.action_id,
+    status,
+  });
   useAgentStore.getState().resolveWidget(widget.action_id, status, result ?? null);
   const res = await appFetch(
     `/api/agents/${agentId}/widgets/${widget.action_id}/resolve`,
@@ -54,6 +62,7 @@ async function resolveWidget(
     },
   );
   if (!res.ok) {
+    log.error("resolve failed", { status: res.status });
     useAgentStore
       .getState()
       .resolveWidget(widget.action_id, "failed", { reason: `Resolve HTTP ${res.status}` });
@@ -63,6 +72,7 @@ async function resolveWidget(
     | { resumed_job_id?: string }
     | null;
   if (json?.resumed_job_id) {
+    log.info("agent loop resumed", { job_id: json.resumed_job_id });
     // Detached attach — agent continues its loop with the widget result.
     void attachToTurn(agentId, json.resumed_job_id, 0);
   }
