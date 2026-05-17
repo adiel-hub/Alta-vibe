@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { DescribeAgentForm } from "@/components/DescribeAgentForm";
 
 export default function Home() {
@@ -16,7 +17,17 @@ export default function Home() {
       </header>
 
       <section className="welcome-main">
-        <div className="welcome-hero">
+        <div className="welcome-hero welcome-hero-centered">
+          <div className="welcome-avatar" aria-hidden>
+            <Image
+              src="/alex.avif"
+              alt=""
+              width={120}
+              height={120}
+              priority
+            />
+          </div>
+
           <div className="welcome-eyebrow">
             <SparkleGlyph small />
             VIBE-CODE YOUR VOICE AGENT
@@ -35,15 +46,6 @@ export default function Home() {
           </p>
 
           <DescribeAgentForm />
-        </div>
-
-        <div className="welcome-marquee">
-          <span className="welcome-marquee-label">BUILT WITH</span>
-          <div className="welcome-marquee-row">
-            <span>ElevenLabs · voice</span>
-            <span>Firecrawl · knowledge</span>
-            <span>Claude · agent</span>
-          </div>
         </div>
       </section>
     </main>
