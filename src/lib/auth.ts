@@ -1,16 +1,27 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
- * Single-user prototype hardening. Not real auth — prevents random discovery
- * of a preview URL from burning ElevenLabs / Anthropic quota.
+ * Single-user prototype hardening. Not real auth — but in production we
+ * REQUIRE APP_SHARED_SECRET to be set; without it every API route returns
+ * 503 so a misconfigured deploy can't silently expose itself. In dev
+ * (NODE_ENV !== "production") we allow unset for friction-free local work.
  */
 export function requireSharedSecret(req: NextRequest): NextResponse | null {
   const expected = process.env.APP_SHARED_SECRET;
-  if (!expected) return null; // dev fallback when not configured
+  const isProd = process.env.NODE_ENV === "production";
+
+  if (!expected) {
+    if (isProd) {
+      return NextResponse.json(
+        { error: "APP_SHARED_SECRET is not configured on this deployment." },
+        { status: 503 },
+      );
+    }
+    return null; // dev fallback
+  }
 
   const header = req.headers.get("x-app-secret");
   if (header && timingSafeEqual(header, expected)) return null;
-
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 
