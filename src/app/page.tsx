@@ -18,11 +18,6 @@ export default function Home() {
             />
           </div>
 
-          <div className="welcome-eyebrow">
-            <SparkleGlyph small />
-            VIBE-CODE YOUR VOICE AGENT
-          </div>
-
           <h1 className="welcome-h1">
             Describe the agent.
             <br />
@@ -39,23 +34,5 @@ export default function Home() {
         </div>
       </section>
     </main>
-  );
-}
-
-function SparkleGlyph({ small = false }: { small?: boolean }) {
-  const size = small ? 14 : 18;
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-    >
-      <path
-        d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z"
-        fill="currentColor"
-      />
-    </svg>
   );
 }
