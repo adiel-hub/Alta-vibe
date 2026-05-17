@@ -129,16 +129,20 @@ export function WorkflowTab() {
   const nodeIdsKey = workflow?.nodes.map((n) => n.id).join("|") ?? "";
   useEffect(() => {
     setOverrides({});
+    setPan({ x: 0, y: 0 });
   }, [nodeIdsKey]);
 
-  // Canvas scroll/pan refs.
+  // Canvas pan: infinite-feeling playground via a translate transform on
+  // the inner stage. The outer container clips overflow; you can pan
+  // anywhere, including into empty space.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
   const panState = useRef<{
     active: boolean;
     startX: number;
     startY: number;
-    startScrollLeft: number;
-    startScrollTop: number;
+    startPanX: number;
+    startPanY: number;
   } | null>(null);
   const dragState = useRef<{
     nodeId: string;
@@ -171,7 +175,8 @@ export function WorkflowTab() {
     ),
   };
 
-  // ── Canvas pan: mousedown on empty area, move, up.
+  // ── Canvas pan: mousedown on empty area, move, up. Updates a translate
+  // offset on the inner stage, so the user can drift into negative space.
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest(".vb-node")) return; // node handles its own
     const el = scrollRef.current;
@@ -181,8 +186,8 @@ export function WorkflowTab() {
       active: true,
       startX: e.clientX,
       startY: e.clientY,
-      startScrollLeft: el.scrollLeft,
-      startScrollTop: el.scrollTop,
+      startPanX: pan.x,
+      startPanY: pan.y,
     };
     el.style.cursor = "grabbing";
   };
@@ -200,12 +205,12 @@ export function WorkflowTab() {
       return;
     }
     if (!panState.current?.active) return;
-    const el = scrollRef.current;
-    if (!el) return;
     const dx = e.clientX - panState.current.startX;
     const dy = e.clientY - panState.current.startY;
-    el.scrollLeft = panState.current.startScrollLeft - dx;
-    el.scrollTop = panState.current.startScrollTop - dy;
+    setPan({
+      x: panState.current.startPanX + dx,
+      y: panState.current.startPanY + dy,
+    });
   };
   const endPointer = (e: React.PointerEvent<HTMLDivElement>) => {
     const el = scrollRef.current;
@@ -280,7 +285,10 @@ export function WorkflowTab() {
         <button
           className="vb-flow-iconbtn"
           title="Fit"
-          onClick={() => setZoom(1)}
+          onClick={() => {
+            setZoom(1);
+            setPan({ x: 0, y: 0 });
+          }}
         >
           ⛶
         </button>
@@ -298,7 +306,12 @@ export function WorkflowTab() {
       <div
         ref={scrollRef}
         className="vb-flow-canvas"
-        style={{ cursor: "grab", touchAction: "none" }}
+        style={{
+          cursor: "grab",
+          touchAction: "none",
+          overflow: "hidden",
+          position: "relative",
+        }}
         onPointerDown={onCanvasPointerDown}
         onPointerMove={onCanvasPointerMove}
         onPointerUp={endPointer}
@@ -313,9 +326,9 @@ export function WorkflowTab() {
         ) : (
           <div
             style={{
-              width: laid.width * zoom,
-              height: laid.height * zoom,
-              position: "relative",
+              position: "absolute",
+              inset: 0,
+              overflow: "hidden",
             }}
           >
           <div
@@ -326,7 +339,8 @@ export function WorkflowTab() {
               width: laid.width,
               height: laid.height,
               transformOrigin: "top left",
-              transform: `scale(${zoom})`,
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              willChange: "transform",
             }}
           >
             <svg

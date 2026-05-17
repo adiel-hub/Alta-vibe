@@ -81,7 +81,7 @@ export const workflowCapability: Capability = {
   tools: (ctx) => [
     tool(
       "workflow_add_node",
-      "Add a node to the conversation workflow. Common types: 'speak' (agent says something), 'collect' (asks for a field), 'tool_call' (invoke a runtime tool), 'condition' (branch), 'transfer' (hand off), 'end' (hang up). Optional `after_node_id` connects the new node downstream of an existing one.",
+      "Add a node AND wire it to its predecessor in a single call. ALWAYS pass `after_node_id` (the parent node's id, usually the node you just added or 'start') so the graph stays connected as it grows. Don't add a batch of orphan nodes and then add edges later — the right panel renders the graph live, and orphans look broken. Common types: 'speak' (agent says something), 'collect' (asks for a field), 'tool_call' (invoke a runtime tool), 'condition' (branch), 'transfer' (hand off), 'end' (hang up).",
       {
         type: NodeTypeEnum,
         label: z.string().min(1).max(80),
@@ -120,7 +120,7 @@ export const workflowCapability: Capability = {
 
     tool(
       "workflow_connect_nodes",
-      "Add an edge between two existing workflow nodes.",
+      "Add an edge between two existing workflow nodes. Only use this for back-edges or fan-in connections that you couldn't express with `after_node_id` on workflow_add_node. For straight-line growth, prefer workflow_add_node({ after_node_id })`.",
       {
         from_id: z.string().min(1),
         to_id: z.string().min(1),

@@ -114,10 +114,15 @@ flicker and breaks the user's mental model.
        - update_system_prompt with a clear, opinionated prompt: the
          brand, what it does (from the scrape), tone, scope, what's
          in/out of scope, escalation rules.
-  3. **Workflow.** Use workflow_add_node / workflow_connect_nodes to
-     sketch the conversation as a graph (start → speak → collect →
-     condition → tool_call → end). Reference the system prompt's flow.
-     Keep it readable — 5-10 nodes is plenty.
+  3. **Workflow.** Sketch the conversation as a graph (start → speak →
+     collect → condition → tool_call → end). Reference the system
+     prompt's flow. Keep it readable — 5-10 nodes is plenty.
+     **Build it node-by-node, NOT batch-then-wire.** For each new
+     node, call `workflow_add_node({ after_node_id })` with the parent
+     id — the edge is created in the same call. This keeps the graph
+     connected as it grows so the user sees the flow take shape. Only
+     fall back to `workflow_connect_nodes` for back-edges or fan-in
+     joins that aren't a straight downstream connection.
   4. **Voice & language — LAST.** Only now: list_available_voices →
      update_voice (pick a voice that matches the brand vibe and the
      agent's language). Set update_language if non-English. TTS model
