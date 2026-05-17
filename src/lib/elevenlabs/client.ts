@@ -676,6 +676,10 @@ export function projectAgentConfig(
     data_collection: dataCollection,
     evaluation_criteria: evalCriteria,
     phone_numbers: phoneNumbers,
+    // Workflow + integrations are platform-side metadata (we own them, not
+    // the voice provider). Carry forward whatever's in the agent doc.
+    workflow: fallback.workflow,
+    integrations: fallback.integrations,
   };
 }
 

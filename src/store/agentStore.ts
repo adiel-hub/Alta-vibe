@@ -5,6 +5,7 @@ import type {
   AgentConfigCache,
   AgentDTO,
   ContentBlock,
+  WidgetKind,
 } from "@/types/agent";
 
 export type SectionKey =
@@ -19,12 +20,23 @@ export type SectionKey =
   | "data"
   | "evaluation"
   | "phone"
-  | "limits";
+  | "limits"
+  | "workflow"
+  | "integrations"
+  | "turn";
 
 export type ChatTurn = {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: ContentBlock[];
+};
+
+export type WidgetEntry = {
+  action_id: string;
+  kind: WidgetKind;
+  payload: unknown;
+  status: "pending" | "done" | "cancelled" | "failed";
+  result: unknown;
 };
 
 type State = {
@@ -38,10 +50,17 @@ type State = {
   activeJobId: string | null;
   activeAssistantTurnId: string | null;
   lastSeq: number;
+  widgets: Record<string, WidgetEntry>;
+  /** Workflow node currently active during a live test call. */
+  liveWorkflowNodeId: string | null;
 };
 
 type Actions = {
-  hydrate: (agent: AgentDTO, turns: ChatTurn[]) => void;
+  hydrate: (
+    agent: AgentDTO,
+    turns: ChatTurn[],
+    widgets?: WidgetEntry[],
+  ) => void;
   applyPatch: (revision: number, patch: Partial<AgentConfigCache>) => void;
   applyConfigDirect: (patch: Partial<AgentConfigCache>, revision: number) => void;
   setInFlight: (section: SectionKey, busy: boolean) => void;
@@ -63,6 +82,13 @@ type Actions = {
   finalizeAssistantTurn: () => void;
   setActiveTurn: (jobId: string | null, assistantTurnId: string | null) => void;
   setLastSeq: (seq: number) => void;
+  upsertWidget: (w: WidgetEntry) => void;
+  resolveWidget: (
+    actionId: string,
+    status: "done" | "cancelled" | "failed",
+    result: unknown,
+  ) => void;
+  setLiveWorkflowNode: (nodeId: string | null) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -76,8 +102,10 @@ export const useAgentStore = create<State & Actions>((set) => ({
   activeJobId: null,
   activeAssistantTurnId: null,
   lastSeq: -1,
+  widgets: {},
+  liveWorkflowNodeId: null,
 
-  hydrate: (agent, turns) =>
+  hydrate: (agent, turns, widgets) =>
     set({
       agent,
       config: agent.config_cache,
@@ -89,6 +117,8 @@ export const useAgentStore = create<State & Actions>((set) => ({
       activeJobId: null,
       activeAssistantTurnId: null,
       lastSeq: -1,
+      widgets: Object.fromEntries((widgets ?? []).map((w) => [w.action_id, w])),
+      liveWorkflowNodeId: null,
     }),
 
   applyPatch: (revision, patch) =>
@@ -216,4 +246,21 @@ export const useAgentStore = create<State & Actions>((set) => ({
     }),
 
   setLastSeq: (seq) => set({ lastSeq: seq }),
+
+  upsertWidget: (w) =>
+    set((s) => ({ widgets: { ...s.widgets, [w.action_id]: w } })),
+
+  resolveWidget: (actionId, status, result) =>
+    set((s) => {
+      const existing = s.widgets[actionId];
+      if (!existing) return s;
+      return {
+        widgets: {
+          ...s.widgets,
+          [actionId]: { ...existing, status, result },
+        },
+      };
+    }),
+
+  setLiveWorkflowNode: (nodeId) => set({ liveWorkflowNodeId: nodeId }),
 }));

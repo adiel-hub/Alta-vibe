@@ -5,6 +5,7 @@ import { useAgentStore } from "@/store/agentStore";
 import { attachToTurn, sendMessage } from "@/store/sseClient";
 import { appFetch } from "@/lib/apiClient";
 import type { ContentBlock } from "@/types/agent";
+import { ChatWidget } from "./ChatWidget";
 
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
@@ -86,7 +87,12 @@ export function ChatPanel({ agentId }: { agentId: string }) {
           </div>
         )}
         {turns.map((turn) => (
-          <TurnView key={turn.id} role={turn.role} content={turn.content} />
+          <TurnView
+            key={turn.id}
+            role={turn.role}
+            content={turn.content}
+            agentId={agentId}
+          />
         ))}
         {streaming && streaming.text && (
           <TurnView
@@ -139,12 +145,28 @@ function TurnView({
   role,
   content,
   streaming,
+  agentId,
 }: {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: ContentBlock[];
   streaming?: boolean;
+  agentId?: string;
 }) {
   const isUser = role === "user";
+  const isSystem = role === "system";
+  if (isSystem) {
+    const text = content
+      .map((b) => (b.type === "text" ? b.text : ""))
+      .filter(Boolean)
+      .join(" ");
+    return (
+      <div className="flex justify-center">
+        <div className="rounded-full bg-(--color-panel-soft) px-3 py-1 text-[10px] uppercase tracking-wider text-(--color-muted)">
+          {text || "system"}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
       <div
@@ -155,7 +177,7 @@ function TurnView({
         }
       >
         {content.map((block, i) => (
-          <ContentBlockView key={i} block={block} />
+          <ContentBlockView key={i} block={block} agentId={agentId} />
         ))}
         {streaming && <span className="inline-block animate-pulse">▍</span>}
       </div>
@@ -163,11 +185,33 @@ function TurnView({
   );
 }
 
-function ContentBlockView({ block }: { block: ContentBlock }) {
+function ContentBlockView({
+  block,
+  agentId,
+}: {
+  block: ContentBlock;
+  agentId?: string;
+}) {
+  const widgets = useAgentStore((s) => s.widgets);
   if (block.type === "text") {
     return <div className="whitespace-pre-wrap leading-relaxed">{block.text}</div>;
   }
   if (block.type === "tool_use") {
+    // Interactive widget rendering: when the agent calls request_user_action,
+    // show the matching interactive widget instead of raw tool_use JSON.
+    if (block.name === "mcp__alta__request_user_action" && agentId) {
+      const input = block.input as { kind?: string; payload?: unknown } | undefined;
+      // Find the widget by scanning all widgets for one whose kind matches
+      // and whose payload was emitted around this tool call. The
+      // widget_inserted event carries the canonical action_id; we match on
+      // kind+payload as a best-effort fallback if event arrived first.
+      const widget = Object.values(widgets).find(
+        (w) =>
+          w.kind === input?.kind &&
+          JSON.stringify(w.payload) === JSON.stringify(input?.payload),
+      );
+      if (widget) return <ChatWidget agentId={agentId} widget={widget} />;
+    }
     return (
       <div className="rounded-lg border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 font-mono text-xs">
         <div className="text-(--color-muted)">→ {humanToolName(block.name)}</div>

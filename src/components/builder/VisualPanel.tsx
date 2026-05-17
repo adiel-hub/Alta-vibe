@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { OverviewTab } from "./tabs/OverviewTab";
+import { WorkflowTab } from "./tabs/WorkflowTab";
 import { VoiceTab } from "./tabs/VoiceTab";
 import { KnowledgeBaseTab } from "./tabs/KnowledgeBaseTab";
 import { ToolsTab } from "./tabs/ToolsTab";
@@ -13,6 +14,7 @@ import { AnalyticsTab } from "./tabs/AnalyticsTab";
 
 const TABS = [
   { id: "overview", label: "Overview" },
+  { id: "workflow", label: "Workflow" },
   { id: "voice", label: "Voice & Language" },
   { id: "kb", label: "Knowledge" },
   { id: "tools", label: "Tools" },
@@ -71,6 +73,7 @@ export function VisualPanel({ agentId }: { agentId: string }) {
 
       <div className="flex-1 overflow-y-auto px-5 py-5">
         {tab === "overview" && <OverviewTab agentId={agentId} />}
+        {tab === "workflow" && <WorkflowTab />}
         {tab === "voice" && <VoiceTab agentId={agentId} />}
         {tab === "kb" && <KnowledgeBaseTab agentId={agentId} />}
         {tab === "tools" && <ToolsTab />}

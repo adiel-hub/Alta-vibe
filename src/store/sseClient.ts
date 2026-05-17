@@ -138,6 +138,18 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
     case "state_error":
       s.setError(event.section, event.message);
       break;
+    case "widget_inserted":
+      s.upsertWidget({
+        action_id: event.action_id,
+        kind: event.kind,
+        payload: event.payload,
+        status: "pending",
+        result: null,
+      });
+      break;
+    case "widget_resolved":
+      s.resolveWidget(event.action_id, event.status, event.result);
+      break;
     case "turn_aborted":
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       break;

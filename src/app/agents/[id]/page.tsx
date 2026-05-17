@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { ObjectId } from "mongodb";
-import { agentsCol, messagesCol } from "@/lib/mongodb";
+import { agentsCol, messagesCol, widgetActionsCol } from "@/lib/mongodb";
 import {
   getAgent,
   projectAgentConfig,
@@ -10,7 +10,7 @@ import { ChatPanel } from "@/components/builder/ChatPanel";
 import { VisualPanel } from "@/components/builder/VisualPanel";
 import { BuilderHydrator } from "@/components/builder/BuilderHydrator";
 import type { AgentDTO } from "@/types/agent";
-import type { ChatTurn } from "@/store/agentStore";
+import type { ChatTurn, WidgetEntry } from "@/store/agentStore";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,19 @@ export default async function AgentBuilderPage({
     content: m.content,
   }));
 
+  const widgetDocs = await (await widgetActionsCol())
+    .find({ agent_id: doc._id })
+    .sort({ created_at: 1 })
+    .limit(50)
+    .toArray();
+  const widgets: WidgetEntry[] = widgetDocs.map((w) => ({
+    action_id: w._id.toHexString(),
+    kind: w.kind,
+    payload: w.payload,
+    status: w.status,
+    result: w.result,
+  }));
+
   const dto: AgentDTO = {
     id: doc._id.toHexString(),
     elevenlabs_agent_id: doc.elevenlabs_agent_id,
@@ -59,7 +72,7 @@ export default async function AgentBuilderPage({
 
   return (
     <div className="flex h-screen">
-      <BuilderHydrator agent={dto} turns={turns} />
+      <BuilderHydrator agent={dto} turns={turns} widgets={widgets} />
       <section className="flex w-1/2 flex-col border-r border-(--color-border)">
         <ChatPanel agentId={dto.id} />
       </section>

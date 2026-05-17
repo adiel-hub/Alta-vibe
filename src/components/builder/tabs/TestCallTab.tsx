@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useConversation } from "@elevenlabs/react";
 import { appFetch } from "@/lib/apiClient";
+import { useAgentStore } from "@/store/agentStore";
 
 export function TestCallTab({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
@@ -10,6 +11,7 @@ export function TestCallTab({ agentId }: { agentId: string }) {
   const [transcript, setTranscript] = useState<
     { role: "agent" | "user"; text: string }[]
   >([]);
+  const setLiveNode = useAgentStore((s) => s.setLiveWorkflowNode);
 
   const conversation = useConversation({
     onError: (e: unknown) =>
@@ -25,12 +27,26 @@ export function TestCallTab({ agentId }: { agentId: string }) {
         ]);
       }
     },
+    onDisconnect: () => setLiveNode(null),
+    clientTools: {
+      // The deployed agent calls this whenever it enters a new workflow
+      // node. We light up that node in the right-panel workflow visualizer.
+      report_workflow_state: async ({
+        node_id,
+      }: {
+        node_id?: string;
+      }): Promise<string> => {
+        if (typeof node_id === "string") setLiveNode(node_id);
+        return "tracked";
+      },
+    },
   });
 
   const start = async () => {
     setError(null);
     setStarting(true);
     setTranscript([]);
+    setLiveNode(null);
     try {
       const tokenRes = await appFetch(`/api/agents/${agentId}/conversation-token`);
       if (!tokenRes.ok) throw new Error(`Token failed (${tokenRes.status})`);
@@ -45,9 +61,11 @@ export function TestCallTab({ agentId }: { agentId: string }) {
 
   const stop = async () => {
     await conversation.endSession();
+    setLiveNode(null);
   };
 
   const isActive = conversation.status === "connected";
+  const liveNode = useAgentStore((s) => s.liveWorkflowNodeId);
 
   return (
     <div className="space-y-4">
@@ -57,7 +75,7 @@ export function TestCallTab({ agentId }: { agentId: string }) {
         </h3>
         <p className="mb-4 text-sm text-(--color-muted)">
           Talk to your agent through the browser (WebRTC). Allow microphone access
-          when prompted.
+          when prompted. The workflow tab will light up the current node live.
         </p>
         <div className="flex items-center gap-3">
           {!isActive ? (
@@ -85,6 +103,12 @@ export function TestCallTab({ agentId }: { agentId: string }) {
                 <span className="font-mono">
                   {conversation.isSpeaking ? "agent" : "user"}
                 </span>
+              </>
+            )}
+            {liveNode && (
+              <>
+                {" · "}
+                node: <span className="font-mono">{liveNode}</span>
               </>
             )}
           </div>
@@ -117,7 +141,7 @@ export function TestCallTab({ agentId }: { agentId: string }) {
       )}
 
       <div className="rounded-2xl border border-dashed border-(--color-border) p-4 text-xs text-(--color-muted)">
-        Want to test by phone instead? Open the <span className="font-semibold text-(--color-foreground)">Phone</span> tab,
+        Want to test by phone? Open the <span className="font-semibold text-(--color-foreground)">Phone</span> tab,
         attach a number, and place an outbound call to your mobile.
       </div>
     </div>

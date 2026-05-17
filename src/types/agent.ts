@@ -1,5 +1,7 @@
 import type { ObjectId } from "mongodb";
 
+// --- Voice agent configuration ---------------------------------------------
+
 export type KnowledgeBaseDocument = {
   id: string;
   name: string;
@@ -18,6 +20,8 @@ export type RuntimeTool = {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   url?: string;
   parameters?: unknown;
+  /** Optional provenance: which integration provider registered this tool. */
+  provider?: string;
 };
 
 export type McpIntegration = {
@@ -54,6 +58,52 @@ export type PhoneNumber = {
   label?: string;
 };
 
+// --- Workflow graph --------------------------------------------------------
+
+export type WorkflowNodeType =
+  | "start"
+  | "speak"
+  | "collect"
+  | "tool_call"
+  | "condition"
+  | "transfer"
+  | "end";
+
+export type WorkflowNode = {
+  id: string;
+  type: WorkflowNodeType;
+  label: string;
+  /** Free-form data per node type (prompt, tool_id, collect_field, condition, etc). */
+  data: Record<string, unknown>;
+  /** Layout hint; consumed by the right-panel renderer. Auto-laid-out by default. */
+  position?: { x: number; y: number };
+};
+
+export type WorkflowEdge = {
+  id: string;
+  from: string;
+  to: string;
+  label?: string;
+  condition?: string;
+};
+
+export type WorkflowState = {
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+};
+
+// --- Connected integrations (third-party providers) -----------------------
+
+export type ConnectedIntegration = {
+  id: string;
+  provider: string;
+  display_name: string;
+  status: "connected" | "disconnected" | "expired";
+  connected_at: string | null;
+};
+
+// --- Aggregate config ------------------------------------------------------
+
 export type AgentConfigCache = {
   name: string;
   first_message: string;
@@ -71,6 +121,8 @@ export type AgentConfigCache = {
   data_collection: DataCollectionField[];
   evaluation_criteria: EvaluationCriterion[];
   phone_numbers: PhoneNumber[];
+  workflow: WorkflowState;
+  integrations: ConnectedIntegration[];
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
@@ -79,6 +131,11 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   style: 0.0,
   use_speaker_boost: true,
   speed: 1.0,
+};
+
+export const DEFAULT_WORKFLOW: WorkflowState = {
+  nodes: [{ id: "start", type: "start", label: "Call connects", data: {} }],
+  edges: [],
 };
 
 export type AgentLastError = {
@@ -106,7 +163,8 @@ export type AgentDTO = Omit<AgentDocument, "_id" | "created_at" | "updated_at"> 
   updated_at: string;
 };
 
-// --- Anthropic content blocks (persisted verbatim)
+// --- Anthropic content blocks (persisted verbatim) ------------------------
+
 export type TextBlock = { type: "text"; text: string };
 export type ToolUseBlock = {
   type: "tool_use";
@@ -125,7 +183,7 @@ export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
 export type ChatMessageDocument = {
   _id: ObjectId;
   agent_id: ObjectId;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: ContentBlock[];
   turn_job_id?: ObjectId;
   revision_before: number;
@@ -135,7 +193,7 @@ export type ChatMessageDocument = {
 
 export type ChatMessageDTO = {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: ContentBlock[];
   turn_job_id?: string;
   revision_before: number;
@@ -143,7 +201,8 @@ export type ChatMessageDTO = {
   created_at: string;
 };
 
-// --- SSE event vocabulary
+// --- SSE event vocabulary --------------------------------------------------
+
 export type SSEEvent =
   | { type: "assistant_delta"; text: string }
   | { type: "tool_call_start"; tool_use_id: string; name: string; input: unknown }
@@ -158,11 +217,24 @@ export type SSEEvent =
       revision: number;
       patch: Partial<AgentConfigCache>;
     }
+  | {
+      type: "widget_inserted";
+      action_id: string;
+      kind: WidgetKind;
+      payload: unknown;
+    }
+  | {
+      type: "widget_resolved";
+      action_id: string;
+      status: "done" | "cancelled" | "failed";
+      result: unknown;
+    }
   | { type: "state_error"; section: string; message: string }
   | { type: "turn_aborted"; reason: string }
   | { type: "turn_done"; revision: number };
 
-// --- Backend-persistent turn jobs (refresh-safe streaming)
+// --- Backend-persistent turn jobs (refresh-safe streaming) ----------------
+
 export type TurnJobStatus = "queued" | "running" | "done" | "failed";
 
 export type StoredTurnEvent = {
@@ -178,23 +250,48 @@ export type TurnJobDocument = {
   user_message: string;
   events: StoredTurnEvent[];
   next_seq: number;
+  /** Updated on every event push; watchdog reaps jobs idle > N seconds. */
+  last_event_at: Date;
   error: string | null;
   started_at: Date;
   finished_at: Date | null;
 };
 
-export type TurnJobSummary = {
-  id: string;
-  agent_id: string;
-  status: TurnJobStatus;
-  user_message: string;
-  next_seq: number;
-  error: string | null;
-  started_at: string;
-  finished_at: string | null;
+// --- Widget actions (interactive chat components) ------------------------
+
+export type WidgetKind =
+  | "connect_integration"
+  | "confirm"
+  | "pick_option";
+
+export type WidgetActionDocument = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  turn_job_id: ObjectId | null;
+  kind: WidgetKind;
+  payload: unknown;
+  status: "pending" | "done" | "cancelled" | "failed";
+  result: unknown | null;
+  created_at: Date;
+  resolved_at: Date | null;
 };
 
-// --- Call logs (proxied from voice provider)
+// --- Integrations (per-agent credentials) --------------------------------
+
+export type IntegrationDocument = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  provider: string;
+  status: "connected" | "disconnected" | "expired";
+  credentials: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  connected_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+// --- Call logs --------------------------------------------------------------
+
 export type CallLogSummary = {
   id: string;
   agent_id: string;

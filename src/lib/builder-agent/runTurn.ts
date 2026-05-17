@@ -1,14 +1,14 @@
 /**
- * Core turn runner. Calls the Claude Agent SDK with the builder MCP tools,
- * iterates the SDK's async-generator stream, and pushes typed SSE events into
- * the caller-supplied emit callback. Used by both the in-process path
- * (Vercel Function direct invocation, local dev) and — via the JSONL-over-
- * stdio entrypoint — by the Vercel Sandbox path.
+ * Core turn runner. Drives the Claude Agent SDK with the builder capability
+ * tools, iterates the SDK's async generator, and forwards typed SSE events
+ * via the caller-supplied emit callback. Used by the background turn-job
+ * processor (`lib/turn-jobs/runner.ts`) which persists each event into
+ * Mongo so any client can tail or re-tail the turn.
  */
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { createBuilderTools, BUILDER_TOOL_NAMES } from "./tools";
+import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createBuilderTools } from "./tools";
 import { BUILDER_SYSTEM_PROMPT } from "./systemPrompt";
+import { CAPABILITIES } from "@/lib/capabilities";
 import type {
   AgentConfigCache,
   ContentBlock,
@@ -16,23 +16,23 @@ import type {
 } from "@/types/agent";
 
 export type RunTurnInput = {
+  agentMongoId: string;
   elevenlabsAgentId: string;
   currentConfig: AgentConfigCache;
   startingRevision: number;
   /** Recent prior turns (rendered into the system prompt). Newest last. */
-  transcript: Array<{ role: "user" | "assistant"; content: ContentBlock[] }>;
+  transcript: Array<{ role: "user" | "assistant" | "system"; content: ContentBlock[] }>;
   userMessage: string;
+  turnJobId: string;
 };
 
 export type RunTurnResult = {
   endingRevision: number;
-  /** Final config snapshot after all successful tool calls. */
   finalConfig: AgentConfigCache;
-  /** Assistant content blocks (text + tool_use + tool_result) to persist. */
   assistantContent: ContentBlock[];
 };
 
-const MAX_HISTORY_TURNS = 6;
+const MAX_HISTORY_TURNS = 8;
 const HARD_TIMEOUT_MS = 90_000;
 
 function formatTranscript(
@@ -58,8 +58,12 @@ function formatTranscript(
 }
 
 function buildSystemPrompt(input: RunTurnInput): string {
+  const enabledCapabilities = CAPABILITIES.map((c) => `- ${c.id}: ${c.label}`).join("\n");
   return [
     BUILDER_SYSTEM_PROMPT,
+    "",
+    "ENABLED CAPABILITIES:",
+    enabledCapabilities,
     "",
     "CURRENT AGENT STATE (JSON):",
     JSON.stringify(input.currentConfig, null, 2),
@@ -78,13 +82,27 @@ export async function runTurn(
   const assistantContent: ContentBlock[] = [];
 
   const tools = createBuilderTools({
+    agentMongoId: input.agentMongoId,
     elevenlabs_agent_id: input.elevenlabsAgentId,
     config,
+    turn_job_id: input.turnJobId,
     emit,
     bumpRevision: () => ++revision,
   });
 
-  const allowedTools = BUILDER_TOOL_NAMES.map((n) => `mcp__alta__${n}`);
+  const allowedTools = CAPABILITIES.flatMap((c) =>
+    c.tools({
+      agentMongoId: input.agentMongoId,
+      elevenlabs_agent_id: input.elevenlabsAgentId,
+      config,
+      turn_job_id: input.turnJobId,
+      emit: () => {},
+      bumpRevision: () => revision,
+    }),
+  )
+    .map((t) => (t as { name?: string }).name)
+    .filter((n): n is string => typeof n === "string")
+    .map((n) => `mcp__alta__${n}`);
 
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => {
@@ -99,7 +117,7 @@ export async function runTurn(
         systemPrompt: buildSystemPrompt(input),
         mcpServers: { alta: tools },
         allowedTools,
-        maxTurns: 8,
+        maxTurns: 10,
         includePartialMessages: true,
         abortController,
       },
@@ -145,7 +163,6 @@ function forwardMessage(
     }).message.content;
     for (const block of blocks) {
       if (block.type === "text" && typeof block.text === "string") {
-        // Final accumulated text — persist (deltas already emitted)
         assistantContent.push({ type: "text", text: block.text as string });
       } else if (
         block.type === "tool_use" &&

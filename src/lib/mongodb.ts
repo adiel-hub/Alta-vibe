@@ -2,7 +2,9 @@ import { MongoClient, type Db, type Collection } from "mongodb";
 import type {
   AgentDocument,
   ChatMessageDocument,
+  IntegrationDocument,
   TurnJobDocument,
+  WidgetActionDocument,
 } from "@/types/agent";
 
 declare global {
@@ -49,7 +51,13 @@ export async function getDb(): Promise<Db> {
         .createIndex({ agent_id: 1, started_at: -1 }),
       db
         .collection<TurnJobDocument>("turn_jobs")
-        .createIndex({ status: 1, started_at: -1 }),
+        .createIndex({ status: 1, last_event_at: 1 }),
+      db
+        .collection<WidgetActionDocument>("widget_actions")
+        .createIndex({ agent_id: 1, status: 1, created_at: -1 }),
+      db
+        .collection<IntegrationDocument>("integrations")
+        .createIndex({ agent_id: 1, provider: 1 }, { unique: true }),
     ]);
     globalThis.__altaVibeIndexesEnsured = true;
   }
@@ -66,4 +74,12 @@ export async function messagesCol(): Promise<Collection<ChatMessageDocument>> {
 
 export async function turnJobsCol(): Promise<Collection<TurnJobDocument>> {
   return (await getDb()).collection<TurnJobDocument>("turn_jobs");
+}
+
+export async function widgetActionsCol(): Promise<Collection<WidgetActionDocument>> {
+  return (await getDb()).collection<WidgetActionDocument>("widget_actions");
+}
+
+export async function integrationsCol(): Promise<Collection<IntegrationDocument>> {
+  return (await getDb()).collection<IntegrationDocument>("integrations");
 }

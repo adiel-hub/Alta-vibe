@@ -1,10 +1,12 @@
 /**
  * Background turn-job runner. Owns the lifecycle of a single Claude agent
- * turn, decoupled from the HTTP request that enqueued it. Events are streamed
- * into Mongo on `turn_jobs.events` as the SDK produces them so any client
+ * turn, decoupled from the HTTP request that enqueued it. Events stream into
+ * Mongo on `turn_jobs.events` as the SDK produces them so any client
  * (including one that refreshed mid-turn) can tail from any seq.
  *
  * Survives across HTTP requests via Next.js `after()` (Vercel waitUntil).
+ * Stuck-job watchdog: if `last_event_at` falls behind `STUCK_THRESHOLD_MS`
+ * the reaper (in `reapStuckJobs`) marks the job failed.
  */
 import { ObjectId } from "mongodb";
 import { runTurn } from "@/lib/builder-agent/runTurn";
@@ -15,13 +17,12 @@ import {
 } from "@/lib/mongodb";
 import type { ContentBlock, SSEEvent, StoredTurnEvent } from "@/types/agent";
 
-/**
- * Enqueue a new turn job, persist the user message turn, and return the job id.
- * The caller should schedule {@link processTurnJob} via `after()`.
- */
+export const STUCK_THRESHOLD_MS = 90_000;
+
 export async function enqueueTurnJob(
   agentId: ObjectId,
   userMessage: string,
+  role: "user" | "system" = "user",
 ): Promise<ObjectId> {
   const jobs = await turnJobsCol();
   const now = new Date();
@@ -31,6 +32,7 @@ export async function enqueueTurnJob(
     user_message: userMessage,
     events: [],
     next_seq: 0,
+    last_event_at: now,
     error: null,
     started_at: now,
     finished_at: null,
@@ -39,7 +41,7 @@ export async function enqueueTurnJob(
   const messages = await messagesCol();
   await messages.insertOne({
     agent_id: agentId,
-    role: "user",
+    role,
     content: [{ type: "text", text: userMessage }],
     turn_job_id: insert.insertedId,
     revision_before: 0,
@@ -50,18 +52,11 @@ export async function enqueueTurnJob(
   return insert.insertedId;
 }
 
-/**
- * Drive a queued turn job through the Claude Agent SDK to completion. All
- * progress is persisted to Mongo: events appended, final assistant turn
- * inserted into chat_messages, agent config_cache + revision committed.
- *
- * Idempotent on entry: if status is already running/done/failed, it returns.
- */
 export async function processTurnJob(jobId: ObjectId): Promise<void> {
   const jobs = await turnJobsCol();
   const claim = await jobs.findOneAndUpdate(
     { _id: jobId, status: "queued" },
-    { $set: { status: "running", started_at: new Date() } },
+    { $set: { status: "running", started_at: new Date(), last_event_at: new Date() } },
     { returnDocument: "after" },
   );
   if (!claim) return;
@@ -99,18 +94,6 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
   let localSeq = job.next_seq;
   const assistantContentSnapshot: ContentBlock[] = [];
 
-  const emit = async (event: SSEEvent) => {
-    const stored: StoredTurnEvent = {
-      seq: localSeq++,
-      at: new Date(),
-      event,
-    };
-    await jobs.updateOne(
-      { _id: jobId },
-      { $push: { events: stored }, $set: { next_seq: localSeq } },
-    );
-  };
-
   // Batch event emit to reduce Mongo round-trips for high-frequency deltas.
   let pending: StoredTurnEvent[] = [];
   let flushTimer: NodeJS.Timeout | null = null;
@@ -122,7 +105,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
       { _id: jobId },
       {
         $push: { events: { $each: batch } },
-        $set: { next_seq: localSeq },
+        $set: { next_seq: localSeq, last_event_at: new Date() },
       },
     );
   };
@@ -141,6 +124,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
   try {
     const result = await runTurn(
       {
+        agentMongoId: agent._id.toHexString(),
         elevenlabsAgentId: agent.elevenlabs_agent_id,
         currentConfig: agent.config_cache,
         startingRevision: agent.revision,
@@ -149,6 +133,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
           content: m.content,
         })),
         userMessage: job.user_message,
+        turnJobId: jobId.toHexString(),
       },
       bufferedEmit,
     );
@@ -159,7 +144,6 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     }
     await flush();
 
-    // Persist assistant turn
     await messages.insertOne({
       agent_id: agent._id,
       role: "assistant",
@@ -170,7 +154,6 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
       created_at: new Date(),
     } as never);
 
-    // Commit final config via optimistic lock
     if (result.endingRevision !== agent.revision) {
       await agents.updateOne(
         { _id: agent._id, revision: agent.revision },
@@ -195,8 +178,9 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     }
     await flush().catch(() => {});
     const message = err instanceof Error ? err.message : "Turn failed";
-    await emit({ type: "state_error", section: "turn", message });
-    await emit({ type: "turn_aborted", reason: message });
+    bufferedEmit({ type: "state_error", section: "turn", message });
+    bufferedEmit({ type: "turn_aborted", reason: message });
+    await flush().catch(() => {});
     await jobs.updateOne(
       { _id: jobId },
       {
@@ -207,8 +191,6 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
         },
       },
     );
-
-    // Persist whatever assistant content we captured, so a refresh shows it.
     if (assistantContentSnapshot.length > 0) {
       await messages.insertOne({
         agent_id: agent._id,
@@ -221,4 +203,27 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
       } as never);
     }
   }
+}
+
+/**
+ * Watchdog: mark long-idle running jobs as failed so SSE tails close instead
+ * of polling forever. Called from /turns/active before reading state.
+ */
+export async function reapStuckJobs(agentId: ObjectId): Promise<void> {
+  const jobs = await turnJobsCol();
+  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
+  await jobs.updateMany(
+    {
+      agent_id: agentId,
+      status: { $in: ["queued", "running"] },
+      last_event_at: { $lt: cutoff },
+    },
+    {
+      $set: {
+        status: "failed",
+        error: "Stalled: no events for over 90s (function probably crashed).",
+        finished_at: new Date(),
+      },
+    },
+  );
 }

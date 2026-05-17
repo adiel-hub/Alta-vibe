@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { requireSharedSecret } from "@/lib/auth";
 import { turnJobsCol } from "@/lib/mongodb";
+import { reapStuckJobs } from "@/lib/turn-jobs/runner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,9 +18,11 @@ export async function GET(
   if (!ObjectId.isValid(id)) {
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
+  const agentId = new ObjectId(id);
+  await reapStuckJobs(agentId);
   const jobs = await turnJobsCol();
   const active = await jobs
-    .find({ agent_id: new ObjectId(id), status: { $in: ["queued", "running"] } })
+    .find({ agent_id: agentId, status: { $in: ["queued", "running"] } })
     .sort({ started_at: -1 })
     .limit(1)
     .next();

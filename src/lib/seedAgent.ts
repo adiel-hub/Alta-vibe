@@ -18,7 +18,7 @@ boundaries, and what it can help with — 4-8 sentences.`;
 
 const seedTool = {
   name: "create_initial_agent",
-  description: "Emit the starter ElevenLabs voice-agent configuration.",
+  description: "Emit the starter voice-agent configuration.",
   input_schema: {
     type: "object" as const,
     properties: {
