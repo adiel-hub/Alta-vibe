@@ -16,7 +16,7 @@
  */
 import { ObjectId } from "mongodb";
 import { turnJobsCol } from "@/lib/mongodb";
-import { processTurnJob, reapStuckJobs } from "@/lib/turn-jobs/runner";
+import { STUCK_THRESHOLD_MS, processTurnJob, reapStuckJobs } from "@/lib/turn-jobs/runner";
 import { createLogger } from "@/lib/logger";
 
 const log = createLogger("worker");
@@ -40,7 +40,7 @@ async function tick() {
       const stale = await jobs
         .find({
           status: { $in: ["queued", "running"] },
-          last_event_at: { $lt: new Date(Date.now() - 90_000) },
+          last_event_at: { $lt: new Date(Date.now() - STUCK_THRESHOLD_MS) },
         })
         .project({ agent_id: 1 })
         .limit(50)

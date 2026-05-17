@@ -10,6 +10,7 @@
  */
 import { ObjectId } from "mongodb";
 import { runTurn } from "@/lib/builder-agent/runTurn";
+import { maybeUpdateConversationSummary } from "@/lib/builder-agent/summarizer";
 import {
   agentsCol,
   messagesCol,
@@ -20,7 +21,7 @@ import type { ContentBlock, SSEEvent, StoredTurnEvent } from "@/types/agent";
 
 const log = createLogger("turn-job");
 
-export const STUCK_THRESHOLD_MS = 90_000;
+export const STUCK_THRESHOLD_MS = 180_000;
 
 export async function enqueueTurnJob(
   agentId: ObjectId,
@@ -141,13 +142,28 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     scheduleFlush();
   };
 
+  // Roll up any messages that have fallen out of the live window into the
+  // stored conversation_summary on the agent doc. Best-effort: if it fails the
+  // turn still proceeds with the most recent summary we already had.
+  const { summary: conversationSummary } =
+    await maybeUpdateConversationSummary(
+      agent._id,
+      priorMessages,
+      agent.conversation_summary ?? null,
+      agent.summary_through_message_id ?? null,
+    );
+
   try {
     const result = await runTurn(
       {
         agentMongoId: agent._id.toHexString(),
         elevenlabsAgentId: agent.elevenlabs_agent_id,
+        agentName: agent.name,
+        agentDescription: agent.description,
+        lastError: agent.last_error,
         currentConfig: agent.config_cache,
         startingRevision: agent.revision,
+        conversationSummary,
         transcript: priorMessages.map((m) => ({
           role: m.role,
           content: m.content,

@@ -12,6 +12,7 @@ import { CAPABILITIES } from "@/lib/capabilities";
 import { createLogger } from "@/lib/logger";
 import type {
   AgentConfigCache,
+  AgentLastError,
   ContentBlock,
   SSEEvent,
 } from "@/types/agent";
@@ -19,8 +20,13 @@ import type {
 export type RunTurnInput = {
   agentMongoId: string;
   elevenlabsAgentId: string;
+  agentName: string;
+  agentDescription: string;
+  lastError: AgentLastError;
   currentConfig: AgentConfigCache;
   startingRevision: number;
+  /** Rolling summary of turns older than the live window. */
+  conversationSummary: string | null;
   /** Recent prior turns (rendered into the system prompt). Newest last. */
   transcript: Array<{ role: "user" | "assistant" | "system"; content: ContentBlock[] }>;
   userMessage: string;
@@ -33,8 +39,13 @@ export type RunTurnResult = {
   assistantContent: ContentBlock[];
 };
 
-const MAX_HISTORY_TURNS = 8;
-const HARD_TIMEOUT_MS = 90_000;
+/**
+ * Number of most-recent turns rendered verbatim into the prompt. Anything
+ * older is folded into `conversationSummary` by the summariser. Keep in sync
+ * with LIVE_WINDOW in `summarizer.ts`.
+ */
+const MAX_HISTORY_TURNS = 15;
+const HARD_TIMEOUT_MS = 360_000;
 
 function formatTranscript(
   transcript: RunTurnInput["transcript"],
@@ -46,9 +57,20 @@ function formatTranscript(
       const text = t.content
         .map((b) => {
           if (b.type === "text") return b.text;
-          if (b.type === "tool_use") return `[called ${b.name}]`;
-          if (b.type === "tool_result")
-            return `[result${b.is_error ? " ERROR" : ""}]`;
+          if (b.type === "tool_use") {
+            const input =
+              typeof b.input === "object" && b.input !== null
+                ? JSON.stringify(b.input).slice(0, 200)
+                : "";
+            return input ? `[called ${b.name}(${input})]` : `[called ${b.name}]`;
+          }
+          if (b.type === "tool_result") {
+            const out =
+              typeof b.output === "string"
+                ? b.output.slice(0, 200)
+                : JSON.stringify(b.output ?? "").slice(0, 200);
+            return `[result${b.is_error ? " ERROR" : ""}: ${out}]`;
+          }
           return "";
         })
         .filter(Boolean)
@@ -60,12 +82,14 @@ function formatTranscript(
 
 function buildSystemPrompt(input: RunTurnInput): string {
   const enabledCapabilities = CAPABILITIES.map((c) => `- ${c.id}: ${c.label}`).join("\n");
-  return [
+  const sections: string[] = [
     BUILDER_SYSTEM_PROMPT,
     "",
     "LOCKED AGENT CONTEXT (you can ONLY operate on this agent):",
     `  voice_agent_id: ${input.elevenlabsAgentId}`,
     `  platform_record_id: ${input.agentMongoId}`,
+    `  internal_name: ${input.agentName}`,
+    `  description: ${input.agentDescription || "(none)"}`,
     "  All your tools are pre-bound to this agent. You CANNOT switch to a",
     "  different agent, create another one, or read another user's data.",
     "  If the user asks for something that would require a different agent",
@@ -77,10 +101,31 @@ function buildSystemPrompt(input: RunTurnInput): string {
     "",
     "CURRENT AGENT STATE (JSON):",
     JSON.stringify(input.currentConfig, null, 2),
+  ];
+
+  if (input.lastError) {
+    sections.push(
+      "",
+      "LAST UPSTREAM ERROR (informational — only mention if relevant):",
+      JSON.stringify(input.lastError, null, 2),
+    );
+  }
+
+  if (input.conversationSummary) {
+    sections.push(
+      "",
+      "CONVERSATION SUMMARY (older turns, condensed):",
+      input.conversationSummary,
+    );
+  }
+
+  sections.push(
     "",
-    "RECENT CONVERSATION (newest last):",
+    `RECENT CONVERSATION — last ${MAX_HISTORY_TURNS} turns, newest last:`,
     formatTranscript(input.transcript),
-  ].join("\n");
+  );
+
+  return sections.join("\n");
 }
 
 export async function runTurn(
@@ -126,7 +171,7 @@ export async function runTurn(
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => {
     log.warn("hard timeout, aborting", { ms: HARD_TIMEOUT_MS });
-    emit({ type: "turn_aborted", reason: "hard timeout (90s)" });
+    emit({ type: "turn_aborted", reason: `hard timeout (${HARD_TIMEOUT_MS / 1000}s)` });
     abortController.abort();
   }, HARD_TIMEOUT_MS);
 

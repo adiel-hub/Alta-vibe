@@ -78,23 +78,26 @@ export function ChatPanel({ agentId }: { agentId: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="border-b border-(--color-border) px-5 py-4 animate-fade-in">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-(--color-muted)">
-          Alta · Builder chat
-        </h2>
-        <p className="text-xs text-(--color-muted)">
-          Tell Alta what to build. Anything you can do in the panel, you can ask
-          for here.
-          {activeJobId && (
-            <span className="ml-2 inline-flex items-center gap-1 text-(--color-accent)">
-              <span className="inline-block h-1.5 w-1.5 animate-ping rounded-full bg-(--color-accent)" />
-              working
-            </span>
-          )}
-        </p>
+      <header className="flex items-center gap-2 border-b border-(--color-border) px-4 py-3 animate-fade-in">
+        <span className="grid h-7 w-7 place-items-center rounded-lg bg-(--color-violet-100) text-(--color-violet-600)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <path d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z" />
+          </svg>
+        </span>
+        <div className="flex flex-col">
+          <span className="text-[13px] font-semibold text-(--color-foreground-strong)">
+            Alta
+          </span>
+          <span className="text-[11px] text-(--color-muted-soft)">
+            {activeJobId ? "working…" : "Builder chat"}
+          </span>
+        </div>
+        <span className="ml-auto inline-flex items-center gap-1 rounded-md bg-(--color-violet-100) px-2 py-1 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
+          {activeJobId ? "BUILDING" : "READY"}
+        </span>
       </header>
 
-      <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+      <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5 text-(--color-foreground)">
         {turns.length === 0 && !streaming && (
           <div className="space-y-2 text-sm text-(--color-muted) animate-fade-in">
             <p>Try one of:</p>
@@ -148,8 +151,8 @@ export function ChatPanel({ agentId }: { agentId: string }) {
         </div>
       )}
 
-      <footer className="border-t border-(--color-border) p-4">
-        <div className="flex gap-2">
+      <footer className="border-t border-(--color-border) bg-(--color-panel) p-3">
+        <div className="rounded-xl border border-(--color-border) bg-(--color-panel) p-2.5 transition focus-within:border-(--color-accent) focus-within:shadow-[0_0_0_3px_rgba(79,70,229,0.08)]">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -162,15 +165,24 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             rows={2}
             placeholder="Describe a change…"
             disabled={sending}
-            className="flex-1 resize-none rounded-xl border border-(--color-border) bg-(--color-panel) px-3 py-2 text-sm outline-none transition-colors focus:border-(--color-accent)"
+            className="w-full resize-none bg-transparent text-sm text-(--color-foreground-strong) outline-none placeholder:text-(--color-muted-soft)"
           />
-          <button
-            onClick={send}
-            disabled={sending || !input.trim()}
-            className="self-end rounded-xl bg-(--color-accent) px-4 py-2 text-sm font-semibold text-(--color-accent-foreground) transition hover:brightness-110 active:scale-95"
-          >
-            {sending ? "…" : "Send"}
-          </button>
+          <div className="mt-2 flex items-center gap-2 border-t border-(--color-panel-soft) pt-2">
+            <span className="ml-auto rounded border border-(--color-border) bg-(--color-panel-soft) px-1.5 py-0.5 font-mono text-[10px] text-(--color-muted-soft)">
+              ⏎
+            </span>
+            <button
+              onClick={send}
+              disabled={sending || !input.trim()}
+              className="grid h-7 w-7 place-items-center rounded-md bg-(--color-accent) text-white transition hover:brightness-110 disabled:bg-(--color-border) disabled:text-(--color-muted-soft)"
+              aria-label="Send"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <line x1="5" y1="12" x2="19" y2="12" />
+                <polyline points="12 5 19 12 12 19" />
+              </svg>
+            </button>
+          </div>
         </div>
       </footer>
     </div>
@@ -230,8 +242,8 @@ function TurnView({
       <div
         className={
           isUser
-            ? "max-w-[85%] rounded-2xl bg-(--color-accent) px-4 py-2 text-sm text-(--color-accent-foreground) shadow-sm"
-            : "max-w-[90%] space-y-2 rounded-2xl bg-(--color-panel) px-4 py-3 text-sm shadow-sm"
+            ? "max-w-[85%] rounded-2xl bg-(--color-panel-soft) px-4 py-2 text-sm text-(--color-foreground-strong)"
+            : "max-w-[92%] space-y-2 rounded-2xl border border-(--color-panel-soft) bg-(--color-violet-100)/40 px-4 py-3 text-sm text-(--color-foreground)"
         }
       >
         {streamingHint && (

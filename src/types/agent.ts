@@ -153,6 +153,10 @@ export type AgentDocument = {
   revision: number;
   config_cache: AgentConfigCache;
   last_error: AgentLastError;
+  /** Rolling summary of conversation turns older than the live window. */
+  conversation_summary?: string | null;
+  /** Most recent chat_message _id covered by conversation_summary. */
+  summary_through_message_id?: ObjectId | null;
   created_at: Date;
   updated_at: Date;
 };

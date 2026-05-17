@@ -54,13 +54,15 @@ export async function POST(
 
   // Run the turn in the background. On Vercel this is `waitUntil`-backed and
   // continues after we send the response.
-  after(async () => {
-    try {
-      await processTurnJob(jobId);
-    } catch {
-      // processTurnJob handles its own errors and persists status=failed.
-    }
-  });
+  if (!process.env.USE_RAILWAY_WORKER) {
+    after(async () => {
+      try {
+        await processTurnJob(jobId);
+      } catch {
+        // processTurnJob handles its own errors and persists status=failed.
+      }
+    });
+  }
 
   return NextResponse.json({ jobId: jobId.toHexString() });
 }

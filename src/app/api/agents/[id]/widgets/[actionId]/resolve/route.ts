@@ -111,13 +111,15 @@ export async function POST(
 
   if (effectMessage) {
     const newJobId = await enqueueTurnJob(agentId, effectMessage, "system");
-    after(async () => {
-      try {
-        await processTurnJob(newJobId);
-      } catch {
-        // job runner handles its own failures
-      }
-    });
+    if (!process.env.USE_RAILWAY_WORKER) {
+      after(async () => {
+        try {
+          await processTurnJob(newJobId);
+        } catch {
+          // job runner handles its own failures
+        }
+      });
+    }
     return NextResponse.json({
       status: parsed.data.status,
       summary,

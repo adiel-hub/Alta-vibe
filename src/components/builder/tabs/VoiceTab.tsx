@@ -1,15 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
-import type { AgentConfigCache, VoiceSettings } from "@/types/agent";
+import type { AgentConfigCache } from "@/types/agent";
 
 const TTS_MODEL_OPTIONS = [
-  { id: "eleven_v3", label: "Expressive v3 (most natural)" },
-  { id: "eleven_multilingual_v2", label: "Multilingual v2" },
-  { id: "eleven_turbo_v2_5", label: "Turbo v2.5 (low latency)" },
-  { id: "eleven_flash_v2_5", label: "Flash v2.5 (fastest)" },
+  { id: "eleven_v3_conversational", label: "Expressive v3" },
 ];
 
 const LANGUAGE_OPTIONS = [
@@ -22,6 +19,7 @@ const LANGUAGE_OPTIONS = [
   ["ja", "Japanese"],
   ["zh", "Chinese"],
   ["ar", "Arabic"],
+  ["he", "Hebrew"],
   ["hi", "Hindi"],
   ["ko", "Korean"],
   ["nl", "Dutch"],
@@ -56,9 +54,16 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         const j = (await r.json()) as { voices: Voice[] };
         setVoices(j.voices);
       })
-      .catch((e) => setVoicesError(e instanceof Error ? e.message : "load failed"))
+      .catch((e) =>
+        setVoicesError(e instanceof Error ? e.message : "load failed"),
+      )
       .finally(() => setVoicesLoading(false));
   }, []);
+
+  const currentVoice = useMemo(
+    () => voices.find((v) => v.voice_id === config?.voice_id),
+    [voices, config?.voice_id],
+  );
 
   if (!config) return null;
 
@@ -71,7 +76,9 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         body: JSON.stringify(data),
       });
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
         throw new Error(body?.error ?? `Save failed (${res.status})`);
       }
       const json = (await res.json()) as { revision: number };
@@ -85,202 +92,274 @@ export function VoiceTab({ agentId }: { agentId: string }) {
     ? voices.filter((v) =>
         v.name.toLowerCase().includes(voiceQuery.toLowerCase()),
       )
-    : voices.slice(0, 40);
+    : voices.slice(0, 24);
 
-  const currentVoice = voices.find((v) => v.voice_id === config.voice_id);
+  const gender = currentVoice?.labels?.gender;
+  const accent = currentVoice?.labels?.accent;
+  const age = currentVoice?.labels?.age;
 
   return (
-    <div className="space-y-5">
+    <div className="mx-auto flex max-w-[760px] flex-col gap-6">
       {error && (
-        <div className="rounded-lg border border-(--color-danger) bg-(--color-danger)/10 px-3 py-2 text-xs text-(--color-danger)">
+        <div className="rounded-lg border border-(--color-danger)/30 bg-(--color-red-50) px-3 py-2 text-xs text-(--color-danger)">
           {error}
         </div>
       )}
 
-      <Section title="Voice" busy={inFlight.has("voice")}>
-        <p className="text-sm">
-          {currentVoice ? (
-            <>
-              <span className="font-medium">{currentVoice.name}</span>
-              {currentVoice.category && (
-                <span className="ml-2 text-xs text-(--color-muted)">
-                  · {currentVoice.category}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="font-mono text-xs">{config.voice_id}</span>
-          )}
-        </p>
-        <div className="mt-3 space-y-2">
+      <Section
+        title="Voice"
+        meta={`${voices.length} available`}
+        busy={inFlight.has("voice")}
+      >
+        <div className="vb-field">
+          <div className="vb-field-label flex items-center justify-between">
+            <span>Current</span>
+            <span className="font-mono text-[10px] tracking-widest text-(--color-muted-soft)">
+              {currentVoice ? currentVoice.voice_id : config.voice_id}
+            </span>
+          </div>
+          <div className="vb-preview-line">
+            “{config.first_message || "Hi! How can I help today?"}”
+          </div>
+          <p className="vb-voice-style">
+            {currentVoice?.name ?? "—"}
+            {gender ? ` · ${gender}` : ""}
+            {accent ? ` · ${accent}` : ""}
+            {age ? ` · ${age}` : ""}
+          </p>
+        </div>
+
+        <div className="vb-field">
+          <div className="vb-field-label">Browse voices</div>
           <input
             type="text"
             value={voiceQuery}
             onChange={(e) => setVoiceQuery(e.target.value)}
             placeholder="Search voices…"
-            className="w-full rounded-xl border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm outline-none focus:border-(--color-accent)"
+            className="vb-field-input"
           />
           {voicesError && (
-            <p className="text-xs text-(--color-danger)">Voice list error: {voicesError}</p>
+            <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>
+              Voice list error: {voicesError}
+            </p>
           )}
-          <div className="max-h-56 overflow-y-auto rounded-lg border border-(--color-border) bg-(--color-panel-soft)">
+          <div className="vb-voices" style={{ marginTop: 10 }}>
             {voicesLoading && (
-              <p className="px-3 py-2 text-xs text-(--color-muted)">loading…</p>
+              <p className="vb-field-hint">Loading voice catalogue…</p>
             )}
-            {filteredVoices.map((v) => (
-              <button
-                key={v.voice_id}
-                onClick={() => patch({ voice_id: v.voice_id })}
-                className={`flex w-full items-center justify-between px-3 py-2 text-left text-sm transition hover:bg-(--color-panel) ${
-                  v.voice_id === config.voice_id ? "bg-(--color-accent)/15" : ""
-                }`}
-              >
-                <span>{v.name}</span>
-                <span className="text-xs text-(--color-muted)">{v.category}</span>
-              </button>
-            ))}
+            {filteredVoices.map((v) => {
+              const on = v.voice_id === config.voice_id;
+              return (
+                <button
+                  key={v.voice_id}
+                  type="button"
+                  onClick={() => patch({ voice_id: v.voice_id })}
+                  className={`vb-voice ${on ? "on" : ""}`}
+                >
+                  <div className="top">
+                    <span className="play" aria-hidden>
+                      ▶
+                    </span>
+                    <span className="nm">{v.name}</span>
+                  </div>
+                  <div className="wave" aria-hidden>
+                    {Array.from({ length: 18 }).map((_, i) => (
+                      <span
+                        key={i}
+                        style={{
+                          height: `${4 + ((i * 17) % 11)}px`,
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <div className="vb-voice-meta">
+                    {v.category ?? "premade"}
+                    {v.labels?.accent ? ` · ${v.labels.accent}` : ""}
+                  </div>
+                </button>
+              );
+            })}
             {!voicesLoading && filteredVoices.length === 0 && (
-              <p className="px-3 py-2 text-xs text-(--color-muted)">No matches.</p>
+              <p className="vb-field-hint">No matches.</p>
             )}
           </div>
         </div>
       </Section>
 
-      <Section title="Voice settings">
-        <Slider
-          label="Stability"
-          hint="Low = expressive, High = consistent"
-          value={config.voice_settings.stability}
-          min={0}
-          max={1}
-          step={0.05}
-          onCommit={(v) =>
-            patch({ voice_settings: { ...config.voice_settings, stability: v } })
-          }
-        />
-        <Slider
-          label="Similarity boost"
-          hint="How close to the source voice"
-          value={config.voice_settings.similarity_boost}
-          min={0}
-          max={1}
-          step={0.05}
-          onCommit={(v) =>
-            patch({
-              voice_settings: { ...config.voice_settings, similarity_boost: v },
-            })
-          }
-        />
-        <Slider
-          label="Style"
-          hint="v3 expressiveness (0 = neutral)"
-          value={config.voice_settings.style}
-          min={0}
-          max={1}
-          step={0.05}
-          onCommit={(v) =>
-            patch({ voice_settings: { ...config.voice_settings, style: v } })
-          }
-        />
-        <Slider
-          label="Speed"
-          hint="0.7 slow … 1.2 fast"
-          value={config.voice_settings.speed}
-          min={0.7}
-          max={1.2}
-          step={0.05}
-          onCommit={(v) =>
-            patch({ voice_settings: { ...config.voice_settings, speed: v } })
-          }
-        />
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={config.voice_settings.use_speaker_boost}
-            onChange={(e) =>
+      <Section title="Voice settings" meta="ElevenLabs">
+        <div className="vb-field-grid">
+          <SliderField
+            label="Stability"
+            hint="Low = expressive · High = consistent"
+            value={config.voice_settings.stability}
+            min={0}
+            max={1}
+            step={0.05}
+            onCommit={(v) =>
+              patch({
+                voice_settings: { ...config.voice_settings, stability: v },
+              })
+            }
+          />
+          <SliderField
+            label="Similarity"
+            hint="How close to the source voice"
+            value={config.voice_settings.similarity_boost}
+            min={0}
+            max={1}
+            step={0.05}
+            onCommit={(v) =>
               patch({
                 voice_settings: {
                   ...config.voice_settings,
-                  use_speaker_boost: e.target.checked,
+                  similarity_boost: v,
                 },
               })
             }
           />
-          Speaker boost
-        </label>
+          <SliderField
+            label="Style"
+            hint="v3 expressiveness (0 = neutral)"
+            value={config.voice_settings.style}
+            min={0}
+            max={1}
+            step={0.05}
+            onCommit={(v) =>
+              patch({
+                voice_settings: { ...config.voice_settings, style: v },
+              })
+            }
+          />
+          <SliderField
+            label="Speed"
+            hint="0.7 slow … 1.2 fast"
+            value={config.voice_settings.speed}
+            min={0.7}
+            max={1.2}
+            step={0.05}
+            onCommit={(v) =>
+              patch({
+                voice_settings: { ...config.voice_settings, speed: v },
+              })
+            }
+          />
+        </div>
+
+        <div className="vb-field">
+          <div className="vb-field-label">Speaker boost</div>
+          <div className="vb-toggle-row">
+            <button
+              type="button"
+              className={`vb-toggle-pill ${
+                config.voice_settings.use_speaker_boost ? "on" : ""
+              }`}
+              onClick={() =>
+                patch({
+                  voice_settings: {
+                    ...config.voice_settings,
+                    use_speaker_boost: !config.voice_settings.use_speaker_boost,
+                  },
+                })
+              }
+            >
+              {config.voice_settings.use_speaker_boost ? "Enabled" : "Disabled"}
+            </button>
+            <span className="vb-field-hint">
+              Emphasises the selected voice over the source mix. Slight latency
+              cost.
+            </span>
+          </div>
+        </div>
       </Section>
 
-      <Section title="Model & language">
-        <label className="block text-xs uppercase tracking-wider text-(--color-muted)">
-          TTS model
-        </label>
-        <select
-          value={config.tts_model}
-          onChange={(e) => patch({ tts_model: e.target.value })}
-          className="mt-1 w-full rounded-xl border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm"
-        >
-          {TTS_MODEL_OPTIONS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-
-        <label className="mt-4 block text-xs uppercase tracking-wider text-(--color-muted)">
-          Language
-        </label>
-        <select
-          value={config.language}
-          onChange={(e) => patch({ language: e.target.value })}
-          className="mt-1 w-full rounded-xl border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm"
-        >
-          {LANGUAGE_OPTIONS.map(([code, name]) => (
-            <option key={code} value={code}>
-              {name}
-            </option>
-          ))}
-        </select>
+      <Section title="Model & language" meta="TTS">
+        <div className="vb-field-grid">
+          <div className="vb-field">
+            <div className="vb-field-label">TTS model</div>
+            <select
+              value={config.tts_model}
+              onChange={(e) => patch({ tts_model: e.target.value })}
+              className="vb-field-input"
+            >
+              {TTS_MODEL_OPTIONS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <p className="vb-field-hint">
+              Locked to v3 conversational — the most expressive ConvAI model.
+            </p>
+          </div>
+          <div className="vb-field">
+            <div className="vb-field-label">Language</div>
+            <select
+              value={config.language}
+              onChange={(e) => patch({ language: e.target.value })}
+              className="vb-field-input"
+            >
+              {LANGUAGE_OPTIONS.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <p className="vb-field-hint">
+              Drives both transcription and TTS pronunciation.
+            </p>
+          </div>
+        </div>
       </Section>
 
-      <Section title="LLM" busy={inFlight.has("llm")}>
-        <label className="block text-xs uppercase tracking-wider text-(--color-muted)">
-          Model
-        </label>
-        <input
-          type="text"
-          defaultValue={config.llm}
-          onBlur={(e) =>
-            e.target.value !== config.llm && patch({ llm: e.target.value })
-          }
-          className="mt-1 w-full rounded-xl border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm font-mono"
-        />
-        <Slider
-          label="Temperature"
-          hint="0 deterministic … 1 creative"
-          value={config.temperature}
-          min={0}
-          max={1}
-          step={0.05}
-          onCommit={(v) => patch({ temperature: v })}
-        />
+      <Section title="LLM" meta="reasoning" busy={inFlight.has("llm")}>
+        <div className="vb-field-grid">
+          <div className="vb-field">
+            <div className="vb-field-label">Model</div>
+            <input
+              type="text"
+              defaultValue={config.llm}
+              onBlur={(e) =>
+                e.target.value !== config.llm &&
+                patch({ llm: e.target.value })
+              }
+              className="vb-field-input font-mono"
+            />
+            <p className="vb-field-hint">
+              The LLM that drives the agent during calls.
+            </p>
+          </div>
+          <SliderField
+            label="Temperature"
+            hint="0 deterministic … 1 creative"
+            value={config.temperature}
+            min={0}
+            max={1}
+            step={0.05}
+            onCommit={(v) => patch({ temperature: v })}
+          />
+        </div>
       </Section>
 
-      <Section title="Limits" busy={inFlight.has("limits")}>
-        <label className="block text-xs uppercase tracking-wider text-(--color-muted)">
-          Max call duration (seconds)
-        </label>
-        <input
-          type="number"
-          min={30}
-          max={7200}
-          defaultValue={config.max_duration_seconds}
-          onBlur={(e) => {
-            const v = Number(e.target.value);
-            if (Number.isFinite(v) && v !== config.max_duration_seconds)
-              patch({ max_duration_seconds: v });
-          }}
-          className="mt-1 w-32 rounded-xl border border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-sm"
-        />
+      <Section title="Limits" meta="runtime" busy={inFlight.has("limits")}>
+        <div className="vb-field">
+          <div className="vb-field-label">Max call duration</div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={30}
+              max={7200}
+              defaultValue={config.max_duration_seconds}
+              onBlur={(e) => {
+                const v = Number(e.target.value);
+                if (Number.isFinite(v) && v !== config.max_duration_seconds)
+                  patch({ max_duration_seconds: v });
+              }}
+              className="vb-field-input"
+              style={{ width: 120 }}
+            />
+            <span className="vb-field-hint">seconds</span>
+          </div>
+        </div>
       </Section>
     </div>
   );
@@ -288,27 +367,40 @@ export function VoiceTab({ agentId }: { agentId: string }) {
 
 function Section({
   title,
+  meta,
   busy,
   children,
 }: {
   title: string;
+  meta?: string;
   busy?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-3 rounded-2xl border border-(--color-border) bg-(--color-panel) p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-(--color-muted)">
+    <section className="rounded-2xl border border-(--color-border) bg-(--color-panel) p-5 shadow-[var(--shadow-xs)]">
+      <header className="mb-3 flex items-center gap-2">
+        <h3 className="text-[13px] font-semibold text-(--color-foreground-strong)">
           {title}
         </h3>
-        {busy && <span className="text-xs text-(--color-accent)">syncing…</span>}
-      </div>
-      {children}
-    </div>
+        {meta && (
+          <span className="font-mono text-[10px] tracking-widest text-(--color-muted-soft)">
+            · {meta.toUpperCase()}
+          </span>
+        )}
+        <span className="ml-auto">
+          {busy && (
+            <span className="font-mono text-[10px] tracking-widest text-(--color-violet-600)">
+              SYNCING…
+            </span>
+          )}
+        </span>
+      </header>
+      <div className="space-y-1">{children}</div>
+    </section>
   );
 }
 
-function Slider({
+function SliderField({
   label,
   hint,
   value,
@@ -327,24 +419,30 @@ function Slider({
 }) {
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
+  const pct = ((local - min) / (max - min)) * 100;
   return (
-    <div>
-      <div className="flex justify-between text-xs">
-        <span className="text-(--color-muted)">{label}</span>
-        <span className="font-mono">{local.toFixed(2)}</span>
+    <div className="vb-field">
+      <div className="vb-field-label vb-slider-row">
+        <span>{label}</span>
+        <span className="vb-slider-val">{local.toFixed(2)}</span>
       </div>
-      {hint && <p className="text-[10px] text-(--color-muted)">{hint}</p>}
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={local}
-        onChange={(e) => setLocal(Number(e.target.value))}
-        onMouseUp={() => onCommit(local)}
-        onTouchEnd={() => onCommit(local)}
-        className="mt-1 w-full accent-(--color-accent)"
-      />
+      <div className="vb-slider">
+        <div className="vb-slider-track">
+          <div className="vb-slider-fill" style={{ width: `${pct}%` }} />
+        </div>
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={local}
+          onChange={(e) => setLocal(Number(e.target.value))}
+          onMouseUp={() => onCommit(local)}
+          onTouchEnd={() => onCommit(local)}
+          onKeyUp={() => onCommit(local)}
+        />
+      </div>
+      {hint && <p className="vb-field-hint">{hint}</p>}
     </div>
   );
 }

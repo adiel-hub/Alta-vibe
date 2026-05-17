@@ -128,7 +128,10 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
     case "tool_call_start": {
       log.debug("tool_call_start", { name: event.name });
       const section = sectionForTool(event.name);
-      if (section) s.setInFlight(section, true);
+      if (section) {
+        s.setInFlight(section, true);
+        s.bumpActiveSection(section);
+      }
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
       // Single morphing tool indicator in the chat.
       const friendly = friendlyForTool(event.name);
@@ -233,6 +236,7 @@ function extractErrorText(output: unknown): string {
 
 function sectionForTool(toolName: string): SectionKey | null {
   const t = toolName.replace(/^mcp__alta__/, "");
+  if (t.includes("workflow")) return "workflow";
   if (t.includes("voice") || t === "list_available_voices") return "voice";
   if (t.includes("language") || t.includes("tts_model")) return "voice";
   if (t.includes("llm") || t.includes("temperature")) return "llm";

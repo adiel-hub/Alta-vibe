@@ -5,7 +5,7 @@ import { useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 
 const PLACEHOLDER =
-  "A friendly bakery receptionist that takes phone orders, answers questions about our menu, and books pickup times. Warm but efficient. Should escalate to a human for refund requests.";
+  "A friendly receptionist for Cedar Hollow Dental that books cleanings, answers FAQs about insurance and hours, and triages dental emergencies to the on-call dentist.";
 
 export function DescribeAgentForm() {
   const router = useRouter();
@@ -29,7 +29,11 @@ export function DescribeAgentForm() {
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(body?.error ?? `Request failed (${res.status})`);
+        throw new Error(
+          typeof body?.error === "string"
+            ? body.error
+            : `Request failed (${res.status})`,
+        );
       }
       const json = (await res.json()) as { id: string };
       router.push(`/agents/${json.id}`);
@@ -40,32 +44,48 @@ export function DescribeAgentForm() {
   };
 
   return (
-    <form onSubmit={onSubmit} className="flex w-full max-w-2xl flex-col gap-5">
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder={PLACEHOLDER}
-        rows={8}
-        disabled={submitting}
-        className="w-full resize-y rounded-2xl border border-(--color-border) bg-(--color-panel) px-5 py-4 text-base leading-relaxed shadow-inner outline-none focus:border-(--color-accent)"
-      />
-      {error && (
-        <div className="rounded-lg border border-(--color-danger) bg-(--color-danger)/10 px-4 py-3 text-sm text-(--color-danger)">
-          {error}
-        </div>
-      )}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-(--color-muted)">
-          We&apos;ll spin up a starter agent you can shape from here.
-        </p>
-        <button
-          type="submit"
+    <form onSubmit={onSubmit}>
+      <div className="welcome-box">
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void onSubmit(e as unknown as React.FormEvent);
+            }
+          }}
+          placeholder={PLACEHOLDER}
+          rows={5}
           disabled={submitting}
-          className="rounded-full bg-(--color-accent) px-6 py-3 text-sm font-semibold text-(--color-accent-foreground) transition hover:brightness-110"
-        >
-          {submitting ? "Creating agent…" : "Continue →"}
-        </button>
+        />
+        <div className="welcome-box-row">
+          <span style={{ flex: 1 }} />
+          <span className="welcome-kbd">⌘ ⏎</span>
+          <button
+            type="submit"
+            disabled={submitting || description.trim().length < 10}
+            className="welcome-btn"
+          >
+            {submitting ? "Building…" : "Build it"}
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="5" y1="12" x2="19" y2="12" />
+              <polyline points="12 5 19 12 12 19" />
+            </svg>
+          </button>
+        </div>
       </div>
+      {error && <div className="welcome-error">{error}</div>}
     </form>
   );
 }

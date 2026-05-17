@@ -77,6 +77,8 @@ export async function POST(req: NextRequest) {
       revision: 0,
       config_cache: configCache,
       last_error: null,
+      conversation_summary: null,
+      summary_through_message_id: null,
       created_at: now,
       updated_at: now,
     } as unknown as AgentDocument);
@@ -85,13 +87,15 @@ export async function POST(req: NextRequest) {
     // immediately. The user's landing-page description becomes the
     // conversational seed.
     const jobId = await enqueueTurnJob(insert.insertedId, description, "user");
-    after(async () => {
-      try {
-        await processTurnJob(jobId);
-      } catch {
-        // job runner persists its own failure state
-      }
-    });
+    if (!process.env.USE_RAILWAY_WORKER) {
+      after(async () => {
+        try {
+          await processTurnJob(jobId);
+        } catch {
+          // job runner persists its own failure state
+        }
+      });
+    }
 
     log.info("agent created", {
       mongo_id: insert.insertedId.toHexString(),

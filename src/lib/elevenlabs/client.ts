@@ -37,6 +37,20 @@ function apiKey(): string {
   return key;
 }
 
+function extractErrorMessage(body: unknown): string | null {
+  if (typeof body === "string" && body.length > 0) return body;
+  if (typeof body !== "object" || body === null) return null;
+  const detail = (body as { detail?: unknown }).detail;
+  if (typeof detail === "string") return detail;
+  if (typeof detail === "object" && detail !== null) {
+    const msg = (detail as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
+  }
+  const topMsg = (body as { message?: unknown }).message;
+  if (typeof topMsg === "string") return topMsg;
+  return null;
+}
+
 async function elFetch(
   path: string,
   init: RequestInit & { section: string },
@@ -66,11 +80,7 @@ async function elFetch(
       } catch {
         body = await res.text().catch(() => "");
       }
-      const message =
-        (typeof body === "object" &&
-          body !== null &&
-          "detail" in body &&
-          String((body as { detail: unknown }).detail)) ||
+      const message = extractErrorMessage(body) ??
         `Voice provider ${section} request failed (${res.status})`;
       log.error("response error", {
         method,
@@ -212,7 +222,7 @@ export async function createAgent(seed: {
       },
       tts: {
         voice_id: seed.voice_id,
-        model_id: "eleven_turbo_v2_5",
+        model_id: "eleven_v3_conversational",
         ...DEFAULT_VOICE_SETTINGS,
       },
       conversation: { max_duration_seconds: 600 },

@@ -71,10 +71,10 @@ export const knowledgeBaseCapability: Capability = {
 
     tool(
       "scrape_website_to_knowledge_base",
-      "Crawl up to N pages from a starting URL and add each page as a separate knowledge base document. Use this when the user pastes a site URL or asks to index a docs/help section. Right panel fills in live, one page at a time.",
+      "SLOW — only use when the user explicitly asks to index an entire site / docs section. Crawls up to N pages (default 3, keep small). For a single URL prefer scrape_single_page_to_knowledge_base.",
       {
         start_url: z.string().url(),
-        limit: z.number().int().min(1).max(25).default(8),
+        limit: z.number().int().min(1).max(25).default(3),
       },
       async ({ start_url, limit }) =>
         runToolStep(ctx, "knowledge_base", "scrape_website", async () => {
@@ -114,7 +114,7 @@ export const knowledgeBaseCapability: Capability = {
 
     tool(
       "scrape_single_page_to_knowledge_base",
-      "Scrape exactly one page and add it as a knowledge base document.",
+      "PREFERRED for website URLs. Scrapes exactly one page (fast — a few seconds) and adds it as a knowledge base document. Default choice when the user gives you a website URL; only escalate to scrape_website_to_knowledge_base if they ask to index a whole site.",
       { url: z.string().url() },
       async ({ url }) =>
         runToolStep(ctx, "knowledge_base", "scrape_single_page", async () => {

@@ -71,14 +71,34 @@ export default async function AgentBuilderPage({
   };
 
   return (
-    <div className="flex h-screen">
+    <div className="builder-shell">
       <BuilderHydrator agent={dto} turns={turns} widgets={widgets} />
-      <section className="flex w-1/2 flex-col border-r border-(--color-border)">
-        <ChatPanel agentId={dto.id} />
-      </section>
-      <section className="flex w-1/2 flex-col bg-(--color-panel-soft)">
-        <VisualPanel agentId={dto.id} />
-      </section>
+      <BuilderTopBar />
+      <div className="builder-split">
+        <section className="builder-chat">
+          <ChatPanel agentId={dto.id} />
+        </section>
+        <section className="builder-canvas">
+          <VisualPanel agentId={dto.id} />
+        </section>
+      </div>
     </div>
+  );
+}
+
+function BuilderTopBar() {
+  return (
+    <header className="builder-topbar">
+      <div className="builder-brand">
+        <span className="builder-sparkle" aria-hidden>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z" />
+          </svg>
+        </span>
+        <span className="builder-wordmark">Alta</span>
+        <span className="builder-crumb">VIBE BUILD</span>
+      </div>
+      <span className="builder-spacer" />
+    </header>
   );
 }

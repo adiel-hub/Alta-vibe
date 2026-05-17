@@ -9,6 +9,7 @@ import type { AgentConfigCache } from "@/types/agent";
 import type { Capability } from "./types";
 
 import { identityCapability } from "./identity";
+import { introspectionCapability } from "./introspection";
 import { voiceCapability } from "./voice";
 import { llmCapability } from "./llm";
 import { knowledgeBaseCapability } from "./knowledge_base";
@@ -27,6 +28,7 @@ import { batchCallingCapability } from "./batch_calling";
 import { workspaceSecretsCapability } from "./workspace_secrets";
 
 export const CAPABILITIES: Capability[] = [
+  introspectionCapability,
   identityCapability,
   voiceCapability,
   llmCapability,
@@ -54,7 +56,7 @@ export function defaultAgentConfig(): AgentConfigCache {
     system_prompt: "You are a helpful voice agent.",
     voice_id: "",
     voice_settings: { stability: 0.5, similarity_boost: 0.8, style: 0, use_speaker_boost: true, speed: 1 },
-    tts_model: "eleven_turbo_v2_5",
+    tts_model: "eleven_v3_conversational",
     language: "en",
     llm: "gemini-2.0-flash",
     temperature: 0.5,

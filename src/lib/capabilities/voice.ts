@@ -11,7 +11,7 @@ export const voiceCapability: Capability = {
   defaultSlice: () => ({
     voice_id: "",
     voice_settings: { ...DEFAULT_VOICE_SETTINGS },
-    tts_model: "eleven_turbo_v2_5",
+    tts_model: "eleven_v3_conversational",
     language: "en",
   }),
   tools: (ctx) => [
@@ -88,7 +88,7 @@ export const voiceCapability: Capability = {
 
     tool(
       "update_tts_model",
-      "Select the TTS model. Use one of: eleven_v3 (most expressive), eleven_multilingual_v2, eleven_turbo_v2_5, eleven_flash_v2_5 (fastest).",
+      "The TTS model is locked to eleven_v3_conversational. Do not call this tool to switch — it will be rejected.",
       { tts_model: z.string().min(1) },
       async ({ tts_model }) =>
         runToolStep(ctx, "voice", "update_tts_model", async () => {
@@ -99,7 +99,7 @@ export const voiceCapability: Capability = {
 
     tool(
       "update_language",
-      "Set the conversation language using an ISO code (e.g. 'en', 'es'). For multilingual, also set tts_model to eleven_multilingual_v2 or eleven_v3.",
+      "Set the conversation language using an ISO code (e.g. 'en', 'es'). TTS model is always eleven_v3_conversational regardless of language.",
       { language: z.string().min(2).max(8) },
       async ({ language }) =>
         runToolStep(ctx, "voice", "update_language", async () => {
@@ -111,7 +111,7 @@ export const voiceCapability: Capability = {
     // --- v3 expressive features ----------------------------------------
     tool(
       "set_expressive_mode",
-      "Enable audio tags for the eleven_v3 model — boosts emotional range using inline cues like [whispers], [excited], [pause]. Automatically disabled for non-v3 models.",
+      "Enable audio tags for eleven_v3_conversational — boosts emotional range using inline cues like [whispers], [excited], [pause].",
       { enabled: z.boolean() },
       async ({ enabled }) =>
         runToolStep(ctx, "voice", "set_expressive_mode", async () => {
@@ -125,7 +125,7 @@ export const voiceCapability: Capability = {
 
     tool(
       "set_suggested_audio_tags",
-      "List of audio tags (e.g. ['whispers', 'excited', 'sighs', 'laughs', 'pause']) the agent should consider using. Only applies with the eleven_v3 model. Agent can still use tags outside this list.",
+      "List of audio tags (e.g. ['whispers', 'excited', 'sighs', 'laughs', 'pause']) the agent should consider using. Applies with eleven_v3_conversational. Agent can still use tags outside this list.",
       { tags: z.array(z.string()).max(20) },
       async ({ tags }) =>
         runToolStep(ctx, "voice", "set_suggested_audio_tags", async () => {

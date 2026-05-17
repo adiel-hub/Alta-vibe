@@ -66,6 +66,8 @@ type State = {
   liveWorkflowNodeId: string | null;
   /** Single morphing tool-status pill rendered in the chat. */
   liveTool: LiveTool | null;
+  /** Most-recent section a tool touched. Bumped each call so panel can auto-focus. */
+  lastActiveSection: { key: SectionKey; at: number } | null;
 };
 
 type Actions = {
@@ -103,6 +105,7 @@ type Actions = {
   ) => void;
   setLiveWorkflowNode: (nodeId: string | null) => void;
   setLiveTool: (live: LiveTool | null) => void;
+  bumpActiveSection: (key: SectionKey) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -119,6 +122,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   widgets: {},
   liveWorkflowNodeId: null,
   liveTool: null,
+  lastActiveSection: null,
 
   hydrate: (agent, turns, widgets) =>
     set({
@@ -281,4 +285,6 @@ export const useAgentStore = create<State & Actions>((set) => ({
   setLiveWorkflowNode: (nodeId) => set({ liveWorkflowNodeId: nodeId }),
 
   setLiveTool: (live) => set({ liveTool: live }),
+
+  bumpActiveSection: (key) => set({ lastActiveSection: { key, at: Date.now() } }),
 }));
