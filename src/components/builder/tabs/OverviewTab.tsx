@@ -19,41 +19,79 @@ export function OverviewTab({ agentId }: { agentId: string }) {
   if (!config) return null;
 
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-7">
-      <PersonaField
-        agentId={agentId}
-        field="name"
-        label="Agent name"
-        value={config.name}
-        busy={inFlight.has("name")}
-        placeholder="e.g. Cedar Hollow Receptionist"
-      />
+    <div className="mx-auto flex max-w-[760px] flex-col gap-6">
+      <Section title="Identity" meta="agent">
+        <PersonaField
+          agentId={agentId}
+          field="name"
+          label="Agent name"
+          value={config.name}
+          busy={inFlight.has("name")}
+          placeholder="e.g. Cedar Hollow Receptionist"
+        />
+      </Section>
 
-      <PersonaField
-        agentId={agentId}
-        field="first_message"
-        label="First message"
-        value={config.first_message}
-        multiline
-        rows={3}
-        busy={inFlight.has("first_message")}
-        placeholder="Hi! How can I help today?"
-        hint="The first thing the agent says when a call connects."
-      />
+      <Section title="Greeting" meta="first message" busy={inFlight.has("first_message")}>
+        <PersonaField
+          agentId={agentId}
+          field="first_message"
+          label="What the agent says when the call connects"
+          value={config.first_message}
+          multiline
+          rows={3}
+          placeholder="Hi! How can I help today?"
+        />
+      </Section>
 
-      <PersonaField
-        agentId={agentId}
-        field="system_prompt"
-        label="System prompt"
-        value={config.system_prompt}
-        multiline
-        rows={14}
-        mono
-        busy={inFlight.has("system_prompt")}
-        placeholder="You are a helpful voice agent…"
-        hint="The full instruction set. Use plain English; reference workflow nodes if relevant."
-      />
+      <Section title="System prompt" meta="instruction" busy={inFlight.has("system_prompt")}>
+        <PersonaField
+          agentId={agentId}
+          field="system_prompt"
+          label="Full instruction set the agent follows"
+          value={config.system_prompt}
+          multiline
+          rows={14}
+          mono
+          placeholder="You are a helpful voice agent…"
+          hint="Plain English. Reference workflow nodes by id if relevant."
+        />
+      </Section>
     </div>
+  );
+}
+
+function Section({
+  title,
+  meta,
+  busy,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  busy?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-2xl border border-(--color-border) bg-(--color-panel) p-5 shadow-[var(--shadow-xs)]">
+      <header className="mb-3 flex items-center gap-2">
+        <h3 className="text-[13px] font-semibold text-(--color-foreground-strong)">
+          {title}
+        </h3>
+        {meta && (
+          <span className="font-mono text-[10px] tracking-widest text-(--color-muted-soft)">
+            · {meta.toUpperCase()}
+          </span>
+        )}
+        <span className="ml-auto">
+          {busy && (
+            <span className="font-mono text-[10px] tracking-widest text-(--color-violet-600)">
+              ALTA EDITING…
+            </span>
+          )}
+        </span>
+      </header>
+      <div className="space-y-1">{children}</div>
+    </section>
   );
 }
 
@@ -65,7 +103,6 @@ function PersonaField({
   multiline,
   rows,
   mono,
-  busy,
   placeholder,
   hint,
 }: {
@@ -76,7 +113,6 @@ function PersonaField({
   multiline?: boolean;
   rows?: number;
   mono?: boolean;
-  busy?: boolean;
   placeholder?: string;
   hint?: string;
 }) {
@@ -148,11 +184,6 @@ function PersonaField({
     <div className="vb-field">
       <div className="vb-field-label flex items-center gap-3">
         <span>{label}</span>
-        {busy && (
-          <span className="font-mono text-[10px] tracking-widest text-(--color-violet-600)">
-            ALTA EDITING…
-          </span>
-        )}
         <span className="ml-auto flex items-center gap-2">
           {dirty && (
             <>
@@ -181,6 +212,7 @@ function PersonaField({
           // Read-only overlay while we type the new value in. Once the
           // animation finishes, fall through to the regular editable input.
           <div
+            dir="auto"
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
             } alta-typing-caret`}
@@ -194,6 +226,7 @@ function PersonaField({
           </div>
         ) : multiline ? (
           <textarea
+            dir="auto"
             value={draft}
             rows={rows ?? 4}
             placeholder={placeholder}
@@ -207,6 +240,7 @@ function PersonaField({
           />
         ) : (
           <input
+            dir="auto"
             type="text"
             value={draft}
             placeholder={placeholder}

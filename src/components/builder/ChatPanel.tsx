@@ -176,6 +176,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
       <footer className="border-t border-(--color-border) bg-(--color-panel) p-3">
         <div className="rounded-xl border border-(--color-border) bg-(--color-panel) p-2.5 transition focus-within:border-(--color-accent) focus-within:shadow-[0_0_0_3px_rgba(79,70,229,0.08)]">
           <textarea
+            dir="auto"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
@@ -305,7 +306,7 @@ function BlockView({
 
   if (block.type === "text") {
     return (
-      <div className="whitespace-pre-wrap leading-relaxed">
+      <div dir="auto" className="whitespace-pre-wrap leading-relaxed">
         <Typewriter text={block.text} live={live && isLast} />
       </div>
     );

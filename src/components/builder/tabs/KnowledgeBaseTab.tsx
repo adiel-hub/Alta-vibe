@@ -238,7 +238,10 @@ function KbRow({
             onClick={toggle}
             className="flex min-w-0 flex-1 cursor-pointer flex-col items-start text-left"
           >
-            <span className="truncate font-medium text-(--color-foreground-strong)">
+            <span
+              dir="auto"
+              className="truncate font-medium text-(--color-foreground-strong)"
+            >
               {doc.name}
             </span>
             {doc.source && doc.source !== doc.name && (
@@ -279,7 +282,10 @@ function KbRow({
             <p className="text-xs text-(--color-danger)">{contentError}</p>
           )}
           {content !== null && (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-panel) p-3 font-mono text-[11px] leading-relaxed text-(--color-foreground)">
+            <pre
+              dir="auto"
+              className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-panel) p-3 font-mono text-[11px] leading-relaxed text-(--color-foreground)"
+            >
               {content || "(empty)"}
             </pre>
           )}

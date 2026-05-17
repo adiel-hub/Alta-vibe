@@ -146,13 +146,15 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     moved: boolean;
   } | null>(null);
 
-  // Auto-select the node Alta is currently animating, falls back to start.
+  // Clear selection if the selected node disappears (e.g. Alta replaced
+  // the workflow). The inspector only opens on explicit click — no auto-
+  // select on mount or on liveNodeId changes.
   useEffect(() => {
     if (!workflow) return;
-    if (selectedId && workflow.nodes.some((n) => n.id === selectedId)) return;
-    if (liveNodeId) setSelectedId(liveNodeId);
-    else setSelectedId(workflow.nodes[0]?.id ?? null);
-  }, [workflow, liveNodeId, selectedId]);
+    if (selectedId && !workflow.nodes.some((n) => n.id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [workflow, selectedId]);
 
   // Center the graph in the viewport. Start at top-center; if the graph
   // grows taller than the viewport, anchor the bottom so new rows stay
@@ -478,11 +480,13 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     {ICON[n.type]}
                   </span>
                   {isTerminal ? (
-                    <span className="vb-el-terminal-label">{n.label}</span>
+                    <span dir="auto" className="vb-el-terminal-label">{n.label}</span>
                   ) : (
                     <div className="vb-el-body">
-                      <div className="vb-el-title">{n.label}</div>
-                      {desc && <div className="vb-el-desc">{desc}</div>}
+                      <div dir="auto" className="vb-el-title">{n.label}</div>
+                      {desc && (
+                        <div dir="auto" className="vb-el-desc">{desc}</div>
+                      )}
                     </div>
                   )}
                 </button>
@@ -620,6 +624,7 @@ function NodeInspector({
         <div className="vb-field">
           <div className="vb-field-label">Title</div>
           <input
+            dir="auto"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
             className="vb-field-input"
@@ -637,6 +642,7 @@ function NodeInspector({
                   : "Prompt"}
             </div>
             <textarea
+              dir="auto"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               className="vb-field-input vb-field-textarea"
