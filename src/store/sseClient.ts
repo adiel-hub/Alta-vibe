@@ -127,6 +127,11 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       break;
     case "tool_call_start": {
       log.debug("tool_call_start", { name: event.name });
+      // SDK internals: ToolSearch fires every turn to load our MCP tool
+      // schemas. It's not a step the user cares about — swallow it so it
+      // doesn't appear in the chat, in the live indicator, or in any
+      // auto-switch decision.
+      if (event.name === "ToolSearch") break;
       const section = sectionForTool(event.name);
       if (section) {
         s.setInFlight(section, true);

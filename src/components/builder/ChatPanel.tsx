@@ -320,7 +320,7 @@ function BlockView({
 
   if (block.type === "text") {
     return (
-      <div dir="auto" className="whitespace-pre-wrap leading-relaxed">
+      <div dir="auto" className="leading-relaxed">
         <Typewriter text={block.text} live={live && isLast} />
       </div>
     );
@@ -336,6 +336,11 @@ function BlockView({
       );
       if (widget) return <ChatWidget agentId={agentId} widget={widget} />;
     }
+    // Hide SDK internals from the chat. ToolSearch is the Claude Agent
+    // SDK's deferred-tool loader — it fires every turn to bring our MCP
+    // tool schemas into the model's context. It's machinery, not a step
+    // the user cares about.
+    if (block.name === "ToolSearch") return null;
     return <ToolCard block={block} result={result} />;
   }
   // tool_result blocks are rendered INSIDE the matching tool_use card.
