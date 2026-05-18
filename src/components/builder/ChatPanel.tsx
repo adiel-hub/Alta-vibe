@@ -9,8 +9,8 @@ import { appFetch } from "@/lib/apiClient";
 import { createClientLogger } from "@/lib/clientLogger";
 import type { ContentBlock } from "@/types/agent";
 import { ChatWidget } from "./ChatWidget";
-import { LiveToolPill } from "./LiveToolPill";
 import { Typewriter } from "./Typewriter";
+import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 
 const log = createClientLogger("chat");
 
@@ -166,7 +166,6 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             streamingHint={!streaming.text && !liveTool}
           />
         )}
-        {streaming && <LiveToolPill />}
       </div>
 
       {error && (
@@ -232,14 +231,22 @@ function TurnView({
   const isUser = role === "user";
   const isSystem = role === "system";
 
-  // Suppress assistant bubbles whose only content is now-hidden tool blocks
-  // (no text, no widget tool_use). Avoids ghost empty bubbles during
-  // streaming when the agent's pre-tool text is still in the streaming buffer.
+  // Build a tool_use_id → tool_result map so each inline ToolCard knows
+  // its own outcome without scanning the full block list per render.
+  const toolResults = new Map<
+    string,
+    Extract<ContentBlock, { type: "tool_result" }>
+  >();
+  for (const b of content) {
+    if (b.type === "tool_result") toolResults.set(b.tool_use_id, b);
+  }
+
+  // Drop empty assistant bubbles. A turn is visible if it has any non-empty
+  // text, a non-result tool block, or we're showing the streaming hint.
   if (role === "assistant" && !streamingHint) {
     const hasVisible = content.some((b) => {
       if (b.type === "text" && b.text.trim().length > 0) return true;
-      if (b.type === "tool_use" && b.name === "mcp__alta__request_user_action")
-        return true;
+      if (b.type === "tool_use") return true;
       return false;
     });
     if (!hasVisible) return null;
@@ -286,6 +293,9 @@ function TurnView({
             agentId={agentId}
             live={live}
             isLast={isLast && i === content.length - 1}
+            result={
+              block.type === "tool_use" ? toolResults.get(block.id) : undefined
+            }
           />
         ))}
       </div>
@@ -298,11 +308,13 @@ function BlockView({
   agentId,
   live,
   isLast,
+  result,
 }: {
   block: ContentBlock;
   agentId?: string;
   live: boolean;
   isLast: boolean;
+  result?: Extract<ContentBlock, { type: "tool_result" }>;
 }) {
   const widgets = useAgentStore((s) => s.widgets);
 
@@ -314,8 +326,7 @@ function BlockView({
     );
   }
   if (block.type === "tool_use") {
-    // Only render interactive widgets inline. All other tool_use blocks
-    // are suppressed — their progress shows through the LiveToolPill.
+    // Widgets render as their own interactive component, not a tool card.
     if (block.name === "mcp__alta__request_user_action" && agentId) {
       const input = block.input as { kind?: string; payload?: unknown } | undefined;
       const widget = Object.values(widgets).find(
@@ -325,10 +336,118 @@ function BlockView({
       );
       if (widget) return <ChatWidget agentId={agentId} widget={widget} />;
     }
-    return null;
+    return <ToolCard block={block} result={result} />;
   }
-  if (block.type === "tool_result") {
-    return null;
-  }
+  // tool_result blocks are rendered INSIDE the matching tool_use card.
   return null;
+}
+
+/**
+ * Inline card that represents one tool call in the assistant's response.
+ * Renders a one-line summary (spinner | ✓ | ✗  +  emoji  +  friendly label).
+ * Click to expand → shows the input args and the tool's text output.
+ */
+function ToolCard({
+  block,
+  result,
+}: {
+  block: Extract<ContentBlock, { type: "tool_use" }>;
+  result?: Extract<ContentBlock, { type: "tool_result" }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const friendly = friendlyForTool(block.name);
+  const status: "running" | "success" | "error" = !result
+    ? "running"
+    : result.is_error
+      ? "error"
+      : "success";
+
+  const indicator =
+    status === "running" ? (
+      <span className="vb-tool-spin" aria-hidden />
+    ) : status === "success" ? (
+      <span
+        className="grid h-3.5 w-3.5 place-items-center text-[10px] font-bold text-(--color-success)"
+        aria-hidden
+      >
+        ✓
+      </span>
+    ) : (
+      <span
+        className="grid h-3.5 w-3.5 place-items-center text-[10px] font-bold text-(--color-danger)"
+        aria-hidden
+      >
+        ✕
+      </span>
+    );
+
+  const resultText = (() => {
+    if (!result) return null;
+    const out = result.output;
+    if (typeof out === "string") return out;
+    if (Array.isArray(out)) {
+      return out
+        .map((x) =>
+          x && typeof x === "object" && "type" in x && (x as { type?: string }).type === "text"
+            ? (x as { text?: string }).text ?? ""
+            : "",
+        )
+        .filter(Boolean)
+        .join("\n");
+    }
+    return JSON.stringify(out, null, 2);
+  })();
+
+  return (
+    <div className="vb-tool-card">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="vb-tool-card-head"
+        aria-expanded={expanded}
+      >
+        {indicator}
+        <span className="vb-tool-card-emoji" aria-hidden>
+          {friendly.emoji}
+        </span>
+        <span
+          className={`vb-tool-card-label ${
+            status === "running" ? "vb-tool-card-label-shimmer" : ""
+          }`}
+        >
+          {friendly.label}
+        </span>
+        <span className="vb-tool-card-chev" aria-hidden>
+          {expanded ? "▾" : "▸"}
+        </span>
+      </button>
+      {expanded && (
+        <div className="vb-tool-card-body">
+          {block.input !== undefined && (
+            <div className="vb-tool-card-section">
+              <div className="vb-tool-card-section-label">Input</div>
+              <pre dir="auto" className="vb-tool-card-pre">
+                {JSON.stringify(block.input, null, 2)}
+              </pre>
+            </div>
+          )}
+          {resultText !== null && (
+            <div className="vb-tool-card-section">
+              <div className="vb-tool-card-section-label">
+                {status === "error" ? "Error" : "Result"}
+              </div>
+              <pre
+                dir="auto"
+                className={`vb-tool-card-pre ${
+                  status === "error" ? "vb-tool-card-pre-error" : ""
+                }`}
+              >
+                {resultText || "(empty)"}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
