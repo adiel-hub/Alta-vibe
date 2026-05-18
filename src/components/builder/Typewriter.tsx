@@ -1,12 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { MarkdownText } from "./MarkdownText";
 
 /**
  * Smoothed character-by-character reveal. Buffers the supplied text and
  * reveals it at a controlled rate so chunky network deltas appear as a
- * uniform typing animation. When `live` is false (the streaming turn is
- * done) the remaining buffer flushes instantly.
+ * uniform typing animation. The revealed slice is run through
+ * MarkdownText so **bold**, `code`, bullet lists, etc. format
+ * progressively as the agent streams. When `live` is false (the
+ * streaming turn is done) the remaining buffer flushes instantly.
  */
 export function Typewriter({
   text,
@@ -66,12 +69,16 @@ export function Typewriter({
     };
   }, [text, shown, live, cps]);
 
+  const showCursor = live && shown < text.length;
+  const cursor = showCursor ? (
+    <span className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline" />
+  ) : null;
+
   return (
-    <span className={className}>
-      {text.slice(0, shown)}
-      {live && shown < text.length && (
-        <span className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline" />
-      )}
-    </span>
+    <MarkdownText
+      text={text.slice(0, shown)}
+      cursor={cursor}
+      className={className}
+    />
   );
 }

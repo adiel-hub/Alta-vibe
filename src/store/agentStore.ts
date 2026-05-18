@@ -189,25 +189,44 @@ export const useAgentStore = create<State & Actions>((set) => ({
   appendToolCallStart: (turnId, toolUseId, name, input) =>
     set((s) => {
       const idx = s.turns.findIndex((t) => t.id === turnId);
-      const block: ContentBlock = {
+      const toolBlock: ContentBlock = {
         type: "tool_use",
         id: toolUseId,
         name,
         input,
       };
+
+      // Flush any pending streaming text into its own block BEFORE the
+      // tool_use. Without this, pre-tool prose and post-tool prose end up
+      // concatenated into a single text block (the model emits "…knowledge
+      // base." → tools run → "Cover is a Hebrew…" and we get the smushed
+      // "knowledge base.Cover" rendering). Reset the buffer so the post-
+      // tool deltas start a fresh paragraph.
+      const pending =
+        s.streaming && s.streaming.text.trim().length > 0
+          ? s.streaming.text
+          : null;
+      const newStreaming =
+        pending && s.streaming ? { ...s.streaming, text: "" } : s.streaming;
+
+      const toAppend: ContentBlock[] = pending
+        ? [{ type: "text", text: pending }, toolBlock]
+        : [toolBlock];
+
       if (idx === -1) {
         return {
+          streaming: newStreaming,
           turns: [
             ...s.turns,
-            { id: turnId, role: "assistant", content: [block] },
+            { id: turnId, role: "assistant", content: toAppend },
           ],
         };
       }
       const turn = s.turns[idx];
-      const next = { ...turn, content: [...turn.content, block] };
+      const next = { ...turn, content: [...turn.content, ...toAppend] };
       const turns = [...s.turns];
       turns[idx] = next;
-      return { turns };
+      return { streaming: newStreaming, turns };
     }),
 
   appendToolCallResult: (turnId, toolUseId, output, isError) =>

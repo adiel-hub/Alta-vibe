@@ -130,7 +130,6 @@ export function DescribeAgentForm() {
         />
         <div className="welcome-box-row">
           <span style={{ flex: 1 }} />
-          <span className="welcome-kbd">⌘ ⏎</span>
           <button
             type="submit"
             disabled={submitting || description.trim().length < 10}

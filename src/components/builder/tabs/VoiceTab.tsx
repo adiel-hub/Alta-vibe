@@ -157,11 +157,6 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               );
             })}
           </select>
-          <p className="vb-field-hint">
-            {currentVoice
-              ? `${currentVoice.name} · ${currentVoice.voice_id}`
-              : config.voice_id || "Pick a voice."}
-          </p>
         </div>
       </Section>
 

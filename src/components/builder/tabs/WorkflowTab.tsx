@@ -12,9 +12,10 @@ import type {
 
 const NODE_W = 260;
 const NODE_H = 96;
-const COL_GAP = 32;
-const ROW_GAP = 76;
+const COL_GAP = 160;
+const ROW_GAP = 88;
 const PADDING = 32;
+const EDGE_LABEL_W = 140;
 
 /** Options offered in the "+" popup when adding a node below an existing one. */
 const ADD_NODE_MENU: Array<{
@@ -513,13 +514,16 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     />
                     {e.label && (
                       <foreignObject
-                        x={midX - 90}
+                        x={midX - EDGE_LABEL_W / 2}
                         y={(y1 + y2) / 2 - 12}
-                        width={180}
+                        width={EDGE_LABEL_W}
                         height={24}
                         style={{ overflow: "visible" }}
                       >
-                        <div className="vb-edge-pill">
+                        <div
+                          className="vb-edge-pill"
+                          style={{ maxWidth: EDGE_LABEL_W }}
+                        >
                           <span aria-hidden>↳</span>
                           {e.label}
                         </div>

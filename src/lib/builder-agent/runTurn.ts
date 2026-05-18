@@ -179,6 +179,7 @@ export async function runTurn(
     const result = query({
       prompt: input.userMessage,
       options: {
+        model: "claude-opus-4-7",
         systemPrompt: buildSystemPrompt(input),
         mcpServers: { alta: tools },
         allowedTools,
