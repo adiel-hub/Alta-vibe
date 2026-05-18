@@ -1251,6 +1251,23 @@ textarea, input, select {
 .vb-el-node-wrap {
   /* Container — absolutely positioned by the JSX. */
 }
+/* Invisible "hover bridge" so moving the cursor down from the card to the
+   "+" button below doesn't drop out of the wrapper's :hover and hide the
+   button mid-gesture. Sits behind the actions, captures pointer events
+   only inside the wrapper-extended hit area. */
+.vb-el-node-wrap::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -42px;
+  transform: translateX(-50%);
+  width: 64px;
+  height: 42px;
+  pointer-events: none;
+}
+.vb-el-node-wrap:hover::after {
+  pointer-events: auto;
+}
 
 /* Right-side floating actions: copy + trash. Hidden until wrap hover. */
 .vb-el-node-side-actions {
