@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useAgentStore } from "@/store/agentStore";
 import { attachToTurn, sendMessage } from "@/store/sseClient";
@@ -16,6 +17,9 @@ const log = createClientLogger("chat");
 export function ChatPanel({ agentId }: { agentId: string }) {
   const turns = useAgentStore((s) => s.turns);
   const streaming = useAgentStore((s) => s.streaming);
+  // Used to suppress the "thinking…" dots when a tool pill is already
+  // visible — otherwise we show two activity indicators side by side.
+  const liveTool = useAgentStore((s) => s.liveTool);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,13 +104,17 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             <polyline points="12 19 5 12 12 5" />
           </svg>
         </Link>
-        <span className="grid h-7 w-7 place-items-center rounded-lg bg-(--color-violet-100) text-(--color-violet-600)">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-            <path d="M12 2 L13.6 9.5 L21 12 L13.6 14.5 L12 22 L10.4 14.5 L3 12 L10.4 9.5 Z" />
-          </svg>
+        <span className="grid h-7 w-7 place-items-center overflow-hidden rounded-lg bg-(--color-violet-100)">
+          <Image
+            src="/alta-avatar.png"
+            alt=""
+            width={28}
+            height={28}
+            className="h-full w-full object-cover"
+          />
         </span>
         <span className="text-[13px] font-semibold text-(--color-foreground-strong)">
-          Alta
+          Alex
         </span>
       </header>
 
@@ -152,7 +160,10 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             agentId={agentId}
             live
             isLast
-            streamingHint={!streaming.text}
+            // Suppress the "thinking…" dots when a tool is mid-flight; the
+            // tool pill below already shows running state. Showing both
+            // duplicates the "something is happening" signal.
+            streamingHint={!streaming.text && !liveTool}
           />
         )}
         {streaming && <LiveToolPill />}
@@ -257,7 +268,7 @@ function TurnView({
         className={
           isUser
             ? "max-w-[85%] rounded-2xl bg-(--color-panel-soft) px-4 py-2 text-sm text-(--color-foreground-strong)"
-            : "max-w-[92%] space-y-2 px-1 py-1 text-sm text-(--color-foreground)"
+            : "max-w-[92%] space-y-3 px-1 py-1 text-sm text-(--color-foreground)"
         }
       >
         {streamingHint && (
