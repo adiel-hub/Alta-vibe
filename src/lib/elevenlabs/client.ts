@@ -245,6 +245,54 @@ export async function getAgent(agentId: string): Promise<ElevenAgentRaw> {
   return (await res.json()) as ElevenAgentRaw;
 }
 
+// ── ElevenAgents Workflow schema (conversation_config.workflow) ─────────
+//
+// Spec reference (Sep 2025): https://elevenlabs.io/docs/eleven-agents/customization/agent-workflows
+// Nodes and edges are object-keyed maps (not arrays), unlike our internal
+// WorkflowState model.
+
+export type ElevenForwardCondition =
+  | { type: "unconditional" }
+  | { type: "llm"; condition: string }
+  | { type: "expression"; condition: string };
+
+export type ElevenWorkflowNode = {
+  /** Node type recognised by the agent runtime. */
+  type:
+    | "start"
+    | "end"
+    | "override_agent"
+    | "dispatch_tool"
+    | "agent_transfer"
+    | "transfer_to_number";
+  /** Human-readable label for the visual editor. */
+  label?: string;
+  /**
+   * Prompt fragment appended to the agent's system prompt while this node
+   * is active. Most commonly used on `override_agent` nodes to give them
+   * scoped instructions (e.g. "Help with the support request, then move on").
+   */
+  additional_prompt?: string;
+  /**
+   * Ordered list of outgoing edge ids. The runtime evaluates each edge's
+   * forward_condition in order; the first one that matches wins.
+   */
+  edge_order?: string[];
+  /** Free-form per-type config (tool_id, target_agent_id, phone_number, …). */
+  [extra: string]: unknown;
+};
+
+export type ElevenWorkflowEdge = {
+  source: string;
+  target: string;
+  forward_condition: ElevenForwardCondition;
+};
+
+export type ElevenWorkflow = {
+  nodes: Record<string, ElevenWorkflowNode>;
+  edges: Record<string, ElevenWorkflowEdge>;
+};
+
 export type AgentPatch = {
   name?: string;
   first_message?: string;
@@ -295,6 +343,16 @@ export type AgentPatch = {
   agent_output_audio_format?: string;
   optimize_streaming_latency?: number;
   text_normalisation_type?: "system_prompt" | "elevenlabs" | "off";
+  /**
+   * Structured workflow graph stored at conversation_config.workflow.
+   * Object-keyed maps (not arrays) per the ElevenAgents schema:
+   *   nodes: { [id]: { type, label?, additional_prompt?, edge_order: string[], ... } }
+   *   edges: { [id]: { source, target, forward_condition: { type, condition? } } }
+   *
+   * When set, the agent's runtime follows the graph itself — no need to
+   * inline the workflow as text in the system prompt.
+   */
+  workflow?: ElevenWorkflow;
 };
 
 /**
@@ -402,6 +460,7 @@ export async function patchAgent(
   if (Object.keys(turnSlice).length > 0) conversationConfig.turn = turnSlice;
   if (Object.keys(conversationSlice).length > 0)
     conversationConfig.conversation = conversationSlice;
+  if (patch.workflow !== undefined) conversationConfig.workflow = patch.workflow;
   if (Object.keys(conversationConfig).length > 0) {
     incoming.conversation_config = deepMergeConfig(
       (current.conversation_config ?? {}) as Record<string, unknown>,
@@ -998,11 +1057,73 @@ export function projectAgentConfig(
     data_collection: dataCollection,
     evaluation_criteria: evalCriteria,
     phone_numbers: phoneNumbers,
-    // Workflow + integrations are platform-side metadata (we own them, not
-    // the voice provider). Carry forward whatever's in the agent doc.
-    workflow: fallback.workflow,
+    workflow: projectWorkflow(
+      (el.conversation_config as Record<string, unknown> | undefined)
+        ?.workflow as ElevenWorkflow | undefined,
+      fallback.workflow,
+    ),
+    // Integrations are platform-side metadata; carry forward.
     integrations: fallback.integrations,
   };
+}
+
+/**
+ * Translate ElevenLabs' `conversation_config.workflow` back into our
+ * internal WorkflowState. We can't perfectly recover the speak/collect/
+ * condition distinction (all three project as `override_agent` on their
+ * side), so we default to `speak` for those.
+ */
+function projectWorkflow(
+  remote: ElevenWorkflow | undefined,
+  fallback: AgentConfigCache["workflow"],
+): AgentConfigCache["workflow"] {
+  if (!remote || !remote.nodes) return fallback;
+  const ourTypeFor = (
+    t: ElevenWorkflowNode["type"],
+  ): AgentConfigCache["workflow"]["nodes"][number]["type"] => {
+    switch (t) {
+      case "start":
+        return "start";
+      case "end":
+        return "end";
+      case "dispatch_tool":
+        return "tool_call";
+      case "agent_transfer":
+      case "transfer_to_number":
+        return "transfer";
+      case "override_agent":
+      default:
+        return "speak";
+    }
+  };
+  const nodes = Object.entries(remote.nodes).map(([id, n]) => {
+    const data: Record<string, unknown> = {};
+    if (n.additional_prompt) data.prompt = n.additional_prompt;
+    const extras = n as Record<string, unknown>;
+    for (const k of ["tool_id", "target_agent_id", "phone_number"] as const) {
+      if (extras[k] !== undefined) data[k] = extras[k];
+    }
+    return {
+      id,
+      type: ourTypeFor(n.type),
+      label: n.label ?? id,
+      data,
+    };
+  });
+  const edges = Object.entries(remote.edges ?? {}).map(([id, e]) => {
+    const cond = e.forward_condition;
+    return {
+      id,
+      from: e.source,
+      to: e.target,
+      label: (e as Record<string, unknown>).label as string | undefined,
+      condition:
+        cond?.type === "llm" || cond?.type === "expression"
+          ? cond.condition
+          : undefined,
+    };
+  });
+  return { nodes, edges };
 }
 
 function phaseFor(name: string, type: string): RuntimePhase {

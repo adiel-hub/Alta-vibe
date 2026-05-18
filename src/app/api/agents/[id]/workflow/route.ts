@@ -12,7 +12,10 @@ import { z } from "zod";
 import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol, messagesCol } from "@/lib/mongodb";
 import { patchAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
-import { composeSystemPromptWithWorkflow } from "@/lib/capabilities/workflow";
+import {
+  composeSystemPromptWithWorkflow,
+  toElevenWorkflow,
+} from "@/lib/capabilities/workflow";
 import type {
   AgentConfigCache,
   WorkflowEdge,
@@ -104,14 +107,20 @@ export async function POST(
     nodes: [...agent.config_cache.workflow.nodes, node],
     edges,
   };
+  // Strip any legacy "--- WORKFLOW ---" footer the prompt may still carry,
+  // and push the structured workflow to conversation_config.workflow so the
+  // ElevenAgents runtime walks the graph itself.
   const nextSystemPrompt = composeSystemPromptWithWorkflow(
     agent.config_cache.system_prompt,
-    nextWorkflow,
   );
+  const workflowPatch = toElevenWorkflow(nextWorkflow);
 
   try {
     await patchAgent(agent.elevenlabs_agent_id, {
-      system_prompt: nextSystemPrompt,
+      workflow: workflowPatch,
+      ...(nextSystemPrompt !== agent.config_cache.system_prompt
+        ? { system_prompt: nextSystemPrompt }
+        : {}),
     });
   } catch (err) {
     if (err instanceof ElevenLabsError) {

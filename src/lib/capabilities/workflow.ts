@@ -17,13 +17,177 @@ import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { patchAgent } from "@/lib/elevenlabs/client";
 import type {
+  ElevenWorkflow,
+  ElevenWorkflowEdge,
+  ElevenWorkflowNode,
+} from "@/lib/elevenlabs/client";
+import type {
   WorkflowEdge,
   WorkflowNode,
+  WorkflowNodeType,
   WorkflowState,
 } from "@/types/agent";
 import { DEFAULT_WORKFLOW } from "@/types/agent";
 import type { Capability } from "./types";
 import { runToolStep } from "./types";
+
+/**
+ * Translate our internal WorkflowState (arrays, our type names) into the
+ * ElevenAgents `conversation_config.workflow` shape (object-keyed maps,
+ * their type names). Used by every workflow-mutating path so the runtime
+ * actually walks the graph instead of relying on prompt text.
+ *
+ * Mapping:
+ *   start              → start
+ *   speak / collect    → override_agent  (with additional_prompt)
+ *   condition          → override_agent  (acts as a router via edge_order)
+ *   tool_call          → dispatch_tool   (tool_id from data.tool_id)
+ *   transfer           → agent_transfer | transfer_to_number  (data-dependent)
+ *   end                → end
+ *
+ * Edges:
+ *   our edge.condition (non-empty) → forward_condition: { type: "llm", condition }
+ *   else                            → forward_condition: { type: "unconditional" }
+ *   our edge.label  is preserved on the ElevenLabs side as `label` (passthrough).
+ */
+export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
+  const outgoingByNode = new Map<string, WorkflowEdge[]>();
+  for (const e of w.edges) {
+    const list = outgoingByNode.get(e.from) ?? [];
+    list.push(e);
+    outgoingByNode.set(e.from, list);
+  }
+
+  const nodes: Record<string, ElevenWorkflowNode> = {};
+  for (const n of w.nodes) {
+    const out = outgoingByNode.get(n.id) ?? [];
+    const edgeOrder = out.map((e) => e.id);
+    const base: ElevenWorkflowNode = { type: "end", edge_order: edgeOrder };
+    if (n.label) base.label = n.label;
+
+    switch (n.type) {
+      case "start":
+        base.type = "start";
+        break;
+      case "end":
+        base.type = "end";
+        break;
+      case "speak":
+      case "collect":
+      case "condition": {
+        base.type = "override_agent";
+        const prompt =
+          (n.data?.prompt as string | undefined) ??
+          (n.data?.instruction as string | undefined) ??
+          (n.data?.expression as string | undefined);
+        if (prompt) base.additional_prompt = prompt;
+        // Pass through any tool / KB / voice overrides verbatim if present.
+        for (const k of [
+          "system_prompt_override",
+          "llm",
+          "voice_id",
+          "knowledge_base_overrides",
+          "tool_overrides",
+        ] as const) {
+          if (n.data?.[k] !== undefined) base[k] = n.data[k];
+        }
+        break;
+      }
+      case "tool_call": {
+        base.type = "dispatch_tool";
+        if (n.data?.tool_id) base.tool_id = n.data.tool_id;
+        if (n.data?.instruction) base.additional_prompt = n.data.instruction;
+        break;
+      }
+      case "transfer": {
+        if (n.data?.phone_number) {
+          base.type = "transfer_to_number";
+          base.phone_number = n.data.phone_number;
+        } else {
+          base.type = "agent_transfer";
+          if (n.data?.target_agent_id)
+            base.target_agent_id = n.data.target_agent_id;
+        }
+        break;
+      }
+    }
+    nodes[n.id] = base;
+  }
+
+  const edges: Record<string, ElevenWorkflowEdge> = {};
+  for (const e of w.edges) {
+    const forward_condition: ElevenWorkflowEdge["forward_condition"] =
+      e.condition && e.condition.trim().length > 0
+        ? { type: "llm", condition: e.condition }
+        : { type: "unconditional" };
+    edges[e.id] = {
+      source: e.from,
+      target: e.to,
+      forward_condition,
+    };
+    if (e.label) (edges[e.id] as Record<string, unknown>).label = e.label;
+  }
+
+  return { nodes, edges };
+}
+
+/**
+ * Reverse direction: an ElevenLabs workflow object (returned by getAgent)
+ * back into our internal WorkflowState. We can't perfectly recover the
+ * original speak/collect/condition distinction (all three project as
+ * override_agent on their side), so we default to `speak` for those.
+ */
+export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState | null {
+  if (!w || !w.nodes) return null;
+
+  const ourTypeFor = (t: ElevenWorkflowNode["type"]): WorkflowNodeType => {
+    switch (t) {
+      case "start":
+        return "start";
+      case "end":
+        return "end";
+      case "dispatch_tool":
+        return "tool_call";
+      case "agent_transfer":
+      case "transfer_to_number":
+        return "transfer";
+      case "override_agent":
+      default:
+        return "speak";
+    }
+  };
+
+  const nodes: WorkflowNode[] = Object.entries(w.nodes).map(([id, n]) => {
+    const data: Record<string, unknown> = {};
+    if (n.additional_prompt) data.prompt = n.additional_prompt;
+    if ((n as Record<string, unknown>).tool_id)
+      data.tool_id = (n as Record<string, unknown>).tool_id;
+    if ((n as Record<string, unknown>).target_agent_id)
+      data.target_agent_id = (n as Record<string, unknown>).target_agent_id;
+    if ((n as Record<string, unknown>).phone_number)
+      data.phone_number = (n as Record<string, unknown>).phone_number;
+    return {
+      id,
+      type: ourTypeFor(n.type),
+      label: n.label ?? id,
+      data,
+    };
+  });
+
+  const edges: WorkflowEdge[] = Object.entries(w.edges ?? {}).map(([id, e]) => ({
+    id,
+    from: e.source,
+    to: e.target,
+    label: (e as Record<string, unknown>).label as string | undefined,
+    condition:
+      e.forward_condition?.type === "llm" ||
+      e.forward_condition?.type === "expression"
+        ? e.forward_condition.condition
+        : undefined,
+  }));
+
+  return { nodes, edges };
+}
 
 const NodeTypeEnum = z.enum([
   "start",
@@ -36,49 +200,40 @@ const NodeTypeEnum = z.enum([
 ]);
 
 /**
- * Re-render `prompt` so its workflow footer reflects `next`. Shared between
- * the in-chat workflow tools and the UI's direct-edit endpoint so both paths
- * keep the agent's instructions in sync.
+ * Strip any legacy "--- WORKFLOW ---" prose footer from a system prompt.
+ * We used to inline a markdown rendering of the graph here; now that the
+ * structured workflow is pushed to conversation_config.workflow and the
+ * runtime walks it itself, the footer is just noise. Kept here so existing
+ * agents migrate cleanly the next time they're updated.
  */
-export function composeSystemPromptWithWorkflow(
-  prompt: string,
-  next: WorkflowState,
-): string {
+export function composeSystemPromptWithWorkflow(prompt: string): string {
   const marker = "\n\n--- WORKFLOW ---\n";
   const idx = prompt.indexOf(marker);
-  const base = idx === -1 ? prompt : prompt.slice(0, idx);
-  return `${base}${marker}${renderWorkflowForPrompt(next)}`;
+  return idx === -1 ? prompt : prompt.slice(0, idx);
 }
 
-function renderWorkflowForPrompt(w: WorkflowState): string {
-  if (w.nodes.length <= 1) return "(no workflow defined yet)";
-  const lines: string[] = [];
-  lines.push("Conversation workflow:");
-  for (const n of w.nodes) {
-    const outgoing = w.edges
-      .filter((e) => e.from === n.id)
-      .map((e) => `→ ${e.to}${e.condition ? ` if [${e.condition}]` : ""}`);
-    const data = Object.entries(n.data)
-      .map(([k, v]) => `${k}=${typeof v === "string" ? `"${v}"` : JSON.stringify(v)}`)
-      .join(", ");
-    lines.push(`- [${n.id}] ${n.type}: ${n.label}${data ? ` (${data})` : ""} ${outgoing.join("; ")}`);
-  }
-  lines.push(
-    "Follow this flow at runtime. After each step, call the report_workflow_state tool with the node id you are about to enter.",
-  );
-  return lines.join("\n");
-}
-
-async function persistWorkflowIntoPrompt(
+/**
+ * Push the workflow as structured data on conversation_config.workflow.
+ * The agent runtime walks the graph itself — no prompt footer required.
+ * Also scrubs any legacy footer from the system prompt in the same call.
+ */
+async function persistWorkflow(
   ctx: Parameters<Capability["tools"]>[0],
   nextWorkflow: WorkflowState,
 ): Promise<void> {
-  const next = composeSystemPromptWithWorkflow(
+  const cleanPrompt = composeSystemPromptWithWorkflow(
     ctx.config.system_prompt ?? "",
-    nextWorkflow,
   );
-  await patchAgent(ctx.elevenlabs_agent_id, { system_prompt: next });
-  ctx.config.system_prompt = next;
+  const workflow = toElevenWorkflow(nextWorkflow);
+  await patchAgent(ctx.elevenlabs_agent_id, {
+    workflow,
+    // Only push system_prompt when we actually trimmed a stale footer,
+    // to avoid clobbering recent edits with a stale snapshot.
+    ...(cleanPrompt !== ctx.config.system_prompt
+      ? { system_prompt: cleanPrompt }
+      : {}),
+  });
+  ctx.config.system_prompt = cleanPrompt;
 }
 
 function newId(prefix: string): string {
@@ -121,7 +276,7 @@ export const workflowCapability: Capability = {
             nodes: [...ctx.config.workflow.nodes, node],
             edges,
           };
-          await persistWorkflowIntoPrompt(ctx, next);
+          await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
             summary: `Added workflow node "${label}" (${node.id}).`,
@@ -155,7 +310,7 @@ export const workflowCapability: Capability = {
             nodes: ctx.config.workflow.nodes,
             edges: [...ctx.config.workflow.edges, edge],
           };
-          await persistWorkflowIntoPrompt(ctx, next);
+          await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
             summary: `Connected ${from_id} → ${to_id}.`,
@@ -187,7 +342,7 @@ export const workflowCapability: Capability = {
             nodes: nextNodes,
             edges: ctx.config.workflow.edges,
           };
-          await persistWorkflowIntoPrompt(ctx, next);
+          await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
             summary: `Updated node ${node_id}.`,
@@ -211,7 +366,7 @@ export const workflowCapability: Capability = {
               (e) => e.from !== node_id && e.to !== node_id,
             ),
           };
-          await persistWorkflowIntoPrompt(ctx, next);
+          await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
             summary: `Removed node ${node_id}.`,
@@ -226,7 +381,7 @@ export const workflowCapability: Capability = {
       async () =>
         runToolStep(ctx, "workflow", "workflow_reset", async () => {
           const next: WorkflowState = { ...DEFAULT_WORKFLOW };
-          await persistWorkflowIntoPrompt(ctx, next);
+          await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
             summary: "Workflow reset.",
