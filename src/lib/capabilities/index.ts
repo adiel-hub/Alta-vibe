@@ -14,6 +14,7 @@ import { voiceCapability } from "./voice";
 import { llmCapability } from "./llm";
 import { knowledgeBaseCapability } from "./knowledge_base";
 import { runtimeToolsCapability } from "./runtime_tools";
+import { writeToolCapability } from "./write_tool";
 import { mcpCapability } from "./mcp";
 import { postCallAnalysisCapability } from "./post_call_analysis";
 import { telephonyCapability } from "./telephony";
@@ -34,6 +35,7 @@ export const CAPABILITIES: Capability[] = [
   llmCapability,
   knowledgeBaseCapability,
   runtimeToolsCapability,
+  writeToolCapability,
   mcpCapability,
   postCallAnalysisCapability,
   telephonyCapability,

@@ -266,7 +266,8 @@ export type TurnJobDocument = {
 export type WidgetKind =
   | "connect_integration"
   | "confirm"
-  | "pick_option";
+  | "pick_option"
+  | "collect_secret";
 
 export type WidgetActionDocument = {
   _id: ObjectId;
@@ -278,6 +279,68 @@ export type WidgetActionDocument = {
   result: unknown | null;
   created_at: Date;
   resolved_at: Date | null;
+};
+
+// --- Agent secrets (free-form per-agent credentials, not tied to a provider) -
+
+/**
+ * An arbitrary credential the agent collected from the user (API key,
+ * webhook URL, signing secret, etc.). Distinct from `IntegrationDocument`,
+ * which is tied to a known provider in PROVIDERS. Generated runtime tools
+ * reference these by `name`; the actual ciphertext is decrypted at use
+ * time via `getAgentSecret`.
+ */
+export type AgentSecretDocument = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  /** Stable handle the agent uses in tool code (e.g. "closepush_api_key"). */
+  name: string;
+  /** Free-text description the agent wrote when requesting the secret. */
+  description: string;
+  /** Encrypted blob — produced by encryptToken(). Never returned over the API. */
+  ciphertext: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+// --- Custom tools (agent-generated runtime tools for unknown services) ---
+
+/**
+ * Spec for an agent-generated runtime tool that targets a service not in
+ * PROVIDERS. ElevenLabs sees a thin webhook pointing at our proxy with
+ * only a `proxy_secret` bearer; the proxy reads this doc and reconstructs
+ * the upstream request, substituting `{{secret:<name>}}` placeholders with
+ * decrypted values from `agent_secrets` at call time.
+ *
+ * The point of this indirection: a leak of the ElevenLabs tool config
+ * never exposes the user's third-party credentials.
+ */
+export type CustomToolDocument = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  /** Scoped name as registered on ElevenLabs (matches RuntimeTool.name). */
+  name: string;
+  description: string;
+  phase: RuntimePhase;
+  /** Bearer the proxy verifies before forwarding upstream. */
+  proxy_secret: string;
+  /** ElevenLabs tool id (returned from createRuntimeTool). */
+  elevenlabs_tool_id: string;
+  /** Synthesized upstream spec. */
+  upstream: {
+    url: string;
+    method: "GET" | "POST" | "PUT" | "DELETE";
+    /** Header template; values may contain `{{secret:<name>}}` placeholders. */
+    headers: Record<string, string>;
+    /** Optional request body JSON schema (forwarded as-is). */
+    body_schema?: unknown;
+    /** Optional query params JSON schema. */
+    query_schema?: unknown;
+  };
+  /** Names of secrets referenced in the headers (for fast pre-flight checks). */
+  secret_refs: string[];
+  created_at: Date;
+  updated_at: Date;
 };
 
 // --- Integrations (per-agent credentials) --------------------------------

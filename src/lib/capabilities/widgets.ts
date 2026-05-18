@@ -47,6 +47,32 @@ const PickOptionPayload = z.object({
     .max(6),
 });
 
+/**
+ * Free-form credential collection. Use when the agent is building a tool for
+ * a system we don't have a first-party provider entry for (an unknown CRM,
+ * a webhook signing secret, etc.) and needs the user to paste a value that
+ * the generated tool will reference later.
+ *
+ * `name` is the stable handle the agent will reference from tool code
+ * (`secrets.get("<name>")`). `description` is the user-facing explainer.
+ */
+const CollectSecretPayload = z.object({
+  /** snake_case handle the agent will reference from tool code. */
+  name: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9_]+$/, "name must be snake_case ascii"),
+  /** Short human-readable label shown above the input. */
+  title: z.string().min(1).max(80),
+  /** Why we need it + where to find it. Markdown not rendered — keep plain. */
+  description: z.string().min(1).max(500),
+  /** Placeholder hint in the input. */
+  placeholder: z.string().max(120).optional(),
+  /** Optional "where do I get this?" link. */
+  docs_url: z.string().url().optional(),
+});
+
 export const widgetsCapability: Capability = {
   id: "widgets",
   label: "Interactive widgets",
@@ -70,9 +96,14 @@ export const widgetsCapability: Capability = {
 
     tool(
       "request_user_action",
-      "Show an interactive widget in the chat and PAUSE waiting for the user's response. Use this when you need the user to (a) connect a third-party integration via OAuth — `payload` is an OBJECT: { provider_id: '<id>', reason: '<one line>' }; (b) confirm a destructive action — payload: { title, body, confirm_label?, destructive? }; or (c) pick from a small set of options — payload: { question, options: [{ id, label }] }. The `payload` argument MUST be a JSON OBJECT, not a string. After calling, your turn ends — the platform will resume your loop with the user's response.",
+      "Show an interactive widget in the chat and PAUSE waiting for the user's response. `kind` selects the widget; `payload` is the widget-specific JSON OBJECT (never a string). Kinds: (a) 'connect_integration' — payload: { provider, reason } — OAuth/PAT for a known provider (HubSpot, Slack, etc.). (b) 'confirm' — payload: { question, confirm_label?, cancel_label? } — yes/no confirmation, typically before destructive actions. (c) 'pick_option' — payload: { question, options: [{ value, label }] } — small mutually-exclusive choice. (d) 'collect_secret' — payload: { name, title, description, placeholder?, docs_url? } — collect an arbitrary credential (API key, signing secret, webhook URL) for a system that ISN'T in the providers list. Use this when building a custom runtime tool that needs auth for an unknown third-party service. `name` is a snake_case handle the generated tool will reference (e.g. 'closepush_api_key'). The value is encrypted at rest and NEVER returned to you — you only see that it was saved. After calling, your turn ENDS — the platform will resume your loop with the user's response.",
       {
-        kind: z.enum(["connect_integration", "confirm", "pick_option"]),
+        kind: z.enum([
+          "connect_integration",
+          "confirm",
+          "pick_option",
+          "collect_secret",
+        ]),
         payload: z.record(z.string(), z.unknown()),
       },
       async ({ kind, payload }) => {
@@ -85,8 +116,8 @@ export const widgetsCapability: Capability = {
             try {
               raw = JSON.parse(raw);
             } catch {
-              // fall through; ConnectIntegrationPayload.parse will surface
-              // a typed error.
+              // fall through; the per-kind parse below will surface a
+              // typed error.
             }
           }
           let parsedPayload: unknown;
@@ -94,8 +125,10 @@ export const widgetsCapability: Capability = {
             parsedPayload = ConnectIntegrationPayload.parse(raw);
           } else if (kind === "confirm") {
             parsedPayload = ConfirmPayload.parse(raw);
-          } else {
+          } else if (kind === "pick_option") {
             parsedPayload = PickOptionPayload.parse(raw);
+          } else {
+            parsedPayload = CollectSecretPayload.parse(raw);
           }
 
           const widgets = await widgetActionsCol();

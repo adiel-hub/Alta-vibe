@@ -20,6 +20,7 @@ import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { registerProviderForAgent } from "@/lib/integrations/registerProviderTools";
 import { encryptToken } from "@/lib/integrations/tokens";
 import { validateToken as validateHubspotToken } from "@/lib/integrations/hubspot/auth";
+import { storeAgentSecret } from "@/lib/integrations/agentSecrets";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -118,17 +119,77 @@ export async function POST(
       const choice = (parsed.data.result as { value?: string } | undefined)?.value;
       summary = `User picked: ${choice ?? "(unknown)"}.`;
       effectMessage = `User picked option: ${choice ?? "(unknown)"}.`;
+    } else if (action.kind === "collect_secret") {
+      const payload = action.payload as {
+        name?: string;
+        description?: string;
+      };
+      const value = (parsed.data.result as { value?: unknown } | undefined)?.value;
+      if (
+        typeof payload.name !== "string" ||
+        typeof value !== "string" ||
+        value.trim().length === 0
+      ) {
+        log.warn("collect_secret rejected (missing name or value)");
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Missing secret name or value" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Missing secret name or value",
+        });
+      }
+      try {
+        await storeAgentSecret(
+          id,
+          payload.name,
+          payload.description ?? "",
+          value,
+        );
+        log.info("secret stored", { name: payload.name });
+        summary = `Saved secret '${payload.name}'.`;
+        effectMessage = `User saved a secret. It is now stored encrypted and addressable as '${payload.name}'. The value is NOT visible to you — when you generate runtime tool code that needs it, reference it by name and the platform will inject it at call time.`;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "store failed";
+        log.error("secret store failed", { name: payload.name, message });
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: message },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({ status: "failed", error: message });
+      }
     }
   } else {
     effectMessage = `User cancelled the widget action.`;
   }
+
+  // Redact the secret value before persisting the widget result row — the
+  // ciphertext lives in agent_secrets; the raw plaintext must never linger
+  // in widget_actions where it could be re-read by chat history loaders.
+  const persistedResult =
+    parsed.data.status === "done" && action.kind === "collect_secret"
+      ? { saved: true }
+      : parsed.data.result ?? null;
 
   await widgets.updateOne(
     { _id: _actionId },
     {
       $set: {
         status: parsed.data.status,
-        result: parsed.data.result ?? null,
+        result: persistedResult,
         resolved_at: new Date(),
       },
     },

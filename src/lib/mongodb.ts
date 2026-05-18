@@ -1,7 +1,9 @@
 import { MongoClient, type Db, type Collection } from "mongodb";
 import type {
   AgentDocument,
+  AgentSecretDocument,
   ChatMessageDocument,
+  CustomToolDocument,
   IntegrationDocument,
   TurnJobDocument,
   WidgetActionDocument,
@@ -64,6 +66,12 @@ export async function getDb(): Promise<Db> {
       db
         .collection<IntegrationDocument>("integrations")
         .createIndex({ agent_id: 1, provider: 1 }, { unique: true }),
+      db
+        .collection<AgentSecretDocument>("agent_secrets")
+        .createIndex({ agent_id: 1, name: 1 }, { unique: true }),
+      db
+        .collection<CustomToolDocument>("custom_tools")
+        .createIndex({ agent_id: 1, name: 1 }, { unique: true }),
     ]);
     log.info("indexes ensured");
     globalThis.__altaVibeIndexesEnsured = true;
@@ -89,4 +97,12 @@ export async function widgetActionsCol(): Promise<Collection<WidgetActionDocumen
 
 export async function integrationsCol(): Promise<Collection<IntegrationDocument>> {
   return (await getDb()).collection<IntegrationDocument>("integrations");
+}
+
+export async function agentSecretsCol(): Promise<Collection<AgentSecretDocument>> {
+  return (await getDb()).collection<AgentSecretDocument>("agent_secrets");
+}
+
+export async function customToolsCol(): Promise<Collection<CustomToolDocument>> {
+  return (await getDb()).collection<CustomToolDocument>("custom_tools");
 }
