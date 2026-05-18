@@ -1689,6 +1689,53 @@ textarea, input, select {
   border-top: 1px solid var(--color-panel-soft);
 }
 
+/* ── "Live build" reveal ─────────────────────────────────────────────
+   When the agent calls set_workflow / edit_workflow the new graph
+   lands in one patch. Instead of slamming every node + edge onto the
+   canvas in a single synchronous paint (which froze the browser while
+   chat streaming was still in flight), useWorkflowReveal toggles
+   .vb-el-revealed on each node in BFS order. Edges fade + draw their
+   stroke once both endpoints are visible.
+
+   The transition properties live on the always-on classes so a node
+   that hydrates already-revealed (page reload) does not animate. */
+.vb-el-node-wrap {
+  transition:
+    opacity 240ms ease-out,
+    transform 240ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.vb-el-reveal-pending {
+  opacity: 0;
+  transform: scale(0.92);
+  pointer-events: none;
+}
+.vb-el-revealed {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Edges normalise their path to length=1 so we can drive a single
+   stroke-dashoffset CSS transition regardless of curve length. */
+.vb-edge .vb-edge-path {
+  stroke-dasharray: 1 1;
+  transition: stroke-dashoffset 260ms ease-out;
+}
+.vb-edge-pending .vb-edge-path {
+  stroke-dashoffset: 1;
+}
+.vb-edge-revealed .vb-edge-path {
+  stroke-dashoffset: 0;
+}
+.vb-edge .vb-edge-pill {
+  transition: opacity 200ms ease-out 80ms;
+}
+.vb-edge-pending .vb-edge-pill {
+  opacity: 0;
+}
+.vb-edge-revealed .vb-edge-pill {
+  opacity: 1;
+}
+
 /* Edge pill — dark rounded label rendered on top of an edge mid-point. */
 .vb-edge-pill {
   display: inline-flex;

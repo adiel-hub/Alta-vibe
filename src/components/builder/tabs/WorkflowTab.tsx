@@ -9,6 +9,7 @@ import type {
   WorkflowNode,
   WorkflowNodeType,
 } from "@/types/agent";
+import { useWorkflowReveal } from "./useWorkflowReveal";
 
 const NODE_W = 260;
 const NODE_H = 96;
@@ -114,10 +115,21 @@ function layout(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
 }
 
 export function WorkflowTab({ agentId }: { agentId: string }) {
-  const config = useAgentStore((s) => s.config);
+  // Subscribe to the workflow slice directly, not the whole `config`.
+  // `applyPatch` creates a fresh `config` reference on every tool call, so
+  // reading `s.config` here would re-render the canvas on every unrelated
+  // tool (voice, llm, etc.) too — that re-render storm is one of the things
+  // that makes the page freeze when `set_workflow` lands mid-stream.
+  const workflow = useAgentStore((s) => s.config?.workflow);
   const liveNodeId = useAgentStore((s) => s.liveWorkflowNodeId);
   const inFlight = useAgentStore((s) => s.inFlight);
-  const workflow = config?.workflow;
+
+  // Stagger the appearance of newly-added nodes/edges so a large
+  // `set_workflow` patch doesn't slam everything onto the canvas in one
+  // synchronous paint — that's what was freezing the browser when chat
+  // streaming overlapped with the workflow build. See useWorkflowReveal.
+  const { visibleNodeIds, visibleEdgeIds, isBuilding } =
+    useWorkflowReveal(workflow);
 
   const baseLayout = useMemo(() => {
     if (!workflow) return null;
@@ -407,7 +419,7 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
         >
           <IconCopy />
         </button>
-        {inFlight.has("workflow") && (
+        {(inFlight.has("workflow") || isBuilding) && (
           <span className="ml-3 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
             BUILDING…
           </span>
@@ -499,10 +511,16 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 const isLit =
                   selectedId !== null &&
                   (e.from === selectedId || e.to === selectedId);
+                const revealed = visibleEdgeIds.has(e.id);
                 return (
-                  <g key={e.id}>
+                  <g
+                    key={e.id}
+                    className={`vb-edge ${revealed ? "vb-edge-revealed" : "vb-edge-pending"}`}
+                  >
                     <path
                       d={path}
+                      pathLength={1}
+                      className="vb-edge-path"
                       fill="none"
                       stroke={
                         isLit
@@ -551,10 +569,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
               const isPending = pendingNodeId === n.id;
               const menuOpen = addMenuFor === n.id;
               const canDelete = n.id !== "start";
+              const revealed = visibleNodeIds.has(n.id);
               return (
                 <div
                   key={n.id}
-                  className="vb-el-node-wrap"
+                  className={`vb-el-node-wrap ${revealed ? "vb-el-revealed" : "vb-el-reveal-pending"}`}
                   style={{
                     position: "absolute",
                     left: p.x + offsetX,

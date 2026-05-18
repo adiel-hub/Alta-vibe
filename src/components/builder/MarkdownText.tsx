@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for chat messages. Handles the subset the
@@ -22,7 +22,7 @@ export function MarkdownText({
   cursor?: ReactNode;
   className?: string;
 }) {
-  const blocks = parseBlocks(text);
+  const blocks = useMemo(() => parseBlocks(text), [text]);
   if (blocks.length === 0) {
     // Empty text — still render cursor if requested so the caret has a home.
     return cursor ? <p className={className}>{cursor}</p> : null;
