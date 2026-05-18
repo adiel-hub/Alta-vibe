@@ -37,9 +37,10 @@ async function tick() {
     lastReapAt = Date.now();
     try {
       const jobs = await turnJobsCol();
+      // Only "running" — queued jobs are just waiting for a slot, not stalled.
       const stale = await jobs
         .find({
-          status: { $in: ["queued", "running"] },
+          status: "running",
           last_event_at: { $lt: new Date(Date.now() - STUCK_THRESHOLD_MS) },
         })
         .project({ agent_id: 1 })

@@ -248,8 +248,14 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
 }
 
 /**
- * Watchdog: mark long-idle running jobs as failed so SSE tails close instead
- * of polling forever. Called from /turns/active before reading state.
+ * Watchdog: mark long-idle RUNNING jobs as failed so SSE tails close
+ * instead of polling forever. Called from /turns/active before reading
+ * state.
+ *
+ * Only `running` jobs are reaped — never `queued`. A queued job that's
+ * been sitting for 5 min just means the worker was down or busy; the
+ * worker will pick it up when it polls. Reaping queued jobs eats the
+ * backlog after any worker outage and is exactly what hit us before.
  */
 export async function reapStuckJobs(agentId: ObjectId): Promise<void> {
   const jobs = await turnJobsCol();
@@ -257,13 +263,13 @@ export async function reapStuckJobs(agentId: ObjectId): Promise<void> {
   const res = await jobs.updateMany(
     {
       agent_id: agentId,
-      status: { $in: ["queued", "running"] },
+      status: "running",
       last_event_at: { $lt: cutoff },
     },
     {
       $set: {
         status: "failed",
-        error: "Stalled: no events for over 90s (function probably crashed).",
+        error: "Stalled: no events for over 3 min (function probably crashed).",
         finished_at: new Date(),
       },
     },
