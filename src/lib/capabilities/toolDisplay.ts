@@ -47,10 +47,8 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   list_recent_calls: { emoji: "📒", label: "Reading the call log" },
   get_call_details: { emoji: "📒", label: "Looking at a call" },
   // workflow
-  workflow_add_node: { emoji: "🌊", label: "Adding a workflow step" },
-  workflow_connect_nodes: { emoji: "🔗", label: "Connecting workflow steps" },
-  workflow_update_node: { emoji: "✏️", label: "Editing a workflow step" },
-  workflow_remove_node: { emoji: "🗑️", label: "Removing a workflow step" },
+  set_workflow: { emoji: "🌊", label: "Designing the workflow" },
+  edit_workflow: { emoji: "✏️", label: "Editing the workflow" },
   workflow_reset: { emoji: "♻️", label: "Resetting the workflow" },
   enable_workflow_state_tracking: { emoji: "📍", label: "Enabling live tracking" },
   // widgets / integrations

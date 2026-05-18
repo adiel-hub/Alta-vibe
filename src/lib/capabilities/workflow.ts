@@ -240,143 +240,197 @@ function newId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// ── set_workflow / edit_workflow schemas ────────────────────────────────
+
+const NodeInput = z.object({
+  /** Optional. Omit when adding a fresh node; provide to keep a stable id
+   *  across set_workflow calls so React + ElevenLabs treat it as the same node. */
+  id: z.string().optional(),
+  type: NodeTypeEnum,
+  label: z.string().min(1).max(80),
+  data: z.record(z.string(), z.unknown()).default({}),
+});
+
+const EdgeInput = z.object({
+  id: z.string().optional(),
+  from: z.string().min(1),
+  to: z.string().min(1),
+  label: z.string().optional(),
+  condition: z.string().optional(),
+});
+
+const EditOp = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("add_node"), node: NodeInput }),
+  z.object({
+    op: z.literal("update_node"),
+    id: z.string().min(1),
+    label: z.string().optional(),
+    data: z.record(z.string(), z.unknown()).optional(),
+    type: NodeTypeEnum.optional(),
+  }),
+  z.object({ op: z.literal("remove_node"), id: z.string().min(1) }),
+  z.object({ op: z.literal("add_edge"), edge: EdgeInput }),
+  z.object({
+    op: z.literal("update_edge"),
+    id: z.string().min(1),
+    label: z.string().optional(),
+    condition: z.string().optional(),
+  }),
+  z.object({ op: z.literal("remove_edge"), id: z.string().min(1) }),
+]);
+
+type EditOpT = z.infer<typeof EditOp>;
+
+function applyOps(
+  state: WorkflowState,
+  ops: EditOpT[],
+): WorkflowState {
+  let nodes = [...state.nodes];
+  let edges = [...state.edges];
+  for (const op of ops) {
+    switch (op.op) {
+      case "add_node": {
+        const id = op.node.id ?? newId(op.node.type);
+        if (nodes.some((n) => n.id === id))
+          throw new Error(`Node id "${id}" already exists.`);
+        nodes.push({
+          id,
+          type: op.node.type,
+          label: op.node.label,
+          data: op.node.data ?? {},
+        });
+        break;
+      }
+      case "update_node": {
+        const idx = nodes.findIndex((n) => n.id === op.id);
+        if (idx === -1) throw new Error(`No node with id "${op.id}".`);
+        const cur = nodes[idx];
+        nodes[idx] = {
+          ...cur,
+          type: op.type ?? cur.type,
+          label: op.label ?? cur.label,
+          data: op.data ? { ...cur.data, ...op.data } : cur.data,
+        };
+        break;
+      }
+      case "remove_node": {
+        if (op.id === "start")
+          throw new Error("Cannot remove the start node.");
+        if (!nodes.some((n) => n.id === op.id))
+          throw new Error(`No node with id "${op.id}".`);
+        nodes = nodes.filter((n) => n.id !== op.id);
+        edges = edges.filter((e) => e.from !== op.id && e.to !== op.id);
+        break;
+      }
+      case "add_edge": {
+        const id = op.edge.id ?? newId("edge");
+        if (edges.some((e) => e.id === id))
+          throw new Error(`Edge id "${id}" already exists.`);
+        if (!nodes.some((n) => n.id === op.edge.from))
+          throw new Error(`from "${op.edge.from}" does not exist.`);
+        if (!nodes.some((n) => n.id === op.edge.to))
+          throw new Error(`to "${op.edge.to}" does not exist.`);
+        edges.push({
+          id,
+          from: op.edge.from,
+          to: op.edge.to,
+          label: op.edge.label,
+          condition: op.edge.condition,
+        });
+        break;
+      }
+      case "update_edge": {
+        const idx = edges.findIndex((e) => e.id === op.id);
+        if (idx === -1) throw new Error(`No edge with id "${op.id}".`);
+        const cur = edges[idx];
+        edges[idx] = {
+          ...cur,
+          label: op.label ?? cur.label,
+          condition: op.condition ?? cur.condition,
+        };
+        break;
+      }
+      case "remove_edge": {
+        if (!edges.some((e) => e.id === op.id))
+          throw new Error(`No edge with id "${op.id}".`);
+        edges = edges.filter((e) => e.id !== op.id);
+        break;
+      }
+    }
+  }
+  return { nodes, edges };
+}
+
 export const workflowCapability: Capability = {
   id: "workflow",
   label: "Workflow",
   defaultSlice: () => ({ workflow: { ...DEFAULT_WORKFLOW } }),
   tools: (ctx) => [
     tool(
-      "workflow_add_node",
-      "Add a node AND wire it to its predecessor in a single call. ALWAYS pass `after_node_id` (the parent node's id, usually the node you just added or 'start') so the graph stays connected as it grows. Don't add a batch of orphan nodes and then add edges later — the right panel renders the graph live, and orphans look broken. Common types: 'speak' (agent says something), 'collect' (asks for a field), 'tool_call' (invoke a runtime tool), 'condition' (branch), 'transfer' (hand off), 'end' (hang up).",
+      "set_workflow",
+      // Big up-front graph definition. Use this when building a workflow
+      // from scratch — one call, whole graph. Cheaper than 12 add_node +
+      // edge calls and keeps the canvas from flickering as nodes pop in.
+      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run a runtime tool — data.tool_id), 'transfer' (hand off — data.target_agent_id for agent transfer, data.phone_number for phone transfer), 'end' (hang up).\n\nEdges: connect node ids via `from`/`to`. A `condition` string on an outgoing edge from a router becomes a natural-language branch ('the caller wants billing'). Leave condition empty for unconditional flow.",
       {
-        type: NodeTypeEnum,
-        label: z.string().min(1).max(80),
-        data: z.record(z.string(), z.unknown()).default({}),
-        after_node_id: z.string().optional(),
-        edge_label: z.string().optional(),
-        edge_condition: z.string().optional(),
+        nodes: z.array(NodeInput).min(1).max(40),
+        edges: z.array(EdgeInput).max(80).default([]),
       },
-      async ({ type, label, data, after_node_id, edge_label, edge_condition }) =>
-        runToolStep(ctx, "workflow", "workflow_add_node", async () => {
-          const node: WorkflowNode = { id: newId(type), type, label, data };
-          const edges = [...ctx.config.workflow.edges];
-          if (after_node_id) {
-            if (!ctx.config.workflow.nodes.some((n) => n.id === after_node_id)) {
-              throw new Error(`after_node_id "${after_node_id}" does not exist.`);
-            }
-            edges.push({
-              id: newId("edge"),
-              from: after_node_id,
-              to: node.id,
-              label: edge_label,
-              condition: edge_condition,
-            });
-          }
+      async ({ nodes, edges }) =>
+        runToolStep(ctx, "workflow", "set_workflow", async () => {
+          // Stamp missing ids so the agent doesn't have to.
+          const stampedNodes: WorkflowNode[] = nodes.map((n) => ({
+            id: n.id ?? newId(n.type),
+            type: n.type,
+            label: n.label,
+            data: n.data ?? {},
+          }));
+          const knownIds = new Set(stampedNodes.map((n) => n.id));
+          const stampedEdges: WorkflowEdge[] = edges.map((e) => {
+            if (!knownIds.has(e.from))
+              throw new Error(`Edge "from" references unknown node "${e.from}".`);
+            if (!knownIds.has(e.to))
+              throw new Error(`Edge "to" references unknown node "${e.to}".`);
+            return {
+              id: e.id ?? newId("edge"),
+              from: e.from,
+              to: e.to,
+              label: e.label,
+              condition: e.condition,
+            };
+          });
           const next: WorkflowState = {
-            nodes: [...ctx.config.workflow.nodes, node],
-            edges,
+            nodes: stampedNodes,
+            edges: stampedEdges,
           };
           await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
-            summary: `Added workflow node "${label}" (${node.id}).`,
+            summary: `Workflow set: ${stampedNodes.length} nodes, ${stampedEdges.length} edges.`,
           };
         }),
     ),
 
     tool(
-      "workflow_connect_nodes",
-      "Add an edge between two existing workflow nodes. Only use this for back-edges or fan-in connections that you couldn't express with `after_node_id` on workflow_add_node. For straight-line growth, prefer workflow_add_node({ after_node_id })`.",
+      "edit_workflow",
+      "Apply a list of incremental edits to the existing workflow WITHOUT having to re-send the whole graph. Operations run in order, so you can rename a node, add two new branches, and remove an edge in one call. Cheaper than rewriting the workflow with set_workflow when only a few things change.\n\nEach `operations` entry is one of:\n- { op: 'add_node', node: { type, label, data?, id? } }\n- { op: 'update_node', id, label?, data?, type? }  (data is shallow-merged into node.data)\n- { op: 'remove_node', id }  (also drops any edges touching the node; cannot remove 'start')\n- { op: 'add_edge', edge: { from, to, label?, condition?, id? } }\n- { op: 'update_edge', id, label?, condition? }\n- { op: 'remove_edge', id }",
       {
-        from_id: z.string().min(1),
-        to_id: z.string().min(1),
-        label: z.string().optional(),
-        condition: z.string().optional(),
+        operations: z.array(EditOp).min(1).max(40),
       },
-      async ({ from_id, to_id, label, condition }) =>
-        runToolStep(ctx, "workflow", "workflow_connect_nodes", async () => {
-          if (!ctx.config.workflow.nodes.some((n) => n.id === from_id))
-            throw new Error(`from_id "${from_id}" does not exist.`);
-          if (!ctx.config.workflow.nodes.some((n) => n.id === to_id))
-            throw new Error(`to_id "${to_id}" does not exist.`);
-          const edge: WorkflowEdge = {
-            id: newId("edge"),
-            from: from_id,
-            to: to_id,
-            label,
-            condition,
-          };
-          const next: WorkflowState = {
-            nodes: ctx.config.workflow.nodes,
-            edges: [...ctx.config.workflow.edges, edge],
-          };
+      async ({ operations }) =>
+        runToolStep(ctx, "workflow", "edit_workflow", async () => {
+          const next = applyOps(ctx.config.workflow, operations);
           await persistWorkflow(ctx, next);
           return {
             patch: { workflow: next, system_prompt: ctx.config.system_prompt },
-            summary: `Connected ${from_id} → ${to_id}.`,
-          };
-        }),
-    ),
-
-    tool(
-      "workflow_update_node",
-      "Update a workflow node's label or data.",
-      {
-        node_id: z.string().min(1),
-        label: z.string().optional(),
-        data: z.record(z.string(), z.unknown()).optional(),
-      },
-      async ({ node_id, label, data }) =>
-        runToolStep(ctx, "workflow", "workflow_update_node", async () => {
-          const idx = ctx.config.workflow.nodes.findIndex((n) => n.id === node_id);
-          if (idx === -1) throw new Error(`No node with id "${node_id}".`);
-          const node = ctx.config.workflow.nodes[idx];
-          const updated: WorkflowNode = {
-            ...node,
-            label: label ?? node.label,
-            data: data ? { ...node.data, ...data } : node.data,
-          };
-          const nextNodes = [...ctx.config.workflow.nodes];
-          nextNodes[idx] = updated;
-          const next: WorkflowState = {
-            nodes: nextNodes,
-            edges: ctx.config.workflow.edges,
-          };
-          await persistWorkflow(ctx, next);
-          return {
-            patch: { workflow: next, system_prompt: ctx.config.system_prompt },
-            summary: `Updated node ${node_id}.`,
-          };
-        }),
-    ),
-
-    tool(
-      "workflow_remove_node",
-      "Delete a workflow node and any edges touching it.",
-      { node_id: z.string().min(1) },
-      async ({ node_id }) =>
-        runToolStep(ctx, "workflow", "workflow_remove_node", async () => {
-          if (node_id === "start")
-            throw new Error("Cannot remove the start node.");
-          if (!ctx.config.workflow.nodes.some((n) => n.id === node_id))
-            throw new Error(`No node with id "${node_id}".`);
-          const next: WorkflowState = {
-            nodes: ctx.config.workflow.nodes.filter((n) => n.id !== node_id),
-            edges: ctx.config.workflow.edges.filter(
-              (e) => e.from !== node_id && e.to !== node_id,
-            ),
-          };
-          await persistWorkflow(ctx, next);
-          return {
-            patch: { workflow: next, system_prompt: ctx.config.system_prompt },
-            summary: `Removed node ${node_id}.`,
+            summary: `Applied ${operations.length} edit${operations.length === 1 ? "" : "s"} to the workflow.`,
           };
         }),
     ),
 
     tool(
       "workflow_reset",
-      "Wipe the entire conversation workflow back to just a start node. Use only when explicitly asked.",
+      "Wipe the entire conversation workflow back to just a start node. Use only when explicitly asked, or before a fresh set_workflow call on a previously-built agent.",
       {},
       async () =>
         runToolStep(ctx, "workflow", "workflow_reset", async () => {
