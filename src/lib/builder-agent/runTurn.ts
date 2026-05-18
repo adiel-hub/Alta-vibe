@@ -182,7 +182,7 @@ export async function runTurn(
         systemPrompt: buildSystemPrompt(input),
         mcpServers: { alta: tools },
         allowedTools,
-        maxTurns: 10,
+        maxTurns: 50,
         includePartialMessages: true,
         abortController,
       },
