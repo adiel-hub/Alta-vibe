@@ -13,6 +13,7 @@ import { ObjectId } from "mongodb";
 import { integrationsCol } from "@/lib/mongodb";
 import { PROVIDERS } from "@/lib/integrations/providers";
 import { patchAgent } from "@/lib/elevenlabs/client";
+import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
 import type { Capability } from "./types";
 import { runToolStep } from "./types";
 
@@ -57,13 +58,29 @@ export const integrationsCapability: Capability = {
           const remainingTools = ctx.config.tools.filter(
             (t) => !toolNamesToRemove.has(t.name) && t.provider !== provider,
           );
+
+          // If we're disconnecting a CRM that injected the caller-context
+          // block (currently only HubSpot), strip it back out of the
+          // system prompt and clear the dynamic-variable defaults.
+          const isCrm = provider === "hubspot";
+          const nextSystemPrompt = isCrm
+            ? stripCallerContextBlock(ctx.config.system_prompt)
+            : ctx.config.system_prompt;
+
           await patchAgent(ctx.elevenlabs_agent_id, {
             tool_ids: remainingTools.map((t) => t.id),
+            ...(isCrm
+              ? {
+                  system_prompt: nextSystemPrompt,
+                  dynamic_variables: {},
+                }
+              : {}),
           });
           return {
             patch: {
               integrations: remainingIntegrations,
               tools: remainingTools,
+              ...(isCrm ? { system_prompt: nextSystemPrompt } : {}),
             },
             summary: `Disconnected ${providerDef?.name ?? provider}.`,
           };

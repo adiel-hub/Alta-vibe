@@ -78,6 +78,13 @@ async function resolveWidget(
   }
 }
 
+const PROVIDER_DOCS: Record<string, { docsUrl: string; tokenLabel: string }> = {
+  hubspot: {
+    docsUrl: "https://developers.hubspot.com/docs/guides/apps/private-apps/overview",
+    tokenLabel: "Private App access token",
+  },
+};
+
 function ConnectIntegrationWidget({
   agentId,
   widget,
@@ -88,38 +95,113 @@ function ConnectIntegrationWidget({
   const payload = widget.payload as { provider: string; reason: string };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const click = async (status: "done" | "cancelled") => {
+  const [token, setToken] = useState("");
+  const docs = PROVIDER_DOCS[payload.provider];
+  const supportsToken = Boolean(docs);
+
+  const submit = async () => {
+    setError(null);
+    if (supportsToken) {
+      const trimmed = token.trim();
+      if (trimmed.length < 20) {
+        setError("That doesn't look like a valid token. Paste the full value.");
+        return;
+      }
+      setBusy(true);
+      try {
+        await resolveWidget(agentId, widget, "done", { token: trimmed });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed");
+      } finally {
+        setBusy(false);
+      }
+    } else {
+      setBusy(true);
+      try {
+        await resolveWidget(agentId, widget, "done");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed");
+      } finally {
+        setBusy(false);
+      }
+    }
+  };
+
+  const cancel = async () => {
     setBusy(true);
     setError(null);
     try {
-      await resolveWidget(agentId, widget, status);
+      await resolveWidget(agentId, widget, "cancelled");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setBusy(false);
     }
   };
+
   return (
     <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4 shadow-md">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div>
           <h4 className="text-sm font-semibold">Connect {prettify(payload.provider)}</h4>
           <p className="mt-1 text-xs text-(--color-muted)">{payload.reason}</p>
         </div>
         <StatusBadge status={widget.status} />
       </div>
-      {widget.status === "pending" && (
+      {widget.status === "pending" && supportsToken && (
+        <div className="mt-3 space-y-2">
+          <label className="block text-xs font-medium text-(--color-foreground)">
+            Paste your {docs.tokenLabel}
+          </label>
+          <textarea
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            disabled={busy}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            rows={3}
+            placeholder="pat-na1-..."
+            className="w-full resize-none rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2 font-mono text-xs outline-none focus:border-(--color-accent)"
+          />
+          <a
+            href={docs.docsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block text-[11px] text-(--color-accent) hover:underline"
+          >
+            How to create one →
+          </a>
+          <div className="mt-2 flex gap-2">
+            <button
+              disabled={busy || token.trim().length === 0}
+              onClick={submit}
+              className="rounded-full bg-(--color-accent) px-4 py-1.5 text-xs font-semibold text-(--color-accent-foreground) disabled:opacity-50"
+            >
+              {busy ? "Connecting…" : "Connect"}
+            </button>
+            <button
+              disabled={busy}
+              onClick={cancel}
+              className="rounded-full px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground)"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {widget.status === "pending" && !supportsToken && (
         <div className="mt-3 flex gap-2">
           <button
             disabled={busy}
-            onClick={() => click("done")}
+            onClick={submit}
             className="rounded-full bg-(--color-accent) px-4 py-1.5 text-xs font-semibold text-(--color-accent-foreground)"
           >
             {busy ? "Connecting…" : "Connect"}
           </button>
           <button
             disabled={busy}
-            onClick={() => click("cancelled")}
+            onClick={cancel}
             className="rounded-full px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground)"
           >
             Skip

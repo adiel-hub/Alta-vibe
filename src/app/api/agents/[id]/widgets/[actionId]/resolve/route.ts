@@ -18,6 +18,8 @@ import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol, widgetActionsCol } from "@/lib/mongodb";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { registerProviderForAgent } from "@/lib/integrations/registerProviderTools";
+import { encryptToken } from "@/lib/integrations/tokens";
+import { validateToken as validateHubspotToken } from "@/lib/integrations/hubspot/auth";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -69,16 +71,39 @@ export async function POST(
       const provider = (action.payload as { provider?: string }).provider;
       if (provider) {
         log.info("integration connect", { provider });
+        const credsResult = await buildCredentialsForProvider(
+          provider,
+          parsed.data.result,
+        );
+        if (!credsResult.ok) {
+          log.warn("integration creds rejected", {
+            provider,
+            reason: credsResult.error,
+          });
+          await widgets.updateOne(
+            { _id: _actionId },
+            {
+              $set: {
+                status: "failed",
+                result: { error: credsResult.error },
+                resolved_at: new Date(),
+              },
+            },
+          );
+          return NextResponse.json({
+            status: "failed",
+            error: credsResult.error,
+          });
+        }
         try {
           const { added_tools } = await registerProviderForAgent(
             id,
             provider,
-            // Stub credentials — real OAuth would populate these via callback.
-            { access_token: "stub_token_dev_only", connected_via: "stub" },
+            credsResult.credentials,
           );
           log.info("integration registered", { provider, added_tools });
           summary = `Connected ${provider}.`;
-          effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent.`;
+          effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent, and pre-call enrichment is active.`;
         } catch (err) {
           const message = err instanceof Error ? err.message : "register failed";
           log.error("integration register failed", { provider, message });
@@ -128,4 +153,54 @@ export async function POST(
   }
 
   return NextResponse.json({ status: parsed.data.status, summary });
+}
+
+/**
+ * Translate the raw widget-resolve `result` for a provider into the
+ * encrypted credentials blob we persist. Returns a discriminated union
+ * so the caller can surface validation failures back to the chat.
+ */
+type CredsResult =
+  | { ok: true; credentials: Record<string, unknown> }
+  | { ok: false; error: string };
+
+async function buildCredentialsForProvider(
+  provider: string,
+  rawResult: unknown,
+): Promise<CredsResult> {
+  if (provider === "hubspot") {
+    const token =
+      rawResult && typeof rawResult === "object" && rawResult !== null
+        ? (rawResult as { token?: unknown }).token
+        : undefined;
+    if (typeof token !== "string" || token.trim().length < 20) {
+      return {
+        ok: false,
+        error: "No HubSpot token provided. Paste the full Private App token.",
+      };
+    }
+    const accountInfo = await validateHubspotToken(token.trim());
+    if (!accountInfo) {
+      return {
+        ok: false,
+        error:
+          "Token rejected by HubSpot. Double-check it's a Private App token with the required scopes.",
+      };
+    }
+    return {
+      ok: true,
+      credentials: {
+        access_token: encryptToken(token.trim()),
+        connected_via: "pat",
+        hub_id: accountInfo.portalId,
+        ui_domain: accountInfo.uiDomain ?? null,
+      },
+    };
+  }
+  // Fallback for stub providers (slack, notion, gmail, stripe) until they're
+  // wired with real OAuth or PAT flows.
+  return {
+    ok: true,
+    credentials: { access_token: "stub_token_dev_only", connected_via: "stub" },
+  };
 }
