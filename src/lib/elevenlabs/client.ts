@@ -245,6 +245,13 @@ export async function getAgent(agentId: string): Promise<ElevenAgentRaw> {
   return (await res.json()) as ElevenAgentRaw;
 }
 
+export async function deleteAgent(agentId: string): Promise<void> {
+  await elFetch(`/v1/convai/agents/${agentId}`, {
+    method: "DELETE",
+    section: "delete",
+  });
+}
+
 // ── ElevenAgents Workflow schema (conversation_config.workflow) ─────────
 //
 // Spec reference (Sep 2025): https://elevenlabs.io/docs/eleven-agents/customization/agent-workflows

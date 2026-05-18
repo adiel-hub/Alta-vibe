@@ -1,8 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
-import { agentsCol } from "@/lib/mongodb";
+import {
+  agentsCol,
+  messagesCol,
+  turnJobsCol,
+  widgetActionsCol,
+} from "@/lib/mongodb";
 import { requireSharedSecret } from "@/lib/auth";
 import {
+  deleteAgent as deleteElevenAgent,
   getAgent,
   projectAgentConfig,
   ElevenLabsError,
@@ -64,3 +70,52 @@ export async function GET(
 }
 
 export type AgentRouteDoc = AgentDocument;
+
+/**
+ * DELETE /api/agents/[id]
+ *
+ * Removes the agent from ElevenLabs AND every related collection in our
+ * Mongo (agents, messages, turn_jobs, widget_actions). Idempotent: a 404
+ * from ElevenLabs is treated as success so a stale record can still be
+ * cleaned up.
+ */
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const guard = requireSharedSecret(req);
+  if (guard) return guard;
+
+  const { id } = await params;
+  if (!ObjectId.isValid(id)) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+  const _id = new ObjectId(id);
+  const agents = await agentsCol();
+  const doc = await agents.findOne({ _id });
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // Best-effort: drop the agent on ElevenLabs first. If it's already gone
+  // we still proceed to clean up Mongo; any other error bubbles up so the
+  // user can retry without orphaning state.
+  try {
+    await deleteElevenAgent(doc.elevenlabs_agent_id);
+  } catch (err) {
+    if (err instanceof ElevenLabsError && err.status !== 404) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: err.status >= 500 ? 502 : err.status },
+      );
+    }
+    if (!(err instanceof ElevenLabsError)) throw err;
+  }
+
+  await Promise.all([
+    agents.deleteOne({ _id }),
+    (await messagesCol()).deleteMany({ agent_id: _id }),
+    (await turnJobsCol()).deleteMany({ agent_id: _id }),
+    (await widgetActionsCol()).deleteMany({ agent_id: _id }),
+  ]);
+
+  return NextResponse.json({ ok: true });
+}

@@ -1,55 +1,40 @@
 import Image from "next/image";
 import { DescribeAgentForm } from "@/components/DescribeAgentForm";
+import { AgentList, type AgentListItem } from "@/components/AgentList";
+import { agentsCol } from "@/lib/mongodb";
 
-const FEATURES = [
-  {
-    num: "01",
-    label: "Workflow",
-    sub: "Branches, conditions, and tool calls assembled from your description.",
-  },
-  {
-    num: "02",
-    label: "Voice",
-    sub: "Cast a voice — language, cadence, accent — across 32 languages.",
-  },
-  {
-    num: "03",
-    label: "Knowledge",
-    sub: "Upload docs or paste URLs; Alta indexes and grounds every reply.",
-  },
-  {
-    num: "04",
-    label: "Telephony",
-    sub: "Assigned number, hours of operation, and live call routing.",
-  },
-];
+export const dynamic = "force-dynamic";
 
-export default function Home() {
+export default async function Home() {
+  const items = await loadAgents();
+
   return (
     <main className="hero-shell">
       <div className="hero-glow" aria-hidden />
-      <div className="hero-spectrum" aria-hidden />
 
       <header className="hero-masthead">
-        <div className="hero-brand">
-          <span className="hero-logo" aria-hidden>
-            <Image src="/alex.avif" alt="" width={32} height={32} priority />
-          </span>
-          <span className="hero-wordmark">Alta</span>
-        </div>
-        <nav className="hero-nav" aria-label="Primary">
-          <a href="#features">Features</a>
-          <a href="#voices">Voices</a>
-          <a href="#docs">Docs</a>
-        </nav>
-        <div className="hero-status" aria-live="polite">
-          <span className="hero-pulse" aria-hidden />
-          Live
-        </div>
+        <a href="/" className="hero-brand" aria-label="Alta — home">
+          <Image
+            src="/alta-logo.svg"
+            alt="Alta"
+            width={194}
+            height={84}
+            className="hero-logo-mark"
+            priority
+          />
+        </a>
       </header>
 
       <section className="hero-stage">
-        <span className="hero-eyebrow">Voice Agent Studio · v0.4</span>
+        <div className="hero-avatar" aria-hidden>
+          <Image
+            src="/alta-avatar.png"
+            alt=""
+            width={112}
+            height={112}
+            priority
+          />
+        </div>
 
         <h1 className="hero-title">
           Describe the agent.
@@ -65,29 +50,61 @@ export default function Home() {
         <div className="hero-form-shell">
           <DescribeAgentForm />
         </div>
-
-        <ol
-          id="features"
-          className="hero-pipeline"
-          aria-label="What Alta assembles"
-        >
-          {FEATURES.map((step) => (
-            <li key={step.num} className="hero-step">
-              <span className="hero-step-num">{step.num}</span>
-              <span className="hero-step-label">{step.label}</span>
-              <span className="hero-step-sub">{step.sub}</span>
-            </li>
-          ))}
-        </ol>
       </section>
 
-      <footer className="hero-foot">
-        <span>Calibrated voice engine</span>
-        <span aria-hidden>·</span>
-        <span>Live monitoring & transcripts</span>
-        <span aria-hidden>·</span>
-        <span>SOC-2 ready infrastructure</span>
-      </footer>
+      {items.length > 0 && (
+        <section className="hero-agents">
+          <header className="hero-agents-head">
+            <h2 className="hero-agents-title">Your agents</h2>
+            <p className="hero-agents-sub">
+              {items.length} agent{items.length === 1 ? "" : "s"} in this
+              workspace. Click any to keep building, or remove the ones you
+              don't need.
+            </p>
+          </header>
+          <AgentList initial={items} />
+        </section>
+      )}
     </main>
   );
+}
+
+async function loadAgents(): Promise<AgentListItem[]> {
+  try {
+    const col = await agentsCol();
+    const docs = await col
+      .find()
+      .sort({ updated_at: -1 })
+      .limit(50)
+      .project({
+        elevenlabs_agent_id: 1,
+        name: 1,
+        description: 1,
+        "config_cache.name": 1,
+        "config_cache.first_message": 1,
+        "config_cache.language": 1,
+        created_at: 1,
+        updated_at: 1,
+      })
+      .toArray();
+    return docs.map((d) => ({
+      id: d._id.toHexString(),
+      name:
+        (d.config_cache as { name?: string } | undefined)?.name ??
+        (d.name as string | undefined) ??
+        "Untitled agent",
+      first_message:
+        ((d.config_cache as { first_message?: string } | undefined)
+          ?.first_message ?? "") as string,
+      language:
+        ((d.config_cache as { language?: string } | undefined)?.language ??
+          "en") as string,
+      description: (d.description as string | undefined) ?? "",
+      updated_at: (d.updated_at as Date).toISOString(),
+    }));
+  } catch {
+    // Mongo unreachable — render the welcome screen without the list rather
+    // than 500 the whole page.
+    return [];
+  }
 }
