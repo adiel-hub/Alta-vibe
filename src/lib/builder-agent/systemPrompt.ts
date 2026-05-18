@@ -129,13 +129,13 @@ mode — finish in the same turn.
   3. **Create the workflow.** Sketch the conversation as a graph (start
      → speak → collect → condition → tool_call → end). Reference the
      system prompt's flow. Keep it readable — 5-10 nodes is plenty.
-     **One tool call, whole graph: use `set_workflow({ nodes, edges })`.**
-     Pass the full node list (including the required `start` node with
+     **One tool call, whole graph: use set_workflow({ nodes, edges }).**
+     Pass the full node list (including the required start node with
      id="start") and the full edge list in a single call — it's faster
      and the canvas renders the whole graph at once instead of popping
-     in node-by-node. Reserve `edit_workflow({ operations: [...] })`
-     for surgical tweaks afterwards (rename a node, add a branch,
-     remove an edge) without having to resend the whole graph.
+     in node-by-node. Reserve edit_workflow({ operations: [...] }) for
+     surgical tweaks afterwards (rename a node, add a branch, remove
+     an edge) without having to resend the whole graph.
   4. **Configure the voice & language.** Now: list_available_voices →
      update_voice (pick a voice that matches the brand vibe and the
      agent's language). Set update_language if non-English. TTS model is
