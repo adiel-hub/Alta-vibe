@@ -95,8 +95,10 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
       }
       case "tool_call": {
         base.type = "dispatch_tool";
-        if (n.data?.tool_id) base.tool_id = n.data.tool_id;
-        if (n.data?.instruction) base.additional_prompt = n.data.instruction;
+        const toolId = n.data?.tool_id as string | undefined;
+        const instruction = n.data?.instruction as string | undefined;
+        if (toolId) base.tool_id = toolId;
+        if (instruction) base.additional_prompt = instruction;
         break;
       }
       case "transfer": {
