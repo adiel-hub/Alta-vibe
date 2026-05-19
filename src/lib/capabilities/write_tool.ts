@@ -38,8 +38,14 @@ import { customToolsCol } from "@/lib/mongodb";
 import { listAgentSecrets } from "@/lib/integrations/agentSecrets";
 import {
   createRuntimeTool,
+  deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import {
+  extractSecretRefs,
+  normalizeElevenlabsSchema,
+  scopeToolName,
+} from "@/lib/integrations/schemaUtils";
 import type {
   CustomToolDocument,
   RuntimePhase,
@@ -66,21 +72,11 @@ function getAppBaseUrl(): string {
   return url.replace(/\/$/, "");
 }
 
-const SECRET_REF_REGEX = /\{\{secret:([a-z0-9_]+)\}\}/g;
-
-/**
- * Pull every secret name referenced inside the synthesized spec so we can
- * cross-check against agent_secrets and persist the list for fast pre-flight
- * checks at call time.
- */
-function extractSecretRefs(spec: SynthSpec): string[] {
-  const refs = new Set<string>();
-  const scan = (s: string) => {
-    for (const m of s.matchAll(SECRET_REF_REGEX)) refs.add(m[1]);
-  };
-  scan(spec.upstream_url);
-  for (const v of Object.values(spec.headers ?? {})) scan(v);
-  return Array.from(refs);
+function collectSecretRefs(spec: SynthSpec): string[] {
+  return extractSecretRefs([
+    spec.upstream_url,
+    ...Object.values(spec.headers ?? {}),
+  ]);
 }
 
 const SYNTH_SYSTEM_PROMPT = `You are a JSON-only synthesizer that converts a user's plain-English description of a webhook tool into a structured ElevenLabs runtime tool spec.
@@ -93,8 +89,8 @@ You output EXACTLY ONE JSON object matching this shape (no markdown, no prose, n
   "upstream_url": "https://api.<service>.com/path",
   "method": "GET" | "POST" | "PUT" | "DELETE",
   "headers": { "Header-Name": "value or {{secret:secret_name}} template" },
-  "body_schema": { JSON Schema for the request body, or null for GET/HEAD },
-  "query_schema": { JSON Schema for query params, or null }
+  "body_schema": <JSON-Schema object — OMIT THIS FIELD ENTIRELY if no body>,
+  "query_schema": <JSON-Schema object — OMIT THIS FIELD ENTIRELY if no query params>
 }
 
 Rules:
@@ -111,9 +107,21 @@ Rules:
   4. Always include "Accept: application/json" unless the API requires something else.
      For POST/PUT, include "Content-Type: application/json" unless the API requires
      form-encoding.
-  5. body_schema and query_schema are STANDARD JSON Schema. Mark fields that the
-     voice model must collect from the caller as required. Use clear "description"
-     strings on each property — the voice model uses them to decide what to fill in.
+  5. body_schema and query_schema use ElevenLabs-specific shapes that differ:
+       - query_schema: { properties: {...}, required?: [...] }  — NO outer "type".
+         Each property MUST be a literal type (string/integer/number/boolean) —
+         no nested objects/arrays. Example:
+            { "properties": { "ids": { "type": "string", "description": "Coin id" },
+                              "vs_currencies": { "type": "string", "description": "Currency" } },
+              "required": ["ids", "vs_currencies"] }
+       - body_schema:  { "type": "object", "properties": {...}, "required"?: [...] }
+         The outer "type": "object" IS required here. Properties may be nested
+         objects/arrays. Example:
+            { "type": "object",
+              "properties": { "email": { "type": "string", "description": "Caller email" } },
+              "required": ["email"] }
+     If the request has no body, OMIT body_schema entirely (do NOT write "body_schema": null).
+     Same for query_schema.
   6. NEVER include the user's first-party Bearer token, OAuth credential, or any
      hardcoded auth value. Auth is always a {{secret:...}} reference.
   7. If you cannot confidently produce a working spec from the intent, output:
@@ -298,7 +306,7 @@ export const writeToolCapability: Capability = {
             available_secret_names: Array.from(existingNames),
             hints,
           });
-          const referencedSecrets = extractSecretRefs(synth);
+          const referencedSecrets = collectSecretRefs(synth);
           const stillMissing = referencedSecrets.filter(
             (n) => !existingNames.has(n),
           );
@@ -323,8 +331,7 @@ export const writeToolCapability: Capability = {
           }
 
           // ── Gate 3: persist + publish ────────────────────────────────
-          const scopedName =
-            phase === "in_call" ? synth.name : `${phase}__${synth.name}`;
+          const scopedName = scopeToolName(synth.name, phase);
 
           // Prevent name collisions with already-attached tools.
           if (ctx.config.tools.some((t) => t.name === scopedName)) {
@@ -362,20 +369,43 @@ export const writeToolCapability: Capability = {
           let created: { id: string; name: string };
           try {
             const proxyUrl = `${getAppBaseUrl()}/api/custom-tools/proxy/${ctx.agentMongoId}/${customToolId}`;
+            // Build api_schema with only the fields ElevenLabs accepts —
+            // explicitly omit schemas when the synthesizer returned null
+            // or an empty object. Sending `request_body_schema: null`
+            // produces a 422 on /v1/convai/tools.
+            const apiSchema: {
+              url: string;
+              method: "GET" | "POST" | "PUT" | "DELETE";
+              request_headers: Record<string, string>;
+              request_body_schema?: unknown;
+              query_params_schema?: unknown;
+            } = {
+              url: proxyUrl,
+              method: synth.method,
+              request_headers: {
+                Authorization: `Bearer ${proxySecret}`,
+              },
+            };
+            const normalizedBody = normalizeElevenlabsSchema(
+              synth.body_schema,
+              "body",
+            );
+            if (normalizedBody !== undefined) {
+              apiSchema.request_body_schema = normalizedBody;
+            }
+            const normalizedQuery = normalizeElevenlabsSchema(
+              synth.query_schema,
+              "query",
+            );
+            if (normalizedQuery !== undefined) {
+              apiSchema.query_params_schema = normalizedQuery;
+            }
             created = await createRuntimeTool({
               name: scopedName,
               description: synth.description,
               type: "webhook",
               phase,
-              api_schema: {
-                url: proxyUrl,
-                method: synth.method,
-                request_headers: {
-                  Authorization: `Bearer ${proxySecret}`,
-                },
-                request_body_schema: synth.body_schema,
-                query_params_schema: synth.query_schema,
-              },
+              api_schema: apiSchema,
             });
           } catch (err) {
             // Roll back the orphaned custom_tools row so we don't leave
@@ -422,6 +452,35 @@ export const writeToolCapability: Capability = {
               },
               note: "Tool is live on the agent. ElevenLabs sees only the proxy URL + bearer; secrets are substituted at call time.",
             }),
+          };
+        }),
+    ),
+    tool(
+      "delete_custom_tool",
+      "Delete a tool that was synthesized via write_tool. Removes the ElevenLabs runtime tool, the backing custom_tools row (proxy secret + upstream spec), and detaches it from the agent. Use this — not remove_runtime_tool — when you know the tool came from write_tool. Pass the tool_id returned in the write_tool published response (or the id you see in the agent's tool list).",
+      { tool_id: z.string().min(1) },
+      async ({ tool_id }) =>
+        runToolStep(ctx, "tools", "delete_custom_tool", async () => {
+          const entry = ctx.config.tools.find((t) => t.id === tool_id);
+          if (!entry) {
+            throw new Error(`No tool with id "${tool_id}" on this agent.`);
+          }
+          const customTools = await customToolsCol();
+          const row = await customTools.findOne({
+            agent_id: new ObjectId(ctx.agentMongoId),
+            elevenlabs_tool_id: tool_id,
+          });
+          const next = ctx.config.tools.filter((t) => t.id !== tool_id);
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            tool_ids: next.map((t) => t.id),
+          });
+          await deleteRuntimeTool(tool_id).catch(() => {});
+          if (row) {
+            await customTools.deleteOne({ _id: row._id }).catch(() => {});
+          }
+          return {
+            patch: { tools: next },
+            summary: `Deleted custom tool "${entry.name}".`,
           };
         }),
     ),

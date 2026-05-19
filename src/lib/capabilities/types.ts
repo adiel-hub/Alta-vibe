@@ -73,15 +73,58 @@ export async function runToolStep<T>(
     return { content: [{ type: "text", text: summary }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    log.error("tool failed", { ms: Date.now() - t0, message });
+    // ElevenLabsError carries the upstream response body. Surface it
+    // both in our app logs and in the agent-visible error text so the
+    // model can self-correct (e.g. "field X must be Y") instead of
+    // being stuck looping on a generic "request failed (422)".
+    const upstreamBody =
+      err && typeof err === "object" && "body" in err
+        ? (err as { body?: unknown }).body
+        : undefined;
+    const upstreamStatus =
+      err && typeof err === "object" && "status" in err
+        ? (err as { status?: number }).status
+        : undefined;
+    log.error("tool failed", {
+      ms: Date.now() - t0,
+      message,
+      upstream_status: upstreamStatus,
+      upstream_body: upstreamBody,
+      stack: err instanceof Error ? err.stack : undefined,
+    });
     ctx.emit({ type: "state_error", section, message });
+    let agentText = `Tool "${op}" failed: ${message}.`;
+    // Pydantic/FastAPI shape that ElevenLabs uses: detail is an array
+    // of { loc, msg, type } describing each rejected field. Flatten so
+    // the agent sees exactly which field needs fixing.
+    if (
+      upstreamBody &&
+      typeof upstreamBody === "object" &&
+      "detail" in upstreamBody &&
+      Array.isArray((upstreamBody as { detail?: unknown }).detail)
+    ) {
+      const detail = (upstreamBody as { detail: unknown[] }).detail;
+      const items = detail
+        .map((it) => {
+          if (typeof it !== "object" || it === null) return null;
+          const msg = (it as { msg?: unknown }).msg;
+          const loc = (it as { loc?: unknown }).loc;
+          if (typeof msg !== "string") return null;
+          const path = Array.isArray(loc)
+            ? loc
+                .filter((p) => p !== "body" && (typeof p === "string" || typeof p === "number"))
+                .join(".")
+            : "";
+          return path ? `  - ${path}: ${msg}` : `  - ${msg}`;
+        })
+        .filter((s): s is string => s !== null);
+      if (items.length > 0) {
+        agentText += `\nUpstream validation errors:\n${items.join("\n")}`;
+      }
+    }
+    agentText += "\nYou can adjust the inputs and try again, or ask the user how to proceed.";
     return {
-      content: [
-        {
-          type: "text",
-          text: `Tool "${op}" failed: ${message}. You can adjust the inputs and try again, or ask the user how to proceed.`,
-        },
-      ],
+      content: [{ type: "text", text: agentText }],
       isError: true,
     };
   }

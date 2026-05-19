@@ -21,6 +21,13 @@ import { registerProviderForAgent } from "@/lib/integrations/registerProviderToo
 import { encryptToken } from "@/lib/integrations/tokens";
 import { validateToken as validateHubspotToken } from "@/lib/integrations/hubspot/auth";
 import { storeAgentSecret } from "@/lib/integrations/agentSecrets";
+import {
+  assignPhoneNumberToAgent,
+  importSIPTrunkPhoneNumber,
+  importTwilioPhoneNumber,
+  type InboundSIPTrunkConfig,
+  type OutboundSIPTrunkConfig,
+} from "@/lib/elevenlabs/client";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -119,6 +126,96 @@ export async function POST(
       const choice = (parsed.data.result as { value?: string } | undefined)?.value;
       summary = `User picked: ${choice ?? "(unknown)"}.`;
       effectMessage = `User picked option: ${choice ?? "(unknown)"}.`;
+    } else if (action.kind === "phone_number_setup") {
+      const raw = (parsed.data.result ?? {}) as Record<string, unknown>;
+      const provider = raw.provider;
+      const phoneNumber =
+        typeof raw.phone_number === "string" ? raw.phone_number.trim() : "";
+      const label = typeof raw.label === "string" ? raw.label.trim() : "";
+      const attachAfter =
+        (action.payload as { attach_after_import?: boolean }).attach_after_import !==
+        false;
+      if (!phoneNumber || !label) {
+        log.warn("phone_number_setup rejected: missing phone_number or label");
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Missing phone_number or label" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Missing phone_number or label",
+        });
+      }
+      try {
+        let imported: { phone_number_id: string };
+        if (provider === "twilio") {
+          const sid = typeof raw.sid === "string" ? raw.sid.trim() : "";
+          const token = typeof raw.token === "string" ? raw.token.trim() : "";
+          if (!sid || !token) {
+            throw new Error("Twilio import requires sid and token");
+          }
+          imported = await importTwilioPhoneNumber({
+            phone_number: phoneNumber,
+            label,
+            sid,
+            token,
+          });
+        } else if (provider === "sip_trunk") {
+          const outbound =
+            (raw.outbound_trunk_config as OutboundSIPTrunkConfig | undefined) ??
+            undefined;
+          const inbound =
+            (raw.inbound_trunk_config as InboundSIPTrunkConfig | undefined) ??
+            undefined;
+          imported = await importSIPTrunkPhoneNumber({
+            phone_number: phoneNumber,
+            label,
+            inbound_trunk_config: inbound ?? null,
+            outbound_trunk_config: outbound ?? null,
+          });
+        } else {
+          throw new Error(
+            `Unknown phone provider '${String(provider)}'. Expected 'twilio' or 'sip_trunk'.`,
+          );
+        }
+        log.info("phone imported", {
+          provider,
+          phone_number_id: imported.phone_number_id,
+          attach_after: attachAfter,
+        });
+        if (attachAfter) {
+          await assignPhoneNumberToAgent(
+            imported.phone_number_id,
+            agent.elevenlabs_agent_id,
+          );
+        }
+        summary = `Imported ${label} (${phoneNumber}).`;
+        effectMessage = `User imported a ${String(provider)} phone number "${label}" (${phoneNumber}) with id ${imported.phone_number_id}.${
+          attachAfter
+            ? " It is now attached to this agent."
+            : " It was NOT attached — call assign_phone_number_to_agent next if the user wants the agent to use it."
+        }`;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "import failed";
+        log.error("phone import failed", { provider, message });
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: message },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({ status: "failed", error: message });
+      }
     } else if (action.kind === "collect_secret") {
       const payload = action.payload as {
         name?: string;
@@ -258,8 +355,7 @@ async function buildCredentialsForProvider(
       },
     };
   }
-  // Fallback for stub providers (slack, notion, gmail, stripe) until they're
-  // wired with real OAuth or PAT flows.
+  // Fallback for stub providers until they're wired with real OAuth or PAT flows.
   return {
     ok: true,
     credentials: { access_token: "stub_token_dev_only", connected_via: "stub" },

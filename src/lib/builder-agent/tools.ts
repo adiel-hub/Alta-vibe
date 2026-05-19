@@ -12,9 +12,15 @@ import { CAPABILITIES, type ToolContext } from "@/lib/capabilities";
 export type { ToolContext };
 
 export function createBuilderTools(ctx: ToolContext) {
-  return createSdkMcpServer({
+  const tools = CAPABILITIES.flatMap((c) => c.tools(ctx));
+  const server = createSdkMcpServer({
     name: "alta",
     version: "0.3.0",
-    tools: CAPABILITIES.flatMap((c) => c.tools(ctx)),
+    tools,
   });
+  const allowedToolNames = tools
+    .map((t) => (t as { name?: string }).name)
+    .filter((n): n is string => typeof n === "string")
+    .map((n) => `mcp__alta__${n}`);
+  return { server, allowedToolNames };
 }

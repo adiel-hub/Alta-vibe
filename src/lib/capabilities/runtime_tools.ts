@@ -1,10 +1,16 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
+import { ObjectId } from "mongodb";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import { customToolsCol } from "@/lib/mongodb";
+import {
+  extractSecretRefs,
+  scopeToolName,
+} from "@/lib/integrations/schemaUtils";
 import type { RuntimePhase, RuntimeTool } from "@/types/agent";
 import type { Capability } from "./types";
 import { runToolStep } from "./types";
@@ -44,7 +50,7 @@ export const runtimeToolsCapability: Capability = {
           if (ctx.config.tools.some((t) => t.name === name)) {
             throw new Error(`A tool named "${name}" already exists. Pick another name.`);
           }
-          const scopedName = phase === "in_call" ? name : `${phase}__${name}`;
+          const scopedName = scopeToolName(name, phase as RuntimePhase);
           const created = await createRuntimeTool({
             name: scopedName,
             description,
@@ -65,9 +71,23 @@ export const runtimeToolsCapability: Capability = {
           await patchAgent(ctx.elevenlabs_agent_id, {
             tool_ids: next.map((t) => t.id),
           });
+          // Surface any {{secret:<name>}} references the caller embedded in
+          // the api_schema so the user sees which secrets this tool depends
+          // on. We don't persist them (runtime_tools has no custom_tools
+          // row); the refs are informational only.
+          const secretRefs = api_schema
+            ? extractSecretRefs([
+                api_schema.url,
+                ...Object.values(api_schema.request_headers ?? {}),
+              ])
+            : [];
+          const refSuffix =
+            secretRefs.length > 0
+              ? ` Secrets referenced: ${secretRefs.join(", ")}.`
+              : "";
           return {
             patch: { tools: next },
-            summary: `Created ${phase} tool "${name}".`,
+            summary: `Created ${phase} tool "${name}".${refSuffix}`,
           };
         }),
     ),
@@ -86,6 +106,16 @@ export const runtimeToolsCapability: Capability = {
             tool_ids: next.map((t) => t.id),
           });
           await deleteRuntimeTool(tool_id).catch(() => {});
+          // Cascade: if this tool was synthesized via write_tool, drop the
+          // backing custom_tools row so its proxy_secret + upstream spec
+          // don't become an orphan.
+          const customTools = await customToolsCol();
+          await customTools
+            .deleteOne({
+              agent_id: new ObjectId(ctx.agentMongoId),
+              elevenlabs_tool_id: tool_id,
+            })
+            .catch(() => {});
           return { patch: { tools: next }, summary: `Removed runtime tool.` };
         }),
     ),

@@ -6,30 +6,41 @@
  * Nodes + edges live in `config_cache.workflow` and stream to the right
  * panel via state_patch events so the SVG visualizer fills in live.
  *
- * The workflow is also surfaced to the deployed voice agent through the
- * system prompt: tools here automatically re-render a "workflow context"
- * section onto the prompt so the deployed agent follows the graph at
- * runtime. A companion `client` runtime tool (`report_workflow_state`)
- * lets the deployed agent report its current node back to the browser
- * during a test call — see capabilities/workflow_tracking.ts.
+ * Every workflow-mutating tool (set_workflow / edit_workflow /
+ * workflow_reset) routes through `persistWorkflow`, which auto-installs
+ * the `report_workflow_state` CLIENT runtime tool on the deployed agent
+ * if it's missing. The browser test-call hook ([TestCallButton.tsx])
+ * listens for invocations of that tool and highlights the matching
+ * workflow node in real time — so tracking comes for free with any
+ * workflow build, no extra builder-side tool required.
  */
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
+import { createRuntimeTool, patchAgent } from "@/lib/elevenlabs/client";
 import type {
   ElevenWorkflow,
   ElevenWorkflowEdge,
   ElevenWorkflowNode,
 } from "@/lib/elevenlabs/client";
 import type {
+  RuntimeTool,
   WorkflowEdge,
   WorkflowNode,
   WorkflowNodeType,
   WorkflowState,
 } from "@/types/agent";
 import { DEFAULT_WORKFLOW } from "@/types/agent";
+import { createLogger } from "@/lib/logger";
 import type { Capability } from "./types";
 import { runToolStep } from "./types";
+
+/** Name of the CLIENT runtime tool the deployed voice agent calls to report
+ *  its current workflow node. Kept here (and matched verbatim by the
+ *  TestCallButton's `clientTools` handler) so the wire name stays consistent
+ *  across registration and consumption. */
+const TRACKING_TOOL_NAME = "report_workflow_state";
+
+const log = createLogger("capability:workflow");
 
 /**
  * Translate our internal WorkflowState (arrays, our type names) into the
@@ -94,7 +105,11 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
         break;
       }
       case "tool_call": {
-        base.type = "dispatch_tool";
+        // ElevenLabs renamed `dispatch_tool` → `tool` in the workflow
+        // node enum. The 422 from upstream listed the new accepted set:
+        // start, end, phone_number, override_agent, standalone_agent,
+        // say, tool, update_state.
+        base.type = "tool";
         const toolId = n.data?.tool_id as string | undefined;
         const instruction = n.data?.instruction as string | undefined;
         if (toolId) base.tool_id = toolId;
@@ -102,11 +117,13 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
         break;
       }
       case "transfer": {
+        // `transfer_to_number` → `phone_number`, `agent_transfer` →
+        // `standalone_agent` per the renamed enum above.
         if (n.data?.phone_number) {
-          base.type = "transfer_to_number";
+          base.type = "phone_number";
           base.phone_number = n.data.phone_number;
         } else {
-          base.type = "agent_transfer";
+          base.type = "standalone_agent";
           if (n.data?.target_agent_id)
             base.target_agent_id = n.data.target_agent_id;
         }
@@ -148,12 +165,21 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
         return "start";
       case "end":
         return "end";
+      // ElevenLabs renamed: `dispatch_tool` → `tool`,
+      // `agent_transfer` → `standalone_agent`,
+      // `transfer_to_number` → `phone_number`. Accept both for backward
+      // compat reading historical agents.
+      case "tool":
       case "dispatch_tool":
         return "tool_call";
+      case "standalone_agent":
       case "agent_transfer":
+      case "phone_number":
       case "transfer_to_number":
         return "transfer";
+      case "say":
       case "override_agent":
+      case "update_state":
       default:
         return "speak";
     }
@@ -215,18 +241,58 @@ export function composeSystemPromptWithWorkflow(prompt: string): string {
 }
 
 /**
+ * Lazily provision the `report_workflow_state` client tool that powers the
+ * live-node highlight during test calls. Returns the new RuntimeTool entry
+ * if one was created, or null when the deployed agent already has it.
+ * Idempotent across set_workflow / edit_workflow / workflow_reset calls.
+ */
+async function ensureTrackingTool(
+  ctx: Parameters<Capability["tools"]>[0],
+): Promise<RuntimeTool | null> {
+  if (ctx.config.tools.some((t) => t.name === TRACKING_TOOL_NAME)) {
+    return null;
+  }
+  const created = await createRuntimeTool({
+    name: TRACKING_TOOL_NAME,
+    description:
+      "Report the current workflow node the conversation is in. Call this immediately upon entering each node. Argument: node_id (string).",
+    type: "client",
+    phase: "in_call",
+  });
+  return {
+    id: created.id,
+    name: TRACKING_TOOL_NAME,
+    type: "client",
+    description: "Workflow node tracker.",
+    phase: "in_call",
+  };
+}
+
+/**
  * Push the workflow as structured data on conversation_config.workflow.
  * The agent runtime walks the graph itself — no prompt footer required.
- * Also scrubs any legacy footer from the system prompt in the same call.
+ * Also scrubs any legacy footer from the system prompt in the same call,
+ * and auto-installs the workflow tracking client tool the first time the
+ * agent grows a graph.
+ *
+ * Returns the resulting tools list when tracking was just provisioned, so
+ * the calling builder tool can fold it into its state_patch.
  */
 async function persistWorkflow(
   ctx: Parameters<Capability["tools"]>[0],
   nextWorkflow: WorkflowState,
-): Promise<void> {
+): Promise<{ tools?: RuntimeTool[] }> {
+  const tTotal = Date.now();
   const cleanPrompt = composeSystemPromptWithWorkflow(
     ctx.config.system_prompt ?? "",
   );
+  const tTranslate = Date.now();
   const workflow = toElevenWorkflow(nextWorkflow);
+  const addedTrackingTool = await ensureTrackingTool(ctx);
+  const nextTools = addedTrackingTool
+    ? [...ctx.config.tools, addedTrackingTool]
+    : null;
+  const tPatchStart = Date.now();
   await patchAgent(ctx.elevenlabs_agent_id, {
     workflow,
     // Only push system_prompt when we actually trimmed a stale footer,
@@ -234,8 +300,25 @@ async function persistWorkflow(
     ...(cleanPrompt !== ctx.config.system_prompt
       ? { system_prompt: cleanPrompt }
       : {}),
+    // Patch tool_ids only when we just added the tracking tool, so
+    // unrelated tool changes still come from their own capabilities.
+    ...(nextTools ? { tool_ids: nextTools.map((t) => t.id) } : {}),
   });
+  const tDone = Date.now();
   ctx.config.system_prompt = cleanPrompt;
+  if (nextTools) ctx.config.tools = nextTools;
+  log.info("persistWorkflow done", {
+    agent_id: ctx.elevenlabs_agent_id,
+    turn_job_id: ctx.turn_job_id,
+    nodes: nextWorkflow.nodes.length,
+    edges: nextWorkflow.edges.length,
+    tracking_tool_installed: !!addedTrackingTool,
+    translate_ms: tPatchStart - tTranslate,
+    eleven_patch_ms: tDone - tPatchStart,
+    total_ms: tDone - tTotal,
+    prompt_trimmed: cleanPrompt !== ctx.config.system_prompt,
+  });
+  return nextTools ? { tools: nextTools } : {};
 }
 
 function newId(prefix: string): string {
@@ -380,6 +463,18 @@ export const workflowCapability: Capability = {
       },
       async ({ nodes, edges }) =>
         runToolStep(ctx, "workflow", "set_workflow", async () => {
+          log.info("set_workflow entry", {
+            turn_job_id: ctx.turn_job_id,
+            input_nodes: nodes.length,
+            input_edges: edges.length,
+            node_types: nodes.reduce<Record<string, number>>((acc, n) => {
+              acc[n.type] = (acc[n.type] ?? 0) + 1;
+              return acc;
+            }, {}),
+            edges_with_condition: edges.filter(
+              (e) => typeof e.condition === "string" && e.condition.length > 0,
+            ).length,
+          });
           // Stamp missing ids so the agent doesn't have to.
           const stampedNodes: WorkflowNode[] = nodes.map((n) => ({
             id: n.id ?? newId(n.type),
@@ -405,9 +500,13 @@ export const workflowCapability: Capability = {
             nodes: stampedNodes,
             edges: stampedEdges,
           };
-          await persistWorkflow(ctx, next);
+          const persistResult = await persistWorkflow(ctx, next);
           return {
-            patch: { workflow: next, system_prompt: ctx.config.system_prompt },
+            patch: {
+              workflow: next,
+              system_prompt: ctx.config.system_prompt,
+              ...(persistResult.tools ? { tools: persistResult.tools } : {}),
+            },
             summary: `Workflow set: ${stampedNodes.length} nodes, ${stampedEdges.length} edges.`,
           };
         }),
@@ -421,10 +520,24 @@ export const workflowCapability: Capability = {
       },
       async ({ operations }) =>
         runToolStep(ctx, "workflow", "edit_workflow", async () => {
+          log.info("edit_workflow entry", {
+            turn_job_id: ctx.turn_job_id,
+            ops: operations.length,
+            op_kinds: operations.reduce<Record<string, number>>((acc, o) => {
+              acc[o.op] = (acc[o.op] ?? 0) + 1;
+              return acc;
+            }, {}),
+            current_nodes: ctx.config.workflow.nodes.length,
+            current_edges: ctx.config.workflow.edges.length,
+          });
           const next = applyOps(ctx.config.workflow, operations);
-          await persistWorkflow(ctx, next);
+          const persistResult = await persistWorkflow(ctx, next);
           return {
-            patch: { workflow: next, system_prompt: ctx.config.system_prompt },
+            patch: {
+              workflow: next,
+              system_prompt: ctx.config.system_prompt,
+              ...(persistResult.tools ? { tools: persistResult.tools } : {}),
+            },
             summary: `Applied ${operations.length} edit${operations.length === 1 ? "" : "s"} to the workflow.`,
           };
         }),
@@ -436,10 +549,19 @@ export const workflowCapability: Capability = {
       {},
       async () =>
         runToolStep(ctx, "workflow", "workflow_reset", async () => {
+          log.info("workflow_reset entry", {
+            turn_job_id: ctx.turn_job_id,
+            current_nodes: ctx.config.workflow.nodes.length,
+            current_edges: ctx.config.workflow.edges.length,
+          });
           const next: WorkflowState = { ...DEFAULT_WORKFLOW };
-          await persistWorkflow(ctx, next);
+          const persistResult = await persistWorkflow(ctx, next);
           return {
-            patch: { workflow: next, system_prompt: ctx.config.system_prompt },
+            patch: {
+              workflow: next,
+              system_prompt: ctx.config.system_prompt,
+              ...(persistResult.tools ? { tools: persistResult.tools } : {}),
+            },
             summary: "Workflow reset.",
           };
         }),

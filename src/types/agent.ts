@@ -17,7 +17,7 @@ export type RuntimeTool = {
   type: "webhook" | "client" | "system";
   description: string;
   phase: RuntimePhase;
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url?: string;
   parameters?: unknown;
   /** Optional provenance: which integration provider registered this tool. */
@@ -38,17 +38,34 @@ export type VoiceSettings = {
   speed: number;
 };
 
+export type DataCollectionFieldType = "string" | "number" | "integer" | "boolean";
+
 export type DataCollectionField = {
   id: string;
   name: string;
-  type: "string" | "number" | "boolean";
+  type: DataCollectionFieldType;
   description: string;
+  /** When set, the extracted value must be exactly one of these. Treated as
+   *  a JSON-schema-style enum constraint: sent on the wire to ElevenLabs and
+   *  ALSO baked into the description ("Must be exactly one of: …") so the
+   *  LLM extractor respects it even if upstream ignores the enum field. */
+  enum?: string[];
 };
 
+/**
+ * A "Call Outcome" / "Success Criterion" — a yes/no goal scored against the
+ * transcript after the call. Maps 1:1 to ElevenLabs' `PromptEvaluationCriteria`
+ * inside `platform_settings.evaluation.criteria` (their UI labels these "Call
+ * Outcomes" / "Success Criteria"). `prompt` is the conversation_goal_prompt on
+ * the wire — kept named `prompt` in our cache for back-compat with older docs.
+ */
 export type EvaluationCriterion = {
   id: string;
   name: string;
   prompt: string;
+  use_knowledge_base?: boolean;
+  /** "conversation" uses the full transcript; "agent" only the active portion. */
+  scope?: "conversation" | "agent";
 };
 
 export type PhoneNumber = {
@@ -267,7 +284,8 @@ export type WidgetKind =
   | "connect_integration"
   | "confirm"
   | "pick_option"
-  | "collect_secret";
+  | "collect_secret"
+  | "phone_number_setup";
 
 export type WidgetActionDocument = {
   _id: ObjectId;

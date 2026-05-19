@@ -32,7 +32,7 @@ export async function enrichCallContext(input: {
       });
       Object.assign(merged, out);
     }
-    // Future: stripe / salesforce / etc. each contribute their own keys.
+    // Future: each connected provider contributes its own keys here.
   }
   return merged;
 }

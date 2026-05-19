@@ -136,6 +136,10 @@
 @keyframes vb-dash {
   to { stroke-dashoffset: -16; }
 }
+@keyframes vb-drawer-in {
+  from { transform: translateX(100%); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
+}
 @keyframes alta-edit-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.0); border-color: var(--color-violet-500); }
   50% { box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.18); border-color: var(--color-violet-500); }
@@ -1388,9 +1392,17 @@ textarea, input, select {
   background: var(--color-border);
 }
 
-/* Wrapper that hosts the node card plus its hover-revealed actions. */
+/* Wrapper that hosts the node card plus its hover-revealed actions.
+   Each wrap is its own stacking context (position: absolute, set inline
+   on the JSX). When the "+ add child" popup is open we bump this wrap
+   above sibling wraps so the menu isn't covered by nodes below it. */
 .vb-el-node-wrap {
-  /* Container — absolutely positioned by the JSX. */
+  z-index: 1;
+}
+.vb-el-node-wrap:hover,
+.vb-el-node-wrap:focus-within,
+.vb-el-node-wrap:has(.vb-el-add-menu) {
+  z-index: 40;
 }
 /* Invisible "hover bridge" so moving the cursor down from the card to the
    "+" button below doesn't drop out of the wrapper's :hover and hide the
@@ -1410,18 +1422,20 @@ textarea, input, select {
   pointer-events: auto;
 }
 
-/* Right-side floating actions: copy + trash. Hidden until wrap hover. */
+/* Floating actions: copy + trash. Pinned to the node's top-right INSIDE
+   its bounds so they never get clipped when a node sits at the canvas
+   edge. Hidden until wrap hover. */
 .vb-el-node-side-actions {
   position: absolute;
-  top: 0;
-  left: 100%;
-  margin-left: 8px;
+  top: 6px;
+  right: 6px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 4px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
+  z-index: 3;
 }
 .vb-el-node-wrap:hover .vb-el-node-side-actions,
 .vb-el-node-wrap:focus-within .vb-el-node-side-actions {
@@ -1429,15 +1443,16 @@ textarea, input, select {
   pointer-events: auto;
 }
 .vb-el-side-btn {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
-  background: var(--color-panel);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--color-muted);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 6px;
   box-shadow: var(--shadow-xs);
+  backdrop-filter: blur(4px);
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .vb-el-side-btn:hover:not(:disabled) {
@@ -1454,7 +1469,10 @@ textarea, input, select {
   background: rgba(220, 38, 38, 0.06);
 }
 
-/* Bottom "+" — sits centered just below the node, hidden until hover. */
+/* Bottom "+" — sits centered just below the node, hidden until hover.
+   z-index keeps it ABOVE the wrap's ::after hover-bridge pseudo-element,
+   which would otherwise steal the click since CSS paints ::after after
+   real children in the same stacking context. */
 .vb-el-plus {
   position: absolute;
   left: 50%;
@@ -1475,6 +1493,7 @@ textarea, input, select {
   pointer-events: none;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 2;
 }
 .vb-el-node-wrap:hover .vb-el-plus,
 .vb-el-node-wrap:focus-within .vb-el-plus,
@@ -1554,6 +1573,14 @@ textarea, input, select {
   gap: 10px;
   box-shadow: var(--shadow-xs);
   transition: border-color 0.15s, box-shadow 0.15s;
+  /* The layout reserves a 96px slot per row and the edge connectors enter
+     at slot-center y. Short non-terminal nodes (e.g. a router with only a
+     title + small subtitle) would otherwise be shorter than the slot and
+     the edge would visibly enter below their content. Fill the slot so
+     edge entry matches the node's visible vertical center. Terminals are
+     intentionally smaller pills and override this below. */
+  min-height: 96px;
+  box-sizing: border-box;
 }
 .vb-el-node:hover {
   box-shadow: var(--shadow-sm);
@@ -1614,6 +1641,13 @@ textarea, input, select {
 .vb-el-body {
   min-width: 0;
   flex: 1;
+  /* Vertically center title + description within the (min 96px) card so
+     a short-content node still looks balanced and matches the edge
+     connector y. For multi-line descriptions that fill the slot this is
+     a no-op. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 .vb-el-title {
   font-size: 13px;
@@ -1634,12 +1668,17 @@ textarea, input, select {
   text-wrap: pretty;
 }
 
-/* Terminal nodes (start, end) — narrower, single-line. */
+/* Terminal nodes (start, end) — narrower, single-line. Keep them as
+   compact pills; the slot is taller than the pill but the edge connector
+   targets the slot-center y, which is close enough visually (the pill is
+   already vertically centered against the row of taller nodes around it
+   because all nodes share the same slot top). */
 .vb-el-terminal {
   align-items: center;
   padding: 10px 14px;
   border-radius: 10px;
   background: var(--color-panel);
+  min-height: 0;
 }
 .vb-el-terminal-label {
   font-size: 13px;

@@ -10,8 +10,40 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { integrationsCol } from "@/lib/mongodb";
 import { decryptToken } from "@/lib/integrations/tokens";
-import { getProvider } from "@/lib/integrations/providers";
+import { getProvider, findProviderTool } from "@/lib/integrations/providers";
 import { createLogger, newRequestId } from "@/lib/logger";
+
+/**
+ * Substitute `{name}` placeholders in a path template using values pulled
+ * from the request body (or, for GET/DELETE, the query). Returns the
+ * resolved path AND a copy of the body/query with the consumed keys
+ * removed — we don't want HubSpot to see `contactId` as an unknown
+ * property in the body of a PATCH /contacts/{contactId}.
+ */
+function resolvePathTemplate(
+  template: string,
+  source: Record<string, unknown> | null,
+): { path: string; remaining: Record<string, unknown> | null; missing: string[] } {
+  const placeholders = Array.from(template.matchAll(/\{([a-zA-Z0-9_]+)\}/g)).map(
+    (m) => m[1],
+  );
+  if (placeholders.length === 0) {
+    return { path: template, remaining: source, missing: [] };
+  }
+  const remaining: Record<string, unknown> | null = source ? { ...source } : null;
+  const missing: string[] = [];
+  let path = template;
+  for (const name of placeholders) {
+    const raw = remaining ? remaining[name] : undefined;
+    if (raw === undefined || raw === null || raw === "") {
+      missing.push(name);
+      continue;
+    }
+    path = path.replace(`{${name}}`, encodeURIComponent(String(raw)));
+    if (remaining) delete remaining[name];
+  }
+  return { path, remaining, missing };
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,13 +67,7 @@ async function handle(
     return NextResponse.json({ error: "Unknown provider" }, { status: 404 });
   }
 
-  // Tool spec lookup — the scoped tool name in our DB is either
-  // "<name>" (in_call) or "<phase>__<name>" (pre/post). Match by both.
-  const spec = providerDef.runtime_tools.find(
-    (t) =>
-      t.name === params.toolName ||
-      `${t.phase}__${t.name}` === params.toolName,
-  );
+  const spec = findProviderTool(params.provider, params.toolName);
   if (!spec) {
     return NextResponse.json({ error: "Unknown tool" }, { status: 404 });
   }
@@ -86,9 +112,66 @@ async function handle(
     return NextResponse.json({ error: "Decryption failed" }, { status: 500 });
   }
 
-  // Build upstream URL: provider.base_api_url + spec.path + original query
+  // Pull body (or query, for GET/DELETE) up front so we can lift any
+  // `{var}` keys out of it for path-template substitution.
+  //
+  // The proxy is authoritative on the upstream method, not the incoming
+  // request — ElevenLabs' api_schema only accepts GET/POST/PUT/DELETE, so
+  // PATCH-flavored mutations get registered as POST with ElevenLabs but
+  // need to leave the proxy as PATCH so HubSpot sees the right verb.
+  const upstreamMethod = spec.method;
   const url = new URL(req.url);
-  const upstream = providerDef.base_api_url + spec.path + (url.search || "");
+  const hasBody = !["GET", "HEAD", "DELETE"].includes(upstreamMethod);
+  const rawBody = req.method === "GET" || req.method === "HEAD" ? "" : await req.text();
+  let bodyObj: Record<string, unknown> | null = null;
+  if (rawBody) {
+    try {
+      const parsed = JSON.parse(rawBody);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        bodyObj = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Non-JSON body — pass through unchanged. Path templates with
+      // non-JSON bodies aren't a thing in HubSpot/Slack/Notion, so this
+      // is fine.
+    }
+  }
+
+  let resolvedPath = spec.path;
+  if (spec.path_template) {
+    // For methods without a body, lift placeholder values from query
+    // params instead. ElevenLabs sends the LLM's query_params_schema
+    // arguments as actual URL query params.
+    const source: Record<string, unknown> | null = bodyObj
+      ? bodyObj
+      : (() => {
+          const q: Record<string, unknown> = {};
+          for (const [k, v] of url.searchParams) q[k] = v;
+          return Object.keys(q).length > 0 ? q : null;
+        })();
+    const resolved = resolvePathTemplate(spec.path, source);
+    if (resolved.missing.length > 0) {
+      log.warn("path template missing values", { missing: resolved.missing });
+      return NextResponse.json(
+        {
+          error: `Missing required path values: ${resolved.missing.join(", ")}. The LLM must supply these in the request.`,
+        },
+        { status: 400 },
+      );
+    }
+    resolvedPath = resolved.path;
+    if (bodyObj && resolved.remaining) bodyObj = resolved.remaining;
+    if (!bodyObj && resolved.remaining) {
+      // Strip the consumed keys from the forwarded query string too.
+      const next = new URLSearchParams();
+      for (const [k, v] of url.searchParams) {
+        if (resolved.remaining[k] !== undefined) next.append(k, v);
+      }
+      url.search = next.toString() ? `?${next.toString()}` : "";
+    }
+  }
+
+  const upstream = providerDef.base_api_url + resolvedPath + (url.search || "");
 
   const upstreamHeaders: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -97,12 +180,16 @@ async function handle(
   const ct = req.headers.get("content-type");
   if (ct) upstreamHeaders["content-type"] = ct;
 
-  const hasBody = !["GET", "HEAD"].includes(req.method);
-  const body = hasBody ? await req.text() : undefined;
+  // Re-serialize the body if we touched it during path substitution.
+  const body = hasBody
+    ? bodyObj !== null
+      ? JSON.stringify(bodyObj)
+      : rawBody
+    : undefined;
 
-  log.info("forward", { method: req.method, upstream });
+  log.info("forward", { method: upstreamMethod, upstream });
   const upstreamRes = await fetch(upstream, {
-    method: req.method,
+    method: upstreamMethod,
     headers: upstreamHeaders,
     body,
   });

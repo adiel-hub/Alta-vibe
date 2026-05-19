@@ -19,7 +19,6 @@ import { mcpCapability } from "./mcp";
 import { postCallAnalysisCapability } from "./post_call_analysis";
 import { telephonyCapability } from "./telephony";
 import { workflowCapability } from "./workflow";
-import { workflowTrackingCapability } from "./workflow_tracking";
 import { widgetsCapability } from "./widgets";
 import { integrationsCapability } from "./integrations";
 import { turnDetectionCapability } from "./turn_detection";
@@ -40,7 +39,6 @@ export const CAPABILITIES: Capability[] = [
   postCallAnalysisCapability,
   telephonyCapability,
   workflowCapability,
-  workflowTrackingCapability,
   widgetsCapability,
   integrationsCapability,
   turnDetectionCapability,

@@ -42,6 +42,29 @@ function extractErrorMessage(body: unknown): string | null {
   if (typeof body !== "object" || body === null) return null;
   const detail = (body as { detail?: unknown }).detail;
   if (typeof detail === "string") return detail;
+  // FastAPI/Pydantic validation errors: detail is an array of
+  //   { loc: ["body", "tool_config", "api_schema", ...], msg, type }.
+  // Flatten to "field.path: msg; field.path: msg" so callers see exactly
+  // which part of the request ElevenLabs rejected — critical for debugging
+  // 422s out of /v1/convai/tools where the failure is almost always a
+  // schema/shape problem on a specific field.
+  if (Array.isArray(detail)) {
+    const items = (detail as unknown[])
+      .map((it) => {
+        if (typeof it !== "object" || it === null) return null;
+        const msg = (it as { msg?: unknown }).msg;
+        if (typeof msg !== "string") return null;
+        const loc = (it as { loc?: unknown }).loc;
+        const path = Array.isArray(loc)
+          ? loc
+              .filter((p) => p !== "body" && (typeof p === "string" || typeof p === "number"))
+              .join(".")
+          : "";
+        return path ? `${path}: ${msg}` : msg;
+      })
+      .filter((s): s is string => s !== null);
+    if (items.length > 0) return items.join("; ");
+  }
   if (typeof detail === "object" && detail !== null) {
     const msg = (detail as { message?: unknown }).message;
     if (typeof msg === "string") return msg;
@@ -49,6 +72,26 @@ function extractErrorMessage(body: unknown): string | null {
   const topMsg = (body as { message?: unknown }).message;
   if (typeof topMsg === "string") return topMsg;
   return null;
+}
+
+/**
+ * Truncate a stringified payload so we can safely splat it into logs
+ * without filling Vercel/Railway with megabytes of system_prompt copy.
+ * Returns `value` for objects/arrays unchanged when small enough, or a
+ * truncated string when over the limit.
+ */
+function logTrunc(value: unknown, limit = 4_000): unknown {
+  if (value == null) return value;
+  if (typeof value === "string") {
+    return value.length > limit ? `${value.slice(0, limit)}… [truncated ${value.length - limit} chars]` : value;
+  }
+  try {
+    const s = JSON.stringify(value);
+    if (s.length <= limit) return value;
+    return `${s.slice(0, limit)}… [truncated ${s.length - limit} chars]`;
+  } catch {
+    return String(value);
+  }
 }
 
 async function elFetch(
@@ -61,10 +104,30 @@ async function elFetch(
   if (!headers.has("accept")) headers.set("accept", "application/json");
 
   const method = rest.method ?? "GET";
+  // Snapshot the outgoing body so we can attach it to error logs. We always
+  // log a truncated copy on non-2xx so the engineer can immediately see
+  // exactly what shape we sent that the provider rejected — the #1 cause
+  // of 422 debug-time loss.
+  const reqBodyRaw = typeof rest.body === "string" ? rest.body : null;
+  let reqBodyParsed: unknown = null;
+  if (reqBodyRaw) {
+    try {
+      reqBodyParsed = JSON.parse(reqBodyRaw);
+    } catch {
+      reqBodyParsed = reqBodyRaw;
+    }
+  }
+
   let attempt = 0;
   const t0 = Date.now();
   while (true) {
-    log.debug("request", { method, path, section, attempt });
+    log.debug("request", {
+      method,
+      path,
+      section,
+      attempt,
+      body: logTrunc(reqBodyParsed),
+    });
     const res = await fetch(`${BASE_URL}${path}`, { ...rest, headers });
     if (res.status === 429 && attempt < 3) {
       const wait = 2 ** attempt * 500;
@@ -82,6 +145,10 @@ async function elFetch(
       }
       const message = extractErrorMessage(body) ??
         `Voice provider ${section} request failed (${res.status})`;
+      // Always include the raw upstream body + the body we sent. The
+      // extracted message can be a generic fallback when the upstream
+      // shape doesn't match `detail[]` — having the raw body is what
+      // lets us diagnose those cases without re-running with more logs.
       log.error("response error", {
         method,
         path,
@@ -89,6 +156,8 @@ async function elFetch(
         status: res.status,
         ms: Date.now() - t0,
         message,
+        upstream_body: logTrunc(body),
+        request_body: logTrunc(reqBodyParsed),
       });
       throw new ElevenLabsError(res.status, section, message, body);
     }
@@ -189,10 +258,25 @@ export type ElevenAgentRaw = {
   platform_settings?: {
     data_collection?: Record<
       string,
-      { type: "string" | "number" | "boolean"; description: string }
+      {
+        type: "string" | "number" | "integer" | "boolean";
+        description: string;
+        /** Optional JSON-schema-style value constraint. */
+        enum?: string[];
+      }
     >;
     evaluation?: {
-      criteria?: Array<{ id: string; name: string; prompt: string }>;
+      criteria?: Array<{
+        id: string;
+        name: string;
+        type?: "prompt";
+        /** Upstream's source-of-truth field for the goal prompt. */
+        conversation_goal_prompt?: string;
+        /** Legacy alias some older configs use. */
+        prompt?: string;
+        use_knowledge_base?: boolean;
+        scope?: "conversation" | "agent";
+      }>;
     };
   };
   phone_numbers?: Array<{
@@ -201,6 +285,16 @@ export type ElevenAgentRaw = {
     provider: string;
     label?: string;
   }>;
+  /**
+   * Workflow graph the runtime walks during a call. Lives at the TOP
+   * LEVEL of the agent body (not under conversation_config) — putting
+   * it under conversation_config is silently ignored upstream.
+   */
+  workflow?: {
+    nodes?: Record<string, unknown>;
+    edges?: Record<string, unknown>;
+    prevent_subagent_loops?: boolean;
+  };
 };
 
 export async function createAgent(seed: {
@@ -269,6 +363,16 @@ export type ElevenWorkflowNode = {
     | "start"
     | "end"
     | "override_agent"
+    | "say"
+    | "tool"
+    | "standalone_agent"
+    | "phone_number"
+    | "update_state"
+    // Legacy names kept for parsing old agents that haven't been
+    // re-saved since ElevenLabs renamed the enum:
+    //   dispatch_tool      → tool
+    //   agent_transfer     → standalone_agent
+    //   transfer_to_number → phone_number
     | "dispatch_tool"
     | "agent_transfer"
     | "transfer_to_number";
@@ -331,9 +435,19 @@ export type AgentPatch = {
   native_mcp_server_ids?: string[];
   data_collection?: Record<
     string,
-    { type: "string" | "number" | "boolean"; description: string }
+    {
+      type: "string" | "number" | "integer" | "boolean";
+      description: string;
+      enum?: string[];
+    }
   >;
-  evaluation_criteria?: Array<{ id: string; name: string; prompt: string }>;
+  evaluation_criteria?: Array<{
+    id: string;
+    name: string;
+    prompt: string;
+    use_knowledge_base?: boolean;
+    scope?: "conversation" | "agent";
+  }>;
   // ASR
   asr_quality?: "high" | "low";
   asr_provider?: "elevenlabs" | "deepgram";
@@ -375,15 +489,50 @@ const TTS_WIRE_FIELDS = new Set([
   "speed",
 ]);
 
+/**
+ * Pairs of fields ElevenLabs treats as mutually exclusive inside
+ * `conversation_config.agent.prompt`. Sending both halves in the same PATCH
+ * body produces "Cannot specify both X and Y" 422s — left side is the modern
+ * reference-by-id form (the one we always want to send), right side is the
+ * deprecated inline form that lingers in stored agent state.
+ */
+const PROMPT_CONFLICT_PAIRS: ReadonlyArray<[modern: string, deprecated: string]> = [
+  ["tool_ids", "tools"],
+  ["mcp_server_ids", "mcp_servers"],
+  ["native_mcp_server_ids", "native_mcp_servers"],
+];
+
+/**
+ * Drop deprecated halves from a prompt slice if the modern counterpart is
+ * present. Defends against a future capability accidentally producing both —
+ * logs + drops rather than throwing so production never gets blocked by this.
+ */
+function scrubPromptConflicts(promptSlice: Record<string, unknown>): void {
+  for (const [modern, deprecated] of PROMPT_CONFLICT_PAIRS) {
+    if (modern in promptSlice && deprecated in promptSlice) {
+      log.warn("dropping deprecated prompt field to avoid conflict", {
+        modern,
+        deprecated,
+      });
+      delete promptSlice[deprecated];
+    }
+  }
+}
+
 export async function patchAgent(
   agentId: string,
   patch: AgentPatch,
 ): Promise<ElevenAgentRaw> {
-  const current = await getAgent(agentId);
   const incoming: Record<string, unknown> = {};
   if (patch.name !== undefined) incoming.name = patch.name;
 
   // --- agent.prompt -------------------------------------------------------
+  // We send ONLY the fields the caller explicitly set. ElevenLabs deep-merges
+  // PATCH bodies on `conversation_config` so we don't need to echo back any
+  // current state to preserve siblings. Echoing was the source of the
+  // "Cannot specify both tools and tool IDs" 422s, because GET responses on
+  // legacy agents echo both the deprecated inline `tools` array and the
+  // modern `tool_ids`, and re-sending that pair is what ElevenLabs rejects.
   const agentSlice: Record<string, unknown> = {};
   if (patch.first_message !== undefined) agentSlice.first_message = patch.first_message;
   if (patch.language !== undefined) agentSlice.language = patch.language;
@@ -408,12 +557,15 @@ export async function patchAgent(
     promptSlice.thinking_budget = patch.thinking_budget;
   if (patch.timezone !== undefined) promptSlice.timezone = patch.timezone;
   if (patch.knowledge_base !== undefined) promptSlice.knowledge_base = patch.knowledge_base;
-  // Modern schema: reference tools by id, not inline. The inline `tools`
-  // field is deprecated upstream.
+  // Modern schema: reference tools / MCP servers by id, never inline. The
+  // legacy `tools` / `mcp_servers` / `native_mcp_servers` arrays are
+  // deprecated upstream and never sourced from our patch surface — but the
+  // guard below catches them if a future caller slips one in.
   if (patch.tool_ids !== undefined) promptSlice.tool_ids = patch.tool_ids;
   if (patch.mcp_server_ids !== undefined) promptSlice.mcp_server_ids = patch.mcp_server_ids;
   if (patch.native_mcp_server_ids !== undefined)
     promptSlice.native_mcp_server_ids = patch.native_mcp_server_ids;
+  scrubPromptConflicts(promptSlice);
   if (Object.keys(promptSlice).length > 0) agentSlice.prompt = promptSlice;
 
   // --- tts ----------------------------------------------------------------
@@ -467,12 +619,13 @@ export async function patchAgent(
   if (Object.keys(turnSlice).length > 0) conversationConfig.turn = turnSlice;
   if (Object.keys(conversationSlice).length > 0)
     conversationConfig.conversation = conversationSlice;
-  if (patch.workflow !== undefined) conversationConfig.workflow = patch.workflow;
+  // ElevenLabs deep-merges PATCH bodies on `conversation_config`, so we ship
+  // only the slices the caller actually populated. No GET-then-echo: that's
+  // exactly what re-introduced deprecated fields (`tools`, `mcp_servers`,
+  // `native_mcp_servers`) from stored legacy state and triggered the
+  // "Cannot specify both X and Y" 422s.
   if (Object.keys(conversationConfig).length > 0) {
-    incoming.conversation_config = deepMergeConfig(
-      (current.conversation_config ?? {}) as Record<string, unknown>,
-      conversationConfig,
-    );
+    incoming.conversation_config = conversationConfig;
   }
 
   // --- platform_settings --------------------------------------------------
@@ -481,15 +634,81 @@ export async function patchAgent(
     platformSlice.data_collection = patch.data_collection;
   }
   if (patch.evaluation_criteria !== undefined) {
-    platformSlice.evaluation = { criteria: patch.evaluation_criteria };
+    // Upstream expects PromptEvaluationCriteria: `conversation_goal_prompt` is
+    // the required goal field; `prompt` is our internal alias.
+    // Use `!= null` (not `!== undefined`) so a stray `null` from older configs
+    // doesn't survive into the payload — ElevenLabs's Pydantic models type
+    // these as non-nullable, so `null` triggers "Input should be a valid
+    // boolean" on any PATCH that re-sends the list (e.g. remove_call_outcome
+    // touching a sibling criterion with use_knowledge_base: null).
+    platformSlice.evaluation = {
+      criteria: patch.evaluation_criteria.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: "prompt" as const,
+        conversation_goal_prompt: c.prompt,
+        ...(c.use_knowledge_base != null
+          ? { use_knowledge_base: c.use_knowledge_base }
+          : {}),
+        ...(c.scope != null ? { scope: c.scope } : {}),
+      })),
+    };
   }
+
+  // Workflow + platform_settings still need GET-then-merge because their
+  // sub-fields (`workflow.prevent_subagent_loops`, `platform_settings.*`)
+  // are not the same shape as the partial we build — and we don't want to
+  // clobber siblings we don't manage. Fetch lazily so patches that touch
+  // neither pay zero network.
+  let current: ElevenAgentRaw | null = null;
+  if (patch.workflow !== undefined || Object.keys(platformSlice).length > 0) {
+    current = await getAgent(agentId);
+  }
+
+  // NOTE: workflow lives at the TOP LEVEL of the agent body, not under
+  // `conversation_config.workflow`. Setting it under conversation_config
+  // is silently ignored upstream and the real top-level `workflow` stays
+  // untouched (we found this by GETting an agent and seeing the
+  // populated `workflow.nodes` field outside conversation_config).
+  if (patch.workflow !== undefined) {
+    // Merge so we don't blow away workflow-level settings like
+    // `prevent_subagent_loops` that we don't manage here.
+    incoming.workflow = deepMergeConfig(
+      (current?.workflow ?? {}) as Record<string, unknown>,
+      patch.workflow as unknown as Record<string, unknown>,
+    );
+  }
+
   if (Object.keys(platformSlice).length > 0) {
     incoming.platform_settings = deepMergeConfig(
-      (current.platform_settings ?? {}) as Record<string, unknown>,
+      (current?.platform_settings ?? {}) as Record<string, unknown>,
       platformSlice,
     );
   }
 
+  // High-level summary of what we're about to send. Helps correlate a
+  // single patchAgent call with the lower-level elFetch logs and the
+  // upstream error body when things go wrong.
+  log.info("patchAgent → PATCH /v1/convai/agents/:id", {
+    agent_id: agentId,
+    patch_fields: Object.keys(patch),
+    body_top_keys: Object.keys(incoming),
+    workflow_node_count:
+      (incoming.workflow as { nodes?: Record<string, unknown> } | undefined)
+        ?.nodes
+        ? Object.keys(
+            (incoming.workflow as { nodes: Record<string, unknown> }).nodes,
+          ).length
+        : undefined,
+    has_tool_ids: !!(
+      (incoming.conversation_config as { agent?: { prompt?: { tool_ids?: unknown } } } | undefined)
+        ?.agent?.prompt?.tool_ids
+    ),
+    has_inline_tools: !!(
+      (incoming.conversation_config as { agent?: { prompt?: { tools?: unknown } } } | undefined)
+        ?.agent?.prompt?.tools
+    ),
+  });
   const res = await elFetch(`/v1/convai/agents/${agentId}`, {
     method: "PATCH",
     section: "update",
@@ -779,17 +998,63 @@ export type RuntimeToolSpec = {
   };
 };
 
+/**
+ * True when `v` is an actual JSON-Schema-shaped object the upstream API
+ * will accept. We send body / query schemas only when they're real objects;
+ * null and empty objects produce 422s on /v1/convai/tools.
+ */
+function isNonEmptyObject(v: unknown): v is Record<string, unknown> {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.keys(v as Record<string, unknown>).length > 0
+  );
+}
+
 export async function createRuntimeTool(
   spec: RuntimeToolSpec,
 ): Promise<{ id: string; name: string }> {
+  let api_schema: Record<string, unknown> | undefined;
+  if (spec.api_schema) {
+    api_schema = {
+      url: spec.api_schema.url,
+      method: spec.api_schema.method,
+    };
+    if (
+      spec.api_schema.request_headers &&
+      Object.keys(spec.api_schema.request_headers).length > 0
+    ) {
+      api_schema.request_headers = spec.api_schema.request_headers;
+    }
+    if (isNonEmptyObject(spec.api_schema.request_body_schema)) {
+      api_schema.request_body_schema = spec.api_schema.request_body_schema;
+    }
+    if (isNonEmptyObject(spec.api_schema.query_params_schema)) {
+      api_schema.query_params_schema = spec.api_schema.query_params_schema;
+    }
+  }
   const body = {
     tool_config: {
       name: spec.name,
       description: spec.description,
       type: spec.type,
-      ...(spec.api_schema ? { api_schema: spec.api_schema } : {}),
+      ...(api_schema ? { api_schema } : {}),
     },
   };
+  // Log the whole tool_config we're about to send. /v1/convai/tools
+  // returns 422 on subtle schema shape issues (e.g. `type: "object"` at
+  // the outer schema level, unknown JSON-Schema fields) — having the
+  // exact body in logs lets us tell synthesizer bugs from upstream
+  // schema drift without re-running with debug toggles.
+  log.info("createRuntimeTool → POST /v1/convai/tools", {
+    name: spec.name,
+    type: spec.type,
+    method: api_schema?.method,
+    has_request_body_schema: "request_body_schema" in (api_schema ?? {}),
+    has_query_params_schema: "query_params_schema" in (api_schema ?? {}),
+    tool_config: logTrunc(body.tool_config),
+  });
   const res = await elFetch("/v1/convai/tools", {
     method: "POST",
     section: "tools",
@@ -809,7 +1074,19 @@ export async function deleteRuntimeTool(toolId: string): Promise<void> {
 
 // --- Phone numbers + outbound calls -----------------------------------------
 
-export async function listPhoneNumbers(): Promise<PhoneNumber[]> {
+/**
+ * Workspace phone number row as returned by `GET /v1/convai/phone-numbers`.
+ * Carries the `assigned_agent` field so callers can tell which agent (if
+ * any) currently owns each number — needed to render the per-agent
+ * "Attached phone numbers" list correctly without trusting the agent GET
+ * response (which doesn't always echo `phone_numbers`).
+ */
+export type WorkspacePhoneNumber = PhoneNumber & {
+  assigned_agent_id: string | null;
+  assigned_agent_name: string | null;
+};
+
+export async function listPhoneNumbers(): Promise<WorkspacePhoneNumber[]> {
   const res = await elFetch("/v1/convai/phone-numbers", {
     method: "GET",
     section: "phone",
@@ -819,13 +1096,39 @@ export async function listPhoneNumbers(): Promise<PhoneNumber[]> {
     phone_number: string;
     provider: string;
     label?: string;
+    assigned_agent?: {
+      agent_id?: string;
+      agent_name?: string;
+    } | null;
   }>;
   return json.map((p) => ({
     id: p.phone_number_id,
     number: p.phone_number,
     provider: p.provider,
     label: p.label,
+    assigned_agent_id: p.assigned_agent?.agent_id ?? null,
+    assigned_agent_name: p.assigned_agent?.agent_name ?? null,
   }));
+}
+
+/**
+ * Subset of `listPhoneNumbers` filtered to numbers currently assigned to a
+ * specific ElevenLabs agent id. We can't trust the GET-agent response to
+ * include `phone_numbers` — depending on workspace settings ElevenLabs
+ * omits it — so the workspace list is the source of truth.
+ */
+export async function listPhoneNumbersForAgent(
+  elevenlabsAgentId: string,
+): Promise<PhoneNumber[]> {
+  const all = await listPhoneNumbers();
+  return all
+    .filter((p) => p.assigned_agent_id === elevenlabsAgentId)
+    .map((p) => ({
+      id: p.id,
+      number: p.number,
+      provider: p.provider,
+      label: p.label,
+    }));
 }
 
 export async function assignPhoneNumberToAgent(
@@ -838,6 +1141,177 @@ export async function assignPhoneNumberToAgent(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ agent_id: agentId }),
   });
+}
+
+// --- Phone number import / CRUD ---------------------------------------------
+//
+// Spec: https://elevenlabs.io/docs/api-reference/phone-numbers
+// POST /v1/convai/phone-numbers accepts either a Twilio config or a SIP-trunk
+// config (oneOf). Below we expose typed helpers for each shape so callers
+// can't mix fields from both branches and trip a 422.
+
+export type TwilioRegionId = "us1" | "ie1" | "au1";
+export type TwilioEdgeLocation =
+  | "ashburn"
+  | "dublin"
+  | "frankfurt"
+  | "sao-paulo"
+  | "singapore"
+  | "sydney"
+  | "tokyo"
+  | "umatilla"
+  | "roaming";
+
+export type ImportTwilioPhoneNumberInput = {
+  phone_number: string;
+  label: string;
+  sid: string;
+  token: string;
+  region_config?: {
+    region_id: TwilioRegionId;
+    token: string;
+    edge_location: TwilioEdgeLocation;
+  };
+};
+
+export type SIPMediaEncryption = "disabled" | "allowed" | "required";
+export type SIPTransport = "auto" | "udp" | "tcp" | "tls";
+
+export type SIPTrunkCredentials = {
+  username: string;
+  password?: string | null;
+};
+
+export type InboundSIPTrunkConfig = {
+  allowed_addresses?: string[] | null;
+  allowed_numbers?: string[] | null;
+  media_encryption?: SIPMediaEncryption;
+  credentials?: SIPTrunkCredentials | null;
+  remote_domains?: string[] | null;
+  attributes_to_headers?: Record<string, string>;
+};
+
+export type OutboundSIPTrunkConfig = {
+  address: string;
+  transport?: SIPTransport;
+  media_encryption?: SIPMediaEncryption;
+  headers?: Record<string, string>;
+  attributes_to_headers?: Record<string, string>;
+  credentials?: SIPTrunkCredentials | null;
+};
+
+export type ImportSIPTrunkPhoneNumberInput = {
+  phone_number: string;
+  label: string;
+  inbound_trunk_config?: InboundSIPTrunkConfig | null;
+  outbound_trunk_config?: OutboundSIPTrunkConfig | null;
+};
+
+export async function importTwilioPhoneNumber(
+  input: ImportTwilioPhoneNumberInput,
+): Promise<{ phone_number_id: string }> {
+  const body = {
+    provider: "twilio" as const,
+    phone_number: input.phone_number,
+    label: input.label,
+    sid: input.sid,
+    token: input.token,
+    ...(input.region_config ? { region_config: input.region_config } : {}),
+  };
+  const res = await elFetch("/v1/convai/phone-numbers", {
+    method: "POST",
+    section: "phone",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as { phone_number_id: string };
+}
+
+export async function importSIPTrunkPhoneNumber(
+  input: ImportSIPTrunkPhoneNumberInput,
+): Promise<{ phone_number_id: string }> {
+  const body: Record<string, unknown> = {
+    provider: "sip_trunk",
+    phone_number: input.phone_number,
+    label: input.label,
+  };
+  if (input.inbound_trunk_config !== undefined) {
+    body.inbound_trunk_config = input.inbound_trunk_config;
+  }
+  if (input.outbound_trunk_config !== undefined) {
+    body.outbound_trunk_config = input.outbound_trunk_config;
+  }
+  const res = await elFetch("/v1/convai/phone-numbers", {
+    method: "POST",
+    section: "phone",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await res.json()) as { phone_number_id: string };
+}
+
+export async function getPhoneNumber(phoneNumberId: string): Promise<unknown> {
+  const res = await elFetch(`/v1/convai/phone-numbers/${phoneNumberId}`, {
+    method: "GET",
+    section: "phone",
+  });
+  return res.json();
+}
+
+export async function deletePhoneNumber(phoneNumberId: string): Promise<void> {
+  await elFetch(`/v1/convai/phone-numbers/${phoneNumberId}`, {
+    method: "DELETE",
+    section: "phone",
+  });
+}
+
+/**
+ * PATCH /v1/convai/phone-numbers/{id}. The endpoint also handles agent
+ * assignment (see `assignPhoneNumberToAgent`); this helper exposes the
+ * other mutable fields (label, region config, sip configs).
+ */
+export type UpdatePhoneNumberInput = {
+  label?: string;
+  agent_id?: string | null;
+  region_config?: ImportTwilioPhoneNumberInput["region_config"] | null;
+  inbound_trunk_config?: InboundSIPTrunkConfig | null;
+  outbound_trunk_config?: OutboundSIPTrunkConfig | null;
+};
+
+export async function updatePhoneNumber(
+  phoneNumberId: string,
+  input: UpdatePhoneNumberInput,
+): Promise<unknown> {
+  const body: Record<string, unknown> = {};
+  if (input.label !== undefined) body.label = input.label;
+  if (input.agent_id !== undefined) body.agent_id = input.agent_id;
+  if (input.region_config !== undefined) body.region_config = input.region_config;
+  if (input.inbound_trunk_config !== undefined)
+    body.inbound_trunk_config = input.inbound_trunk_config;
+  if (input.outbound_trunk_config !== undefined)
+    body.outbound_trunk_config = input.outbound_trunk_config;
+  const res = await elFetch(`/v1/convai/phone-numbers/${phoneNumberId}`, {
+    method: "PATCH",
+    section: "phone",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+/**
+ * GET /v1/convai/phone-numbers/{id}/sip-messages — only valid for
+ * sip_trunk-provider numbers. Returns the recent SIP signalling log so
+ * operators can diagnose call setup / auth issues.
+ */
+export async function getPhoneNumberSipMessages(
+  phoneNumberId: string,
+): Promise<unknown> {
+  const res = await elFetch(
+    `/v1/convai/phone-numbers/${phoneNumberId}/sip-messages`,
+    { method: "GET", section: "phone" },
+  );
+  return res.json();
 }
 
 export async function initiateOutboundCall(input: {
@@ -905,6 +1379,8 @@ export async function listConversations(
       direction?: string;
       from_number?: string;
       has_audio?: boolean;
+      text_only?: boolean;
+      phone_call?: { external_number?: string } | null;
     }>;
   };
   return json.conversations.map((c) => ({
@@ -915,8 +1391,8 @@ export async function listConversations(
     status: c.status,
     outcome: c.transcript_summary ?? null,
     call_successful: c.call_successful ?? null,
-    caller: c.from_number ?? null,
-    has_recording: c.has_audio ?? false,
+    caller: c.phone_call?.external_number ?? c.from_number ?? null,
+    has_recording: !c.text_only && (c.has_audio ?? false),
   }));
 }
 
@@ -934,6 +1410,8 @@ export async function getConversationDetail(
       start_time_unix_secs: number;
       call_duration_secs: number;
       from_number?: string;
+      text_only?: boolean;
+      phone_call?: { external_number?: string } | null;
     };
     status: string;
     transcript?: Array<{
@@ -951,6 +1429,8 @@ export async function getConversationDetail(
       data_collection_results?: Record<string, { value: unknown }>;
     };
     has_audio?: boolean;
+    has_user_audio?: boolean;
+    has_response_audio?: boolean;
   };
   const evaluation = json.analysis?.evaluation_criteria_results
     ? Object.entries(json.analysis.evaluation_criteria_results).map(([name, v]) => ({
@@ -965,6 +1445,8 @@ export async function getConversationDetail(
         value: v.value,
       }))
     : [];
+  const isTextOnly = json.metadata.text_only === true;
+  const hasRealAudio = !isTextOnly && (json.has_audio ?? false);
   return {
     id: json.conversation_id,
     agent_id: json.agent_id,
@@ -973,15 +1455,18 @@ export async function getConversationDetail(
     status: json.status,
     outcome: json.analysis?.transcript_summary ?? null,
     call_successful: json.analysis?.call_successful ?? null,
-    caller: json.metadata.from_number ?? null,
-    has_recording: json.has_audio ?? false,
+    caller:
+      json.metadata.phone_call?.external_number ??
+      json.metadata.from_number ??
+      null,
+    has_recording: hasRealAudio,
     transcript:
       json.transcript?.map((t) => ({
         role: t.role,
         message: t.message,
         time_in_call_seconds: t.time_in_call_secs,
       })) ?? [],
-    recording_url: json.has_audio
+    recording_url: hasRealAudio
       ? `${BASE_URL}/v1/convai/conversations/${conversationId}/audio`
       : null,
     analysis: {
@@ -1035,14 +1520,49 @@ export function projectAgentConfig(
         name,
         type: v.type,
         description: v.description,
+        ...(Array.isArray(v.enum) && v.enum.length > 0
+          ? { enum: v.enum }
+          : {}),
       }))
     : fallback.data_collection;
-  const evalCriteria: EvaluationCriterion[] =
-    el.platform_settings?.evaluation?.criteria?.map((c) => ({
-      id: c.id,
-      name: c.name,
-      prompt: c.prompt,
-    })) ?? fallback.evaluation_criteria;
+  // Filter out criteria that upstream stored with a missing/empty goal prompt
+  // or id. We previously coerced `prompt` to `""` here, but that's an unsafe
+  // round-trip: any subsequent PATCH of evaluation_criteria (including an
+  // unrelated remove_call_outcome on a SIBLING criterion) re-sends the broken
+  // entry with `conversation_goal_prompt: ""`, which ElevenLabs rejects with a
+  // bare "Invalid platform settings: Field required" 422. Dropping broken
+  // entries at read time means our in-memory state is always serialisable —
+  // tools never see them, and we never echo them back upstream.
+  const rawCriteria = el.platform_settings?.evaluation?.criteria ?? null;
+  let evalCriteria: EvaluationCriterion[];
+  if (rawCriteria === null) {
+    evalCriteria = fallback.evaluation_criteria;
+  } else {
+    const accepted: EvaluationCriterion[] = [];
+    for (const c of rawCriteria) {
+      const prompt = c.conversation_goal_prompt ?? c.prompt ?? "";
+      if (!c.id || !c.name || prompt.trim().length === 0) {
+        console.warn(
+          "[elevenlabs] dropping malformed evaluation criterion from agent config",
+          { id: c.id, name: c.name, has_prompt: prompt.trim().length > 0 },
+        );
+        continue;
+      }
+      // Coerce nullish flags to undefined so they never round-trip back into a
+      // PATCH payload as `null`. Upstream's PromptEvaluationCriteria types
+      // these as non-nullable, so leaking a `null` here turns the next PATCH
+      // — even an unrelated sibling change like remove_call_outcome — into a
+      // "Input should be a valid boolean" failure.
+      accepted.push({
+        id: c.id,
+        name: c.name,
+        prompt,
+        use_knowledge_base: c.use_knowledge_base ?? undefined,
+        scope: c.scope ?? undefined,
+      });
+    }
+    evalCriteria = accepted;
+  }
   const phoneNumbers: PhoneNumber[] =
     el.phone_numbers?.map((p) => ({
       id: p.phone_number_id,
@@ -1078,9 +1598,13 @@ export function projectAgentConfig(
     data_collection: dataCollection,
     evaluation_criteria: evalCriteria,
     phone_numbers: phoneNumbers,
+    // Workflow lives at the TOP LEVEL of the agent (not under
+    // conversation_config). Keep the conversation_config path as a
+    // fallback for any legacy/stub responses.
     workflow: projectWorkflow(
-      (el.conversation_config as Record<string, unknown> | undefined)
-        ?.workflow as ElevenWorkflow | undefined,
+      (el.workflow ??
+        (el.conversation_config as Record<string, unknown> | undefined)
+          ?.workflow) as ElevenWorkflow | undefined,
       fallback.workflow,
     ),
     // Integrations are platform-side metadata; carry forward.
@@ -1107,12 +1631,17 @@ function projectWorkflow(
         return "start";
       case "end":
         return "end";
+      case "tool":
       case "dispatch_tool":
         return "tool_call";
+      case "standalone_agent":
       case "agent_transfer":
+      case "phone_number":
       case "transfer_to_number":
         return "transfer";
+      case "say":
       case "override_agent":
+      case "update_state":
       default:
         return "speak";
     }

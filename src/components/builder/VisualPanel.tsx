@@ -6,21 +6,20 @@ import { OverviewTab } from "./tabs/OverviewTab";
 import { WorkflowTab } from "./tabs/WorkflowTab";
 import { VoiceTab } from "./tabs/VoiceTab";
 import { KnowledgeBaseTab } from "./tabs/KnowledgeBaseTab";
+import { CallOutcomesTab } from "./tabs/CallOutcomesTab";
 import { ToolsTab } from "./tabs/ToolsTab";
 import { PhoneTab } from "./tabs/PhoneTab";
 import { CallLogsTab } from "./tabs/CallLogsTab";
-import { TestCallTab } from "./tabs/TestCallTab";
-import { AnalyticsTab } from "./tabs/AnalyticsTab";
+import { TestCallButton } from "./TestCallButton";
 
 const TABS = [
   { id: "persona", label: "Persona" },
   { id: "workflow", label: "Workflow" },
   { id: "voice", label: "Voice & Language" },
   { id: "kb", label: "Knowledge" },
+  { id: "outcomes", label: "Post-call analysis" },
   { id: "tools", label: "Tools" },
-  { id: "analytics", label: "Analytics" },
   { id: "phone", label: "Phone" },
-  { id: "test", label: "Test" },
   { id: "calls", label: "Call logs" },
 ] as const;
 
@@ -37,8 +36,8 @@ const SECTION_TO_TAB: Partial<Record<SectionKey, TabId>> = {
   tools: "tools",
   mcp: "tools",
   phone: "phone",
-  data: "analytics",
-  evaluation: "analytics",
+  data: "outcomes",
+  evaluation: "outcomes",
 };
 
 // Tabs that fully control their own scrollable area (workflow playground).
@@ -46,7 +45,9 @@ const FULL_BLEED_TABS: TabId[] = ["workflow"];
 
 export function VisualPanel({ agentId }: { agentId: string }) {
   const [tab, setTab] = useState<TabId>("persona");
-  const config = useAgentStore((s) => s.config);
+  const elevenLabsAgentId = useAgentStore(
+    (s) => s.agent?.elevenlabs_agent_id,
+  );
   const lastError = useAgentStore((s) => s.agent?.last_error);
   const activeJobId = useAgentStore((s) => s.activeJobId);
   const lastActiveSection = useAgentStore((s) => s.lastActiveSection);
@@ -68,7 +69,7 @@ export function VisualPanel({ agentId }: { agentId: string }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-end gap-1 border-b border-(--color-border) bg-(--color-panel) px-5 pt-3">
+      <header className="flex h-14 shrink-0 items-end gap-1 border-b border-(--color-border) bg-(--color-panel) px-5">
         <nav className="flex flex-1 gap-0 overflow-x-auto pb-0">
           {TABS.map((t) => {
             const sectionsForTab = (
@@ -105,13 +106,20 @@ export function VisualPanel({ agentId }: { agentId: string }) {
             );
           })}
         </nav>
-        <div className="pb-2 pl-3 text-right">
-          <div className="font-mono text-[10px] uppercase tracking-widest text-(--color-muted-soft)">
-            Voice agent
-          </div>
-          <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
-            {config?.name ?? "—"}
-          </div>
+        <div className="flex items-center gap-2 pb-2 pl-3">
+          {elevenLabsAgentId && (
+            <a
+              href={`https://elevenlabs.io/app/conversational-ai/agents/${elevenLabsAgentId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open this agent in the 11labs builder"
+              className="inline-flex items-center gap-2 rounded-full border border-(--color-border) bg-(--color-panel) px-3.5 py-1.5 text-[12px] font-semibold text-(--color-foreground-strong) transition hover:border-(--color-accent) hover:text-(--color-accent)"
+            >
+              <ExternalLinkIcon />
+              Open in 11labs
+            </a>
+          )}
+          <TestCallButton agentId={agentId} />
         </div>
       </header>
 
@@ -143,12 +151,31 @@ export function VisualPanel({ agentId }: { agentId: string }) {
         {tab === "workflow" && <WorkflowTab agentId={agentId} />}
         {tab === "voice" && <VoiceTab agentId={agentId} />}
         {tab === "kb" && <KnowledgeBaseTab agentId={agentId} />}
+        {tab === "outcomes" && <CallOutcomesTab agentId={agentId} />}
         {tab === "tools" && <ToolsTab />}
-        {tab === "analytics" && <AnalyticsTab />}
         {tab === "phone" && <PhoneTab agentId={agentId} />}
-        {tab === "test" && <TestCallTab agentId={agentId} />}
         {tab === "calls" && <CallLogsTab agentId={agentId} />}
       </div>
     </div>
+  );
+}
+
+function ExternalLinkIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
   );
 }

@@ -56,7 +56,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const configCache = defaultAgentConfig();
-    configCache.name = STARTER_NAME;
+    // Start with an empty display name in our cache so the chat header is
+    // blank on creation; the builder agent's `update_agent_name` tool will
+    // fill it in mid-turn, which then types out via the header's animated
+    // reveal. Upstream ElevenLabs still needs a non-empty name on create,
+    // so we send the starter — that string is internal and never shown.
+    configCache.name = "";
     configCache.first_message = STARTER_FIRST_MESSAGE;
     configCache.system_prompt = STARTER_SYSTEM_PROMPT;
     configCache.voice_id = DEFAULT_VOICE_ID;

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
+import { Button } from "@/components/ui/Button";
 import type { AgentConfigCache } from "@/types/agent";
 
 type Props = {
@@ -117,13 +118,9 @@ export function EditableField({
             >
               Cancel
             </button>
-            <button
-              onClick={save}
-              disabled={saving}
-              className="rounded-full bg-(--color-accent) px-3 py-1 text-xs font-semibold text-(--color-accent-foreground)"
-            >
+            <Button size="sm" onClick={save} disabled={saving}>
               {saving ? "Saving…" : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       )}

@@ -5,21 +5,27 @@ import { DEFAULT_VOICE_SETTINGS } from "@/types/agent";
 import type { Capability } from "./types";
 import { runToolStep } from "./types";
 
+/** The only TTS model Alta agents are allowed to run on. v3 covers every
+ *  language we care about and supports expressive audio tags; older
+ *  flash/turbo models are kept off because they 422 on most non-English
+ *  languages (Hebrew, Arabic, etc.). */
+const LOCKED_TTS_MODEL = "eleven_v3_conversational";
+
 export const voiceCapability: Capability = {
   id: "voice",
   label: "Voice",
   defaultSlice: () => ({
     voice_id: "",
     voice_settings: { ...DEFAULT_VOICE_SETTINGS },
-    tts_model: "eleven_v3_conversational",
+    tts_model: LOCKED_TTS_MODEL,
     language: "en",
   }),
   tools: (ctx) => [
     tool(
-      "list_available_voices",
-      "Return the voice catalogue. Call this before update_voice so you pick a real voice_id; never invent one.",
-      {},
-      async () => {
+      "update_voice",
+      "Browse the voice catalogue and (optionally) set the agent's voice in a single tool. Call without voice_id to get the catalogue back — entries have { voice_id, name, category, labels } so you can pick one that matches the brand and the agent's language. Call with voice_id (must be an id from a prior listing — never invent one) to set the voice.",
+      { voice_id: z.string().min(1).optional() },
+      async ({ voice_id }) => {
         const voices = await listVoices();
         const trimmed = voices.slice(0, 80).map((v) => ({
           voice_id: v.voice_id,
@@ -27,19 +33,45 @@ export const voiceCapability: Capability = {
           category: v.category,
           labels: v.labels,
         }));
-        return { content: [{ type: "text", text: JSON.stringify(trimmed) }] };
-      },
-    ),
-
-    tool(
-      "update_voice",
-      "Set the agent's voice. Use a voice_id returned by list_available_voices.",
-      { voice_id: z.string().min(1) },
-      async ({ voice_id }) =>
-        runToolStep(ctx, "voice", "update_voice", async () => {
+        if (voice_id === undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  mode: "browse",
+                  hint: "Pick a voice_id from this list and call update_voice again with it.",
+                  voices: trimmed,
+                }),
+              },
+            ],
+          };
+        }
+        const match = voices.find((v) => v.voice_id === voice_id);
+        if (!match) {
+          // Hand the catalogue back in the error so the model can self-correct
+          // without a second browse round-trip.
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: `voice_id "${voice_id}" is not in the catalogue. Pick one from the list below.`,
+                  voices: trimmed,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+        return runToolStep(ctx, "voice", "update_voice", async () => {
           await patchAgent(ctx.elevenlabs_agent_id, { voice_id });
-          return { patch: { voice_id }, summary: "Voice updated." };
-        }),
+          return {
+            patch: { voice_id },
+            summary: `Voice set to ${match.name}.`,
+          };
+        });
+      },
     ),
 
     tool(
@@ -88,23 +120,37 @@ export const voiceCapability: Capability = {
 
     tool(
       "update_tts_model",
-      "The TTS model is locked to eleven_v3_conversational. Do not call this tool to switch — it will be rejected.",
+      "The TTS model is permanently locked to eleven_v3_conversational. This tool exists for legacy migration: calling it forces the model back to v3 regardless of the value you pass. Do not call it to switch models — it cannot switch.",
       { tts_model: z.string().min(1) },
-      async ({ tts_model }) =>
+      async () =>
         runToolStep(ctx, "voice", "update_tts_model", async () => {
+          const tts_model = LOCKED_TTS_MODEL;
           await patchAgent(ctx.elevenlabs_agent_id, { tts_model });
-          return { patch: { tts_model }, summary: `TTS model set to ${tts_model}.` };
+          return {
+            patch: { tts_model },
+            summary: `TTS model is locked to ${tts_model} (v3). Any other value is ignored.`,
+          };
         }),
     ),
 
     tool(
       "update_language",
-      "Set the conversation language using an ISO code (e.g. 'en', 'es'). TTS model is always eleven_v3_conversational regardless of language.",
+      "Set the conversation language using an ISO code (e.g. 'en', 'es', 'he'). Self-heals: also re-pins the TTS model to eleven_v3_conversational so legacy agents born on eleven_flash_v2 (which doesn't cover most languages) can switch language without 422-ing.",
       { language: z.string().min(2).max(8) },
       async ({ language }) =>
         runToolStep(ctx, "voice", "update_language", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { language });
-          return { patch: { language }, summary: `Language set to ${language}.` };
+          // Send tts_model alongside language so legacy agents whose
+          // ElevenLabs record still has eleven_flash_v2 don't get a 422
+          // when the requested language isn't supported by v2. v3
+          // covers every language we care about.
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            language,
+            tts_model: LOCKED_TTS_MODEL,
+          });
+          return {
+            patch: { language, tts_model: LOCKED_TTS_MODEL },
+            summary: `Language set to ${language}.`,
+          };
         }),
     ),
 

@@ -122,41 +122,64 @@ export function VoiceTab({ agentId }: { agentId: string }) {
 
       <Section
         title="Voice"
-        meta={`${voices.length} available`}
+        meta={`${voices.length} available · ASR + TTS`}
         busy={inFlight.has("voice")}
       >
-        <div className="vb-field">
-          <div className="vb-field-label">Voice</div>
-          {voicesError && (
-            <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>
-              Voice list error: {voicesError}
-            </p>
-          )}
-          <select
-            value={config.voice_id}
-            disabled={voicesLoading || voices.length === 0}
-            onChange={(e) => patch({ voice_id: e.target.value })}
-            className="vb-field-input font-medium"
-          >
-            {voicesLoading && <option value="">Loading voices…</option>}
-            {!voicesLoading && !currentVoice && (
-              <option value={config.voice_id}>
-                {config.voice_id || "(unset)"}
-              </option>
+        <div className="vb-field-grid">
+          <div className="vb-field">
+            <div className="vb-field-label">Voice</div>
+            {voicesError && (
+              <p
+                className="vb-field-hint"
+                style={{ color: "var(--color-danger)" }}
+              >
+                Voice list error: {voicesError}
+              </p>
             )}
-            {voices.map((v) => {
-              const accent = v.labels?.accent;
-              const gender = v.labels?.gender;
-              const cat = v.category ?? "premade";
-              const meta = [cat, gender, accent].filter(Boolean).join(" · ");
-              return (
-                <option key={v.voice_id} value={v.voice_id}>
-                  {v.name}
-                  {meta ? `  —  ${meta}` : ""}
+            <select
+              value={config.voice_id}
+              disabled={voicesLoading || voices.length === 0}
+              onChange={(e) => patch({ voice_id: e.target.value })}
+              className="vb-field-input font-medium"
+            >
+              {voicesLoading && <option value="">Loading voices…</option>}
+              {!voicesLoading && !currentVoice && (
+                <option value={config.voice_id}>
+                  {config.voice_id || "(unset)"}
                 </option>
-              );
-            })}
-          </select>
+              )}
+              {voices.map((v) => {
+                const accent = v.labels?.accent;
+                const gender = v.labels?.gender;
+                const cat = v.category ?? "premade";
+                const meta = [cat, gender, accent].filter(Boolean).join(" · ");
+                return (
+                  <option key={v.voice_id} value={v.voice_id}>
+                    {v.name}
+                    {meta ? `  —  ${meta}` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="vb-field">
+            <div className="vb-field-label">Language</div>
+            <select
+              value={config.language}
+              onChange={(e) => patch({ language: e.target.value })}
+              className="vb-field-input"
+            >
+              {LANGUAGE_OPTIONS.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <p className="vb-field-hint">
+              Drives transcription and TTS pronunciation.
+            </p>
+          </div>
         </div>
       </Section>
 
@@ -243,27 +266,6 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               cost.
             </span>
           </div>
-        </div>
-      </Section>
-
-      <Section title="Language" meta="ASR + TTS">
-        <div className="vb-field">
-          <div className="vb-field-label">Language</div>
-          <select
-            value={config.language}
-            onChange={(e) => patch({ language: e.target.value })}
-            className="vb-field-input"
-          >
-            {LANGUAGE_OPTIONS.map(([code, name]) => (
-              <option key={code} value={code}>
-                {name}
-              </option>
-            ))}
-          </select>
-          <p className="vb-field-hint">
-            Drives both transcription and TTS pronunciation. TTS model is
-            locked to eleven_v3_conversational.
-          </p>
         </div>
       </Section>
 

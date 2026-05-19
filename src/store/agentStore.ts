@@ -37,6 +37,11 @@ export type WidgetEntry = {
   payload: unknown;
   status: "pending" | "done" | "cancelled" | "failed";
   result: unknown;
+  /** tool_use_id of the request_user_action call that produced this widget.
+   * Set by the SSE client when widget_inserted follows tool_call_start.
+   * ChatPanel uses this for an O(1) lookup; payload-equality is the legacy
+   * fallback for widgets persisted before this field existed. */
+  tool_use_id?: string;
 };
 
 export type LiveTool = {
@@ -68,6 +73,15 @@ type State = {
   liveTool: LiveTool | null;
   /** Most-recent section a tool touched. Bumped each call so panel can auto-focus. */
   lastActiveSection: { key: SectionKey; at: number } | null;
+  /** Knowledge-base document ids that arrived *via tool execution* and
+   *  haven't been visually "introduced" yet — drives the typewriter on
+   *  KB cards. Empty on hydrate so opening the KB tab on a fresh load
+   *  doesn't replay animations the user already saw. */
+  kbPendingAnimationIds: Set<string>;
+  /** Same idea for call outcomes (evaluation criteria) — populated when
+   *  add_call_outcome / update_call_outcome / remove_call_outcome cause
+   *  a patch with a previously-unseen criterion id. */
+  evalPendingAnimationIds: Set<string>;
 };
 
 type Actions = {
@@ -106,6 +120,8 @@ type Actions = {
   setLiveWorkflowNode: (nodeId: string | null) => void;
   setLiveTool: (live: LiveTool | null) => void;
   bumpActiveSection: (key: SectionKey) => void;
+  markKbAnimationDone: (id: string) => void;
+  markEvalAnimationDone: (id: string) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -123,6 +139,8 @@ export const useAgentStore = create<State & Actions>((set) => ({
   liveWorkflowNodeId: null,
   liveTool: null,
   lastActiveSection: null,
+  kbPendingAnimationIds: new Set(),
+  evalPendingAnimationIds: new Set(),
 
   hydrate: (agent, turns, widgets) =>
     set({
@@ -139,6 +157,9 @@ export const useAgentStore = create<State & Actions>((set) => ({
       widgets: Object.fromEntries((widgets ?? []).map((w) => [w.action_id, w])),
       liveWorkflowNodeId: null,
       liveTool: null,
+      // Page load / agent switch: docs are already there, no animation.
+      kbPendingAnimationIds: new Set(),
+      evalPendingAnimationIds: new Set(),
     }),
 
   applyPatch: (revision, patch) =>
@@ -146,14 +167,53 @@ export const useAgentStore = create<State & Actions>((set) => ({
       if (!s.config) return s;
       if (revision <= s.revision) return s;
       const merged: AgentConfigCache = { ...s.config, ...patch };
-      return { config: merged, revision };
+      const kbPendingAnimationIds = diffKbForAnimation(
+        s.config.knowledge_base,
+        patch.knowledge_base,
+        s.kbPendingAnimationIds,
+      );
+      const evalPendingAnimationIds = diffEvalForAnimation(
+        s.config.evaluation_criteria,
+        patch.evaluation_criteria,
+        s.evalPendingAnimationIds,
+      );
+      // Keep the AgentDTO mirror in sync — agent.name is the top-level
+      // name shown in the agent picker, but the source of truth for
+      // edits flows through config_cache.name. Without this, renaming
+      // the agent from chat leaves the picker showing the old name.
+      const nextAgent =
+        patch.name !== undefined && s.agent && s.agent.name !== patch.name
+          ? { ...s.agent, name: patch.name }
+          : s.agent;
+      return {
+        config: merged,
+        revision,
+        kbPendingAnimationIds,
+        evalPendingAnimationIds,
+        agent: nextAgent,
+      };
     }),
 
   applyConfigDirect: (patch, revision) =>
     set((s) => {
       if (!s.config) return s;
       const merged: AgentConfigCache = { ...s.config, ...patch };
-      return { config: merged, revision: Math.max(s.revision, revision) };
+      const kbPendingAnimationIds = diffKbForAnimation(
+        s.config.knowledge_base,
+        patch.knowledge_base,
+        s.kbPendingAnimationIds,
+      );
+      const evalPendingAnimationIds = diffEvalForAnimation(
+        s.config.evaluation_criteria,
+        patch.evaluation_criteria,
+        s.evalPendingAnimationIds,
+      );
+      return {
+        config: merged,
+        revision: Math.max(s.revision, revision),
+        kbPendingAnimationIds,
+        evalPendingAnimationIds,
+      };
     }),
 
   setInFlight: (section, busy) =>
@@ -180,9 +240,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
 
   appendAssistantDelta: (id, text) =>
     set((s) => {
-      if (!s.streaming) return { streaming: { id, text } };
-      if (s.streaming.id !== id)
-        return { streaming: { id, text: s.streaming.text + text } };
+      if (!s.streaming || s.streaming.id !== id) return { streaming: { id, text } };
       return { streaming: { id, text: s.streaming.text + text } };
     }),
 
@@ -306,4 +364,66 @@ export const useAgentStore = create<State & Actions>((set) => ({
   setLiveTool: (live) => set({ liveTool: live }),
 
   bumpActiveSection: (key) => set({ lastActiveSection: { key, at: Date.now() } }),
+
+  markKbAnimationDone: (id) =>
+    set((s) => {
+      if (!s.kbPendingAnimationIds.has(id)) return s;
+      const next = new Set(s.kbPendingAnimationIds);
+      next.delete(id);
+      return { kbPendingAnimationIds: next };
+    }),
+
+  markEvalAnimationDone: (id) =>
+    set((s) => {
+      if (!s.evalPendingAnimationIds.has(id)) return s;
+      const next = new Set(s.evalPendingAnimationIds);
+      next.delete(id);
+      return { evalPendingAnimationIds: next };
+    }),
 }));
+
+/**
+ * Compute the next pending-animation set when a patch arrives. Any doc id
+ * that's in the patch but wasn't in the previous knowledge_base is "newly
+ * created by a tool" and should typewriter-in. Existing ids in the pending
+ * set are preserved so an animation queued earlier still fires even if a
+ * second patch lands before the user opens the KB tab.
+ */
+function diffKbForAnimation(
+  prevKb: AgentConfigCache["knowledge_base"] | undefined,
+  patchKb: AgentConfigCache["knowledge_base"] | undefined,
+  current: Set<string>,
+): Set<string> {
+  if (!patchKb) return current;
+  const prevIds = new Set((prevKb ?? []).map((d) => d.id));
+  let next: Set<string> | null = null;
+  for (const doc of patchKb) {
+    if (prevIds.has(doc.id)) continue;
+    if (current.has(doc.id)) continue;
+    next ??= new Set(current);
+    next.add(doc.id);
+  }
+  return next ?? current;
+}
+
+/**
+ * Mirror of `diffKbForAnimation` for evaluation criteria. Any criterion id
+ * in the patch that wasn't in the previous list is treated as "just added
+ * by the agent" and queued for the typewriter on the Call outcomes tab.
+ */
+function diffEvalForAnimation(
+  prev: AgentConfigCache["evaluation_criteria"] | undefined,
+  patchCriteria: AgentConfigCache["evaluation_criteria"] | undefined,
+  current: Set<string>,
+): Set<string> {
+  if (!patchCriteria) return current;
+  const prevIds = new Set((prev ?? []).map((c) => c.id));
+  let next: Set<string> | null = null;
+  for (const c of patchCriteria) {
+    if (prevIds.has(c.id)) continue;
+    if (current.has(c.id)) continue;
+    next ??= new Set(current);
+    next.add(c.id);
+  }
+  return next ?? current;
+}

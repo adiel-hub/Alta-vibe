@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore } from "@/store/agentStore";
+import { Button } from "@/components/ui/Button";
 import type { AgentConfigCache } from "@/types/agent";
 import { Typewriter } from "../Typewriter";
 
@@ -19,18 +20,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
   if (!config) return null;
 
   return (
-    <div className="mx-auto flex max-w-[760px] flex-col gap-6">
-      <Section title="Identity" meta="agent" busy={inFlight.has("name")}>
-        <PersonaField
-          agentId={agentId}
-          field="name"
-          label="Agent name"
-          value={config.name}
-          busy={inFlight.has("name")}
-          placeholder="e.g. Cedar Hollow Receptionist"
-        />
-      </Section>
-
+    <div className="mx-auto flex min-h-full max-w-[760px] flex-col gap-6">
       <Section title="Greeting" meta="first message" busy={inFlight.has("first_message")}>
         <PersonaField
           agentId={agentId}
@@ -44,7 +34,12 @@ export function OverviewTab({ agentId }: { agentId: string }) {
         />
       </Section>
 
-      <Section title="System prompt" meta="instruction" busy={inFlight.has("system_prompt")}>
+      <Section
+        title="System prompt"
+        meta="instruction"
+        busy={inFlight.has("system_prompt")}
+        grow
+      >
         <PersonaField
           agentId={agentId}
           field="system_prompt"
@@ -55,7 +50,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
           rows={14}
           mono
           placeholder="You are a helpful voice agent…"
-          hint="Plain English. Reference workflow nodes by id if relevant."
+          fill
         />
       </Section>
     </div>
@@ -66,15 +61,25 @@ function Section({
   title,
   meta,
   busy,
+  grow,
   children,
 }: {
   title: string;
   meta?: string;
   busy?: boolean;
+  /** Stretch this section to fill the remaining vertical space in its
+   *  parent flex column. Used for the System prompt card so it fills the
+   *  viewport instead of leaving dead grey area below. */
+  grow?: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-(--color-border) bg-(--color-panel) p-5 shadow-[var(--shadow-xs)]">
+    <section
+      className={
+        "rounded-2xl border border-(--color-border) bg-(--color-panel) p-5 shadow-[var(--shadow-xs)] " +
+        (grow ? "flex min-h-0 flex-1 flex-col" : "")
+      }
+    >
       <header className="mb-3 flex items-center gap-2">
         <h3 className="text-[13px] font-semibold text-(--color-foreground-strong)">
           {title}
@@ -92,7 +97,13 @@ function Section({
           )}
         </span>
       </header>
-      <div className="space-y-1">{children}</div>
+      <div
+        className={
+          "space-y-1 " + (grow ? "flex min-h-0 flex-1 flex-col" : "")
+        }
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -108,6 +119,7 @@ function PersonaField({
   busy,
   placeholder,
   hint,
+  fill,
 }: {
   agentId: string;
   field: keyof AgentConfigCache;
@@ -119,6 +131,9 @@ function PersonaField({
   busy?: boolean;
   placeholder?: string;
   hint?: string;
+  /** When true the textarea (and Alta-typing overlay) stretches to fill
+   *  the available vertical space. The parent Section must be `grow`. */
+  fill?: boolean;
 }) {
   const applyConfigDirect = useAgentStore((s) => s.applyConfigDirect);
   const [draft, setDraft] = useState(value);
@@ -184,8 +199,10 @@ function PersonaField({
     setError(null);
   };
 
+  const fillClass = fill ? "flex min-h-0 flex-1 flex-col" : "";
+
   return (
-    <div className="vb-field">
+    <div className={`vb-field ${fillClass}`}>
       <div className="vb-field-label flex items-center gap-3">
         <span>{label}</span>
         <span className="ml-auto flex items-center gap-2">
@@ -199,19 +216,16 @@ function PersonaField({
               >
                 Revert
               </button>
-              <button
-                type="button"
-                onClick={save}
-                disabled={saving}
-                className="rounded bg-(--color-accent) px-2.5 py-0.5 text-[11px] font-semibold text-white hover:brightness-110"
-              >
+              <Button size="sm" onClick={save} disabled={saving}>
                 {saving ? "Saving…" : "Save"}
-              </button>
+              </Button>
             </>
           )}
         </span>
       </div>
-      <div className={busy ? "alta-editing" : undefined}>
+      <div
+        className={`${busy ? "alta-editing" : ""} ${fillClass}`.trim() || undefined}
+      >
         {showTypewriter ? (
           // Read-only overlay while we type the new value in. Once the
           // animation finishes, fall through to the regular editable input.
@@ -219,9 +233,10 @@ function PersonaField({
             dir="auto"
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
-            } alta-typing-caret`}
+            } alta-typing-caret ${fill ? "min-h-0 flex-1 overflow-auto" : ""}`}
             style={{
-              minHeight: multiline ? `${(rows ?? 4) * 1.5}em` : undefined,
+              minHeight:
+                !fill && multiline ? `${(rows ?? 4) * 1.5}em` : undefined,
               whiteSpace: "pre-wrap",
               cursor: "default",
             }}
@@ -232,7 +247,9 @@ function PersonaField({
           <textarea
             dir="auto"
             value={draft}
-            rows={rows ?? 4}
+            // In `fill` mode the textarea stretches via flex, so `rows`
+            // would only force an oversized initial size on first paint.
+            rows={fill ? undefined : (rows ?? 4)}
             placeholder={placeholder}
             onChange={(e) => {
               setDraft(e.target.value);
@@ -240,7 +257,7 @@ function PersonaField({
             }}
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
-            }`}
+            } ${fill ? "min-h-0 flex-1 resize-none" : ""}`}
           />
         ) : (
           <input

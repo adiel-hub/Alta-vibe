@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { WorkflowEdge, WorkflowNode, WorkflowState } from "@/types/agent";
+import { createClientLogger } from "@/lib/clientLogger";
 
 const STAGGER_MS = 90;
+const log = createClientLogger("workflow:reveal");
 
 /**
  * Reveals newly-added workflow nodes and edges one-by-one in BFS order from
@@ -31,11 +33,13 @@ export function useWorkflowReveal(workflow: WorkflowState | undefined) {
   const didHydrateRef = useRef(false);
 
   useEffect(() => {
+    const cancelled = timersRef.current.length;
     // Cancel any in-flight reveal — we'll restart it against the new graph.
     for (const t of timersRef.current) clearTimeout(t);
     timersRef.current = [];
 
     if (!workflow) {
+      log.debug("effect: no workflow → reset", { cancelled_timers: cancelled });
       setVisibleNodeIds(new Set());
       setIsBuilding(false);
       return;
@@ -43,21 +47,41 @@ export function useWorkflowReveal(workflow: WorkflowState | undefined) {
 
     if (!didHydrateRef.current) {
       didHydrateRef.current = true;
+      log.info("effect: first hydrate, reveal-all instantly", {
+        nodes: workflow.nodes.length,
+        edges: workflow.edges.length,
+      });
       setVisibleNodeIds(new Set(workflow.nodes.map((n) => n.id)));
       setIsBuilding(false);
       return;
     }
 
+    const tOrder0 =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     const order = bfsOrder(workflow.nodes, workflow.edges);
+    const tOrder1 =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     const currentlyVisible = visibleNodeIds;
     const toReveal = order.filter((id) => !currentlyVisible.has(id));
     const stillExisting = order.filter((id) => currentlyVisible.has(id));
+    log.debug("effect: diff computed", {
+      order_n: order.length,
+      bfs_ms: Math.round((tOrder1 - tOrder0) * 100) / 100,
+      currently_visible: currentlyVisible.size,
+      to_reveal: toReveal.length,
+      still_existing: stillExisting.length,
+      cancelled_timers: cancelled,
+    });
 
     if (toReveal.length === 0) {
       // Workflow shrank or only metadata changed — just prune ids that no
       // longer exist so the visible set stays correct.
       const allIds = new Set(workflow.nodes.map((n) => n.id));
       if ([...currentlyVisible].some((id) => !allIds.has(id))) {
+        log.debug("effect: pruning stale ids", {
+          before: currentlyVisible.size,
+          after: stillExisting.length,
+        });
         setVisibleNodeIds(new Set(stillExisting));
       }
       setIsBuilding(false);
@@ -76,23 +100,46 @@ export function useWorkflowReveal(workflow: WorkflowState | undefined) {
 
     const queue =
       currentlyVisible.size === 0 ? toReveal.slice(1) : toReveal;
+    log.info("effect: scheduling reveal", {
+      to_reveal: queue.length,
+      stagger_ms: STAGGER_MS,
+      total_ms: queue.length * STAGGER_MS,
+    });
 
+    const scheduleT0 =
+      typeof performance !== "undefined" ? performance.now() : Date.now();
     queue.forEach((id, i) => {
       const t = window.setTimeout(() => {
+        const fireT =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
         setVisibleNodeIds((prev) => {
           if (prev.has(id)) return prev;
           const next = new Set(prev);
           next.add(id);
           return next;
         });
-        if (i === queue.length - 1) setIsBuilding(false);
+        if (i === queue.length - 1) {
+          log.info("effect: reveal complete", {
+            elapsed_ms: Math.round((fireT - scheduleT0) * 100) / 100,
+            revealed: queue.length,
+          });
+          setIsBuilding(false);
+        } else {
+          log.trace("tick: reveal", {
+            idx: i,
+            id,
+            elapsed_ms: Math.round((fireT - scheduleT0) * 100) / 100,
+          });
+        }
       }, (i + 1) * STAGGER_MS);
       timersRef.current.push(t);
     });
 
     return () => {
+      const left = timersRef.current.length;
       for (const t of timersRef.current) clearTimeout(t);
       timersRef.current = [];
+      if (left > 0) log.trace("cleanup: cleared timers", { cleared: left });
     };
     // We intentionally only re-run when the workflow reference changes —
     // visibleNodeIds is *read* via closure but should not retrigger the

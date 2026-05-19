@@ -1,17 +1,26 @@
 /**
- * Integrations capability — read-only side. The actual "connect a provider"
- * flow happens through the widgets capability (request_user_action with
- * kind='connect_integration'). After OAuth resolves we automatically register
- * that provider's runtime tools on the agent.
+ * Integrations capability. Exposes:
+ *   - list_connected_integrations / list_provider_catalog — introspection.
+ *   - install_provider_tool / uninstall_provider_tool — add or remove one
+ *     curated provider tool (e.g. HubSpot create_deal) at a time, beyond
+ *     the default set wired up at connect time.
+ *   - disconnect_integration — fully detach a provider and tear down all
+ *     of its tools.
  *
- * This file exposes simple introspection tools: list available providers and
- * list currently-connected integrations.
+ * The connect flow itself (paste-a-PAT) happens via widgets
+ * (request_user_action with kind='connect_integration'); on resolve, the
+ * registerProviderForAgent helper auto-installs each provider tool marked
+ * `default_install: true`.
  */
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { ObjectId } from "mongodb";
 import { integrationsCol } from "@/lib/mongodb";
-import { PROVIDERS } from "@/lib/integrations/providers";
+import { PROVIDERS, getProvider, scopedToolName } from "@/lib/integrations/providers";
+import {
+  installProviderTool,
+  uninstallProviderTool,
+} from "@/lib/integrations/registerProviderTools";
 import { patchAgent } from "@/lib/elevenlabs/client";
 import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
 import type { Capability } from "./types";
@@ -36,8 +45,81 @@ export const integrationsCapability: Capability = {
     ),
 
     tool(
+      "list_provider_catalog",
+      "Return the full catalog of installable provider tools. Use this to discover what HubSpot/Slack/etc. tools the agent can offer beyond the defaults that auto-install on connect. Each entry has { provider, key, name, description, phase, category, installed }.",
+      { provider: z.string().min(1).optional() },
+      async ({ provider }) => {
+        const installedNames = new Set(ctx.config.tools.map((t) => t.name));
+        const providers = provider
+          ? PROVIDERS.filter((p) => p.id === provider)
+          : PROVIDERS;
+        const rows = providers.flatMap((p) =>
+          p.runtime_tools.map((t) => ({
+            provider: p.id,
+            provider_name: p.name,
+            key: t.key,
+            name: scopedToolName(t),
+            description: t.description,
+            phase: t.phase,
+            category: t.category ?? "Other",
+            default_install: !!t.default_install,
+            installed: installedNames.has(scopedToolName(t)),
+          })),
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(rows) }],
+        };
+      },
+    ),
+
+    tool(
+      "install_provider_tool",
+      "Install one curated tool from a connected provider (e.g. HubSpot create_deal, log_note). Pass the provider id and the tool's stable `key` (NOT the wire name). The provider must already be connected; use list_provider_catalog to discover available keys.",
+      {
+        provider: z.string().min(1),
+        tool_key: z.string().min(1),
+      },
+      async ({ provider, tool_key }) =>
+        runToolStep(ctx, "integrations", "install_provider_tool", async () => {
+          const entry = await installProviderTool(
+            ctx.agentMongoId,
+            provider,
+            tool_key,
+          );
+          const nextTools = [...ctx.config.tools, entry];
+          return {
+            patch: { tools: nextTools },
+            summary: `Installed ${entry.name} on this agent.`,
+          };
+        }),
+    ),
+
+    tool(
+      "uninstall_provider_tool",
+      "Remove a single installed provider tool by name or id. Leaves the rest of the provider's tools — and the connection — intact.",
+      {
+        tool_id: z.string().min(1).optional(),
+        tool_name: z.string().min(1).optional(),
+      },
+      async ({ tool_id, tool_name }) =>
+        runToolStep(ctx, "integrations", "uninstall_provider_tool", async () => {
+          if (!tool_id && !tool_name) {
+            throw new Error("Pass either tool_id or tool_name.");
+          }
+          const { remaining } = await uninstallProviderTool(ctx.agentMongoId, {
+            id: tool_id,
+            name: tool_name,
+          });
+          return {
+            patch: { tools: remaining },
+            summary: `Uninstalled ${tool_name ?? tool_id}.`,
+          };
+        }),
+    ),
+
+    tool(
       "disconnect_integration",
-      "Disconnect a provider and remove its runtime tools from the agent.",
+      "Disconnect a provider and remove ALL of its runtime tools from the agent.",
       { provider: z.string().min(1) },
       async ({ provider }) =>
         runToolStep(ctx, "integrations", "disconnect_integration", async () => {
@@ -49,11 +131,9 @@ export const integrationsCapability: Capability = {
           const remainingIntegrations = ctx.config.integrations.filter(
             (i) => i.provider !== provider,
           );
-          const providerDef = PROVIDERS.find((p) => p.id === provider);
+          const providerDef = getProvider(provider);
           const toolNamesToRemove = new Set(
-            providerDef?.runtime_tools.map((t) => {
-              return t.phase === "in_call" ? t.name : `${t.phase}__${t.name}`;
-            }) ?? [],
+            providerDef?.runtime_tools.map((t) => scopedToolName(t)) ?? [],
           );
           const remainingTools = ctx.config.tools.filter(
             (t) => !toolNamesToRemove.has(t.name) && t.provider !== provider,

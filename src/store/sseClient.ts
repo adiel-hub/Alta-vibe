@@ -118,6 +118,18 @@ function parseBlock(block: string): { seq: number; event: SSEEvent } | null {
   }
 }
 
+/**
+ * Tracks the tool_use_id of the most recent tool that ran. If that tool
+ * emits a `widget_inserted` event (request_user_action, setup_phone_number,
+ * etc.), the SSE client stamps the widget with this id so ChatPanel can
+ * O(1)-look it up next to the tool_use block. Tools that don't produce a
+ * widget simply have their id overwritten by the next tool — harmless.
+ *
+ * Events arrive in order within a single attachToTurn call, so module-level
+ * state is safe.
+ */
+let pendingWidgetToolUseId: string | null = null;
+
 function handleEvent(assistantTurnId: string, event: SSEEvent): void {
   log.trace("event", { type: event.type });
   const s = useAgentStore.getState();
@@ -132,16 +144,20 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       // doesn't appear in the chat, in the live indicator, or in any
       // auto-switch decision.
       if (event.name === "ToolSearch") break;
-      const section = sectionForTool(event.name);
+      const bare = event.name.replace(/^mcp__alta__/, "");
+      // Stash this tool's id so any `widget_inserted` event that follows
+      // can be stamped with it. Multiple tools produce widgets now
+      // (request_user_action, setup_phone_number, …) — instead of
+      // hard-coding the list, we always track the most recent.
+      pendingWidgetToolUseId = event.tool_use_id;
+      const section = sectionForTool(bare);
       if (section) {
         s.setInFlight(section, true);
         // Auto-switch suppressions:
         //   - list_*/read_* are pure discovery; they shouldn't yank the panel.
         //   - scrape_* tools take ~30 s and the user is usually mid-thought
         //     on Persona; the KB tab can update silently in the background.
-        const bare = event.name.replace(/^mcp__alta__/, "");
-        const noAutoSwitch =
-          /^(list_|read_|scrape_)/.test(bare);
+        const noAutoSwitch = /^(list_|read_|scrape_)/.test(bare);
         if (!noAutoSwitch) s.bumpActiveSection(section);
       }
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
@@ -185,29 +201,58 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
         revision: event.revision,
         keys: Object.keys(event.patch),
       });
-      s.applyPatch(event.revision, event.patch);
+      // Workflow patches are a frequent suspect when the page hangs — they
+      // can be large and they trigger the canvas's layout + reveal pipeline.
+      // Surface size + duration at info-level so it shows up in the default
+      // browser log without needing to bump NEXT_PUBLIC_LOG_LEVEL.
+      if (event.patch.workflow) {
+        const w = event.patch.workflow;
+        const t0 =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        s.applyPatch(event.revision, event.patch);
+        const t1 =
+          typeof performance !== "undefined" ? performance.now() : Date.now();
+        log.info("workflow patch applied", {
+          revision: event.revision,
+          nodes: w.nodes.length,
+          edges: w.edges.length,
+          apply_ms: Math.round((t1 - t0) * 100) / 100,
+        });
+      } else {
+        s.applyPatch(event.revision, event.patch);
+      }
       for (const key of Object.keys(event.patch)) {
         const section = sectionForPatchKey(key);
-        if (section) s.setInFlight(section, false);
+        if (!section) continue;
+        // Workflow + knowledge_base patches can be large; clearing inFlight
+        // immediately re-enables the send button before the canvas / KB tab
+        // has finished laying out. Let the bulk clear on turn_done handle
+        // those so the spinner stays visible until paint completes.
+        if (section === "workflow" || section === "knowledge_base") continue;
+        s.setInFlight(section, false);
       }
       break;
     case "state_error":
       log.warn("state_error", { section: event.section, message: event.message });
       s.setError(event.section, event.message);
       break;
-    case "widget_inserted":
+    case "widget_inserted": {
       log.info("widget_inserted", {
         action_id: event.action_id,
         kind: event.kind,
       });
+      const toolUseId = pendingWidgetToolUseId ?? undefined;
+      pendingWidgetToolUseId = null;
       s.upsertWidget({
         action_id: event.action_id,
         kind: event.kind,
         payload: event.payload,
         status: "pending",
         result: null,
+        tool_use_id: toolUseId,
       });
       break;
+    }
     case "widget_resolved":
       log.info("widget_resolved", {
         action_id: event.action_id,
@@ -217,11 +262,13 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       break;
     case "turn_aborted":
       log.warn("turn_aborted", { reason: event.reason });
+      pendingWidgetToolUseId = null;
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       s.setLiveTool(null);
       break;
     case "turn_done":
       log.info("turn_done", { revision: event.revision });
+      pendingWidgetToolUseId = null;
       for (const sec of Array.from(s.inFlight)) s.setInFlight(sec, false);
       // Leave the last success badge visible briefly, then clear.
       setTimeout(() => {
@@ -231,6 +278,15 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
         }
       }, 1_200);
       break;
+    default: {
+      // Defensive: if the server adds an event type the client doesn't
+      // know about, surface it so we notice during dev rather than
+      // silently swallowing. Cast through unknown because the switch
+      // exhausted the discriminated union.
+      const unknownEvent = event as { type?: unknown };
+      log.warn("unknown SSE event", { type: unknownEvent.type });
+      break;
+    }
   }
 }
 
@@ -246,15 +302,21 @@ function extractErrorText(output: unknown): string {
   return String(output ?? "");
 }
 
-function sectionForTool(toolName: string): SectionKey | null {
-  const t = toolName.replace(/^mcp__alta__/, "");
+/** Map a bare (un-prefixed) tool name to its UI section. The caller is
+ *  responsible for stripping `mcp__alta__` before calling — keep the
+ *  prefix-handling in one place. */
+function sectionForTool(t: string): SectionKey | null {
   if (t.includes("workflow")) return "workflow";
-  if (t.includes("voice") || t === "list_available_voices") return "voice";
+  if (t.includes("voice")) return "voice";
   if (t.includes("language") || t.includes("tts_model")) return "voice";
   if (t.includes("llm") || t.includes("temperature")) return "llm";
   if (t.includes("knowledge_base") || t.includes("scrape")) return "knowledge_base";
   if (t.includes("data_collection")) return "data";
-  if (t.includes("evaluation")) return "evaluation";
+  // `*_call_outcome` lives in the post-call-analysis capability and surfaces
+  // under the "Call outcomes" tab. The route must be matched BEFORE the
+  // generic `tool` substring rule below, otherwise add_call_outcome would
+  // get routed to the Tools tab.
+  if (t.includes("call_outcome") || t.includes("evaluation")) return "evaluation";
   if (t.includes("phone") || t.includes("outbound_call")) return "phone";
   if (t.includes("mcp")) return "mcp";
   if (t.includes("tool")) return "tools";
