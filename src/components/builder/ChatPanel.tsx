@@ -10,6 +10,7 @@ import { createClientLogger } from "@/lib/clientLogger";
 import type { ContentBlock } from "@/types/agent";
 import { ChatWidget } from "./ChatWidget";
 import { Typewriter } from "./Typewriter";
+import { VersionHistoryPanel } from "./VersionHistoryPanel";
 import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 
 const log = createClientLogger("chat");
@@ -28,6 +29,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -88,30 +90,66 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-(--color-border) px-4 animate-fade-in">
-        <Link
-          href="/"
-          aria-label="Back to home"
-          title="Back to home"
-          className="grid h-8 w-8 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
+        {historyOpen ? (
+          <button
+            type="button"
+            onClick={() => setHistoryOpen(false)}
+            aria-label="Back to chat"
+            title="Back to chat"
+            className="grid h-8 w-8 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
           >
-            <line x1="19" y1="12" x2="5" y2="12" />
-            <polyline points="12 19 5 12 12 5" />
-          </svg>
-        </Link>
-        <EditableAgentName agentId={agentId} value={agentName ?? ""} />
+            <BackArrowIcon />
+          </button>
+        ) : (
+          <Link
+            href="/"
+            aria-label="Back to home"
+            title="Back to home"
+            className="grid h-8 w-8 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+          >
+            <BackArrowIcon />
+          </Link>
+        )}
+        {historyOpen ? (
+          <span className="truncate px-1.5 py-0.5 text-[13px] font-semibold text-(--color-foreground-strong)">
+            Version history
+          </span>
+        ) : (
+          <EditableAgentName agentId={agentId} value={agentName ?? ""} />
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          {activeJobId && (
+            <span
+              className="flex items-center gap-1 text-(--color-accent) animate-fade-in"
+              role="status"
+              aria-label="Agent is working"
+              title="Agent is working"
+            >
+              <span className="dot-flash" />
+              <span className="dot-flash" style={{ animationDelay: "120ms" }} />
+              <span className="dot-flash" style={{ animationDelay: "240ms" }} />
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            title={historyOpen ? "Back to chat" : "Version history"}
+            aria-pressed={historyOpen}
+            className={`grid h-8 w-8 place-items-center rounded-md transition ${
+              historyOpen
+                ? "bg-(--color-accent)/10 text-(--color-accent)"
+                : "text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+            }`}
+          >
+            <HistoryIcon />
+          </button>
+        </div>
       </header>
 
+      {historyOpen ? (
+        <VersionHistoryPanel agentId={agentId} />
+      ) : (
+      <>
       <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5 text-(--color-foreground)">
         {turns.length === 0 && !streaming && (
           <div className="space-y-2 text-sm text-(--color-muted) animate-fade-in">
@@ -223,7 +261,48 @@ export function ChatPanel({ agentId }: { agentId: string }) {
           </div>
         </div>
       </footer>
+      </>
+      )}
     </div>
+  );
+}
+
+function BackArrowIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </svg>
+  );
+}
+
+function HistoryIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <polyline points="3 3 3 8 8 8" />
+      <polyline points="12 7 12 12 15 14" />
+    </svg>
   );
 }
 

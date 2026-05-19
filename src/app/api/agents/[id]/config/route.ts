@@ -70,7 +70,7 @@ export async function PATCH(
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
-    await patchAgent(agent.elevenlabs_agent_id, parsed.data);
+    const elResponse = await patchAgent(agent.elevenlabs_agent_id, parsed.data);
 
     const next: AgentConfigCache = { ...agent.config_cache };
     if (parsed.data.name !== undefined) next.name = parsed.data.name;
@@ -89,15 +89,20 @@ export async function PATCH(
     if (parsed.data.max_duration_seconds !== undefined)
       next.max_duration_seconds = parsed.data.max_duration_seconds;
 
+    const $set: Record<string, unknown> = {
+      config_cache: next,
+      revision: agent.revision + 1,
+      updated_at: new Date(),
+    };
+    // Opportunistically cache the new upstream version id when the PATCH
+    // response carries it. The version-history panel doesn't depend on
+    // this (it always re-fetches from ElevenLabs), but caching lets the
+    // panel mark the current row without an extra round trip on open.
+    if (elResponse.version_id) $set.current_version_id = elResponse.version_id;
+
     const updated = await agents.findOneAndUpdate(
       { _id, revision: agent.revision },
-      {
-        $set: {
-          config_cache: next,
-          revision: agent.revision + 1,
-          updated_at: new Date(),
-        },
-      },
+      { $set },
       { returnDocument: "after" },
     );
     const newRevision = updated?.revision ?? agent.revision + 1;

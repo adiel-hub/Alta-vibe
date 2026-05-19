@@ -16,7 +16,7 @@
  * mutating it would orphan historical extraction results. Users can
  * delete + recreate when they want a new identifier.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
@@ -28,25 +28,17 @@ type DraftField = {
   name: string;
   type: FieldType;
   description: string;
-  /** Comma-separated allowed values entered in the UI. Parsed into an array
-   *  at save time. Stored on disk + sent on the wire as a string[]. */
-  enumText: string;
+  /** Allowed values shown as chips. Kept as the canonical shape end-to-end
+   *  so we don't have to repeatedly parse + dedupe a comma-separated blob. */
+  enumValues: string[];
 };
 
 const EMPTY_DRAFT: DraftField = {
   name: "",
   type: "string",
   description: "",
-  enumText: "",
+  enumValues: [],
 };
-
-/** Parse the comma/newline-separated enum input into a clean string[]. */
-function parseEnumText(text: string): string[] {
-  return text
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
 
 type ApiResponse = {
   revision: number;
@@ -90,7 +82,6 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
       setError("Name and description are both required.");
       return;
     }
-    const enumValues = parseEnumText(draft.enumText);
     try {
       await handle(
         () =>
@@ -101,7 +92,9 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
               name: draft.name.trim(),
               type: draft.type,
               description: draft.description.trim(),
-              ...(enumValues.length > 0 ? { enum: enumValues } : {}),
+              ...(draft.enumValues.length > 0
+                ? { enum: draft.enumValues }
+                : {}),
             }),
           }),
         "create",
@@ -154,19 +147,6 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
       </div>
 
       <div className="mt-4 space-y-3">
-        {fields.length === 0 && !creating && (
-          <div className="rounded-xl border border-dashed border-(--color-border) bg-(--color-panel-soft) px-4 py-6 text-center">
-            <p className="text-sm text-(--color-foreground-strong)">
-              No extraction fields yet.
-            </p>
-            <p className="mt-1 text-[12px] text-(--color-muted)">
-              Add a field when you want a specific value — like the caller&apos;s
-              email or a yes/no on a custom question — pulled out of the
-              transcript automatically.
-            </p>
-          </div>
-        )}
-
         {fields.map((f, i) => (
           <div
             key={f.id}
@@ -237,18 +217,17 @@ function FieldRow({
     name: field.name,
     type: field.type,
     description: field.description,
-    enumText: (field.enum ?? []).join(", "),
+    enumValues: field.enum ?? [],
   });
 
   const save = async () => {
     if (draft.description.trim().length < 1) return;
-    const enumValues = parseEnumText(draft.enumText);
     await onSave({
       type: draft.type,
       description: draft.description.trim(),
       // Always send the array — empty array explicitly clears the
       // constraint on the server side (see [fieldId]/route.ts).
-      enum: enumValues,
+      enum: draft.enumValues,
     });
     setEditing(false);
   };
@@ -265,7 +244,7 @@ function FieldRow({
                 name: field.name,
                 type: field.type,
                 description: field.description,
-                enumText: (field.enum ?? []).join(", "),
+                enumValues: field.enum ?? [],
               });
               setEditing(false);
             }}
@@ -449,22 +428,134 @@ function FieldDraftFields({
           })}
         </div>
       </label>
-      <label className="block">
+      <div>
         <span className="text-[11px] font-semibold uppercase tracking-wider text-(--color-muted)">
           Allowed values (optional)
         </span>
-        <textarea
-          value={draft.enumText}
-          onChange={(e) => setDraft({ ...draft, enumText: e.target.value })}
-          placeholder="basic, pro, enterprise"
-          rows={2}
-          className="mt-1 w-full resize-y rounded-md border border-(--color-border) bg-(--color-panel) px-3 py-2 font-mono text-sm leading-relaxed focus:border-(--color-accent) focus:outline-none"
+        <EnumChipsInput
+          values={draft.enumValues}
+          onChange={(next) => setDraft({ ...draft, enumValues: next })}
         />
         <span className="mt-1 block text-[11px] text-(--color-muted-soft)">
-          Comma- or newline-separated. When set, the extractor must return
+          Press comma or Enter to add. When set, the extractor must return
           one of these exactly. Leave blank for free-form values.
         </span>
-      </label>
+      </div>
+    </div>
+  );
+}
+
+// ── Chip input ──────────────────────────────────────────────────────────
+
+/**
+ * Tags-style input: the typed text becomes a chip on comma or Enter; Backspace
+ * on empty input pulls the last chip back into the buffer so it can be edited.
+ * Pasting "a, b, c" splits into three chips in one go. Dedupes against the
+ * existing values (case-insensitive) so a slip of the keyboard doesn't make
+ * `["pro", "pro"]`.
+ */
+function EnumChipsInput({
+  values,
+  onChange,
+}: {
+  values: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [buffer, setBuffer] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const commit = (raw: string) => {
+    const parts = raw
+      .split(/[,\n]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (parts.length === 0) return;
+    const seen = new Set(values.map((v) => v.toLowerCase()));
+    const next = [...values];
+    for (const p of parts) {
+      const key = p.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      next.push(p);
+    }
+    if (next.length !== values.length) onChange(next);
+  };
+
+  const removeAt = (idx: number) => {
+    const next = values.slice();
+    next.splice(idx, 1);
+    onChange(next);
+  };
+
+  return (
+    <div
+      onClick={() => inputRef.current?.focus()}
+      className="mt-1 flex w-full cursor-text flex-wrap items-center gap-1.5 rounded-md border border-(--color-border) bg-(--color-panel) px-2 py-1.5 focus-within:border-(--color-accent)"
+    >
+      {values.map((v, i) => (
+        <span
+          key={`${v}-${i}`}
+          className="inline-flex items-center gap-1 rounded-full bg-(--color-accent)/10 px-2 py-0.5 font-mono text-xs text-(--color-accent)"
+        >
+          <span dir="auto">{v}</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              removeAt(i);
+            }}
+            aria-label={`Remove ${v}`}
+            className="grid h-3.5 w-3.5 place-items-center rounded-full text-(--color-accent) transition hover:bg-(--color-accent)/20"
+          >
+            <XIcon />
+          </button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        dir="auto"
+        value={buffer}
+        onChange={(e) => {
+          const v = e.target.value;
+          // A trailing separator commits the prefix as chips and keeps any
+          // remainder in the buffer (handles paste of "a, b, c" cleanly).
+          if (/[,\n]/.test(v)) {
+            const segs = v.split(/[,\n]/);
+            const tail = segs.pop() ?? "";
+            commit(segs.join(","));
+            setBuffer(tail);
+          } else {
+            setBuffer(v);
+          }
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (buffer.trim().length > 0) {
+              commit(buffer);
+              setBuffer("");
+            }
+          } else if (
+            e.key === "Backspace" &&
+            buffer.length === 0 &&
+            values.length > 0
+          ) {
+            // Pull the last chip back into the buffer for quick edit.
+            const next = values.slice(0, -1);
+            const last = values[values.length - 1];
+            onChange(next);
+            setBuffer(last);
+          }
+        }}
+        onBlur={() => {
+          if (buffer.trim().length > 0) {
+            commit(buffer);
+            setBuffer("");
+          }
+        }}
+        placeholder={values.length === 0 ? "basic, pro, enterprise" : ""}
+        className="flex-1 min-w-[120px] bg-transparent py-0.5 font-mono text-sm outline-none placeholder:text-(--color-muted-soft)"
+      />
     </div>
   );
 }
@@ -527,6 +618,25 @@ function TrashIcon() {
       <path d="M10 11v6" />
       <path d="M14 11v6" />
       <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg
+      width="9"
+      height="9"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   );
 }

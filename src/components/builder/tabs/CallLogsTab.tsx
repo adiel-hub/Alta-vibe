@@ -2,13 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
-import type { CallLogDetail, CallLogSummary } from "@/types/agent";
+import type { CallEvent, CallLogDetail, CallLogSummary } from "@/types/agent";
+
+type CallView = "detail" | "events";
 
 export function CallLogsTab({ agentId }: { agentId: string }) {
   const [calls, setCalls] = useState<CallLogSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [viewByCallId, setViewByCallId] = useState<Record<string, CallView>>({});
   const [detailsById, setDetailsById] = useState<Record<string, CallLogDetail>>({});
   const [detailLoading, setDetailLoading] = useState(false);
 
@@ -96,6 +99,10 @@ export function CallLogsTab({ agentId }: { agentId: string }) {
                   callId={c.id}
                   detail={detailsById[c.id] ?? null}
                   loading={detailLoading && !detailsById[c.id]}
+                  view={viewByCallId[c.id] ?? "detail"}
+                  onViewChange={(next) =>
+                    setViewByCallId((v) => ({ ...v, [c.id]: next }))
+                  }
                 />
               )}
             </li>
@@ -130,9 +137,17 @@ function CallRow({
     call.status === "done" || call.status === "completed" ? "Completed" : call.status;
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onToggle}
-      className="grid w-full grid-cols-[auto_1.4fr_1fr_auto_auto] items-center gap-4 px-4 py-3 text-left transition hover:bg-(--color-panel-soft)"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      className="grid w-full cursor-pointer grid-cols-[auto_1.4fr_1fr_auto_auto] items-center gap-4 px-4 py-3 text-left transition hover:bg-(--color-panel-soft) focus:outline-none focus-visible:ring-2 focus-visible:ring-(--color-accent)"
     >
       <Chevron expanded={expanded} />
       <div className="min-w-0">
@@ -165,7 +180,7 @@ function CallRow({
           <span className="text-(--color-muted-soft)">—</span>
         )}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -194,11 +209,15 @@ function CallDetailView({
   callId,
   detail,
   loading,
+  view,
+  onViewChange,
 }: {
   agentId: string;
   callId: string;
   detail: CallLogDetail | null;
   loading: boolean;
+  view: CallView;
+  onViewChange: (v: CallView) => void;
 }) {
   if (loading) {
     return (
@@ -213,9 +232,39 @@ function CallDetailView({
   // labels. data_collection is the typed value extraction (chips), and
   // evaluation is the yes/no call-outcome scoring (✓/✕ list).
   const dataChips = detail.analysis.data_collection ?? [];
+  const eventCount = detail.events.length;
 
   return (
     <div className="animate-fade-in space-y-5 border-t border-(--color-border) bg-(--color-panel-sunken) px-5 py-5">
+      <div className="flex w-fit gap-1 rounded-lg border border-(--color-border) bg-(--color-panel-soft) p-1">
+        {(
+          [
+            { id: "detail", label: "Overview" },
+            { id: "events", label: `Events${eventCount ? ` (${eventCount})` : ""}` },
+          ] as const
+        ).map((t) => {
+          const selected = view === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onViewChange(t.id)}
+              className={`rounded-md px-3 py-1 text-xs transition ${
+                selected
+                  ? "bg-(--color-panel) font-medium text-(--color-foreground-strong) shadow-sm"
+                  : "text-(--color-muted) hover:text-(--color-foreground)"
+              }`}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {view === "events" ? (
+        <EventsView events={detail.events} />
+      ) : (
+      <>
       {dataChips.length > 0 && (
         <section>
           <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-(--color-muted)">
@@ -289,8 +338,173 @@ function CallDetailView({
       {detail.recording_url && (
         <RecordingSection agentId={agentId} callId={callId} />
       )}
+      </>
+      )}
     </div>
   );
+}
+
+/**
+ * Chronological event log. Tool calls and tool results render as JSON-
+ * inspectable cards; messages stay compact. Events are already sorted by
+ * upstream emission order on the wire, so we just preserve it.
+ */
+function EventsView({ events }: { events: CallEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-(--color-border) bg-(--color-panel) px-4 py-6 text-center text-xs text-(--color-muted)">
+        No events recorded for this call.
+      </div>
+    );
+  }
+  return (
+    <ol className="space-y-2">
+      {events.map((ev, i) => (
+        <EventRow key={i} event={ev} />
+      ))}
+    </ol>
+  );
+}
+
+function EventRow({ event }: { event: CallEvent }) {
+  const [open, setOpen] = useState(false);
+  const ts = `${Math.floor(event.time_in_call_seconds)}s`;
+
+  if (event.kind === "message") {
+    const isAgent = event.role === "agent";
+    const isSys = event.role === "system";
+    return (
+      <li className="flex items-start gap-3 rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2">
+        <span className="mt-[1px] w-9 shrink-0 font-mono text-[10px] text-(--color-muted-soft)">
+          {ts}
+        </span>
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wider ${
+            isSys
+              ? "bg-(--color-panel-soft) text-(--color-muted)"
+              : isAgent
+                ? "bg-(--color-panel-soft) text-(--color-foreground)"
+                : "bg-(--color-accent)/15 text-(--color-accent)"
+          }`}
+        >
+          {isSys ? "Sys" : isAgent ? "Agent" : "User"}
+        </span>
+        <span className="min-w-0 flex-1 text-sm text-(--color-foreground)">
+          {event.message}
+          {event.interrupted && (
+            <span className="ml-2 rounded-full bg-(--color-warning)/15 px-1.5 py-[1px] text-[9px] font-medium uppercase tracking-wider text-(--color-warning)">
+              interrupted
+            </span>
+          )}
+        </span>
+      </li>
+    );
+  }
+
+  if (event.kind === "tool_call") {
+    return (
+      <li className="rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-start gap-3 text-left"
+        >
+          <span className="mt-[1px] w-9 shrink-0 font-mono text-[10px] text-(--color-muted-soft)">
+            {ts}
+          </span>
+          <span className="shrink-0 rounded-full bg-(--color-violet-100) px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wider text-(--color-violet-700)">
+            Tool ▸
+          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--color-foreground-strong)">
+            {event.tool_name}
+          </span>
+          {event.tool_type && (
+            <span className="rounded bg-(--color-panel-soft) px-1.5 py-[1px] text-[10px] text-(--color-muted)">
+              {event.tool_type}
+            </span>
+          )}
+        </button>
+        {open && (
+          <div className="mt-2 space-y-1 border-t border-(--color-border) pt-2">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-(--color-muted)">
+              Params
+            </div>
+            <pre dir="ltr" className="overflow-x-auto rounded bg-(--color-panel-sunken) p-2 font-mono text-[11px] leading-snug text-(--color-foreground)">
+              {prettyJson(event.params)}
+            </pre>
+            {event.request_id && (
+              <div className="font-mono text-[10px] text-(--color-muted-soft)">
+                request_id: {event.request_id}
+              </div>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  }
+
+  // tool_result
+  return (
+    <li
+      className={`rounded-lg border px-3 py-2 ${
+        event.is_error
+          ? "border-(--color-danger)/40 bg-(--color-danger)/5"
+          : "border-(--color-border) bg-(--color-panel)"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-start gap-3 text-left"
+      >
+        <span className="mt-[1px] w-9 shrink-0 font-mono text-[10px] text-(--color-muted-soft)">
+          {ts}
+        </span>
+        <span
+          className={`shrink-0 rounded-full px-1.5 py-[1px] text-[10px] font-semibold uppercase tracking-wider ${
+            event.is_error
+              ? "bg-(--color-danger)/15 text-(--color-danger)"
+              : "bg-(--color-success)/15 text-(--color-success)"
+          }`}
+        >
+          {event.is_error ? "Error ▸" : "Result ▸"}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--color-foreground)">
+          {event.tool_name ?? event.request_id ?? "tool"}
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1 border-t border-(--color-border) pt-2">
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-(--color-muted)">
+            Output
+          </div>
+          <pre
+            dir="ltr"
+            className={`overflow-x-auto rounded bg-(--color-panel-sunken) p-2 font-mono text-[11px] leading-snug ${
+              event.is_error ? "text-(--color-danger)" : "text-(--color-foreground)"
+            }`}
+          >
+            {prettyJson(event.result)}
+          </pre>
+          {event.request_id && (
+            <div className="font-mono text-[10px] text-(--color-muted-soft)">
+              request_id: {event.request_id}
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function prettyJson(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function RecordingSection({

@@ -10,6 +10,7 @@ import { requireSharedSecret } from "@/lib/auth";
 import {
   deleteAgent as deleteElevenAgent,
   getAgent,
+  listAgentBranches,
   projectAgentConfig,
   ElevenLabsError,
 } from "@/lib/elevenlabs/client";
@@ -37,15 +38,22 @@ export async function GET(
   try {
     const el = await getAgent(doc.elevenlabs_agent_id);
     const projected = projectAgentConfig(el, doc.config_cache);
+    const $set: Record<string, unknown> = {};
     if (JSON.stringify(projected) !== JSON.stringify(doc.config_cache)) {
+      $set.config_cache = projected;
+    }
+    // Update the cached upstream version id whenever the GET response
+    // carries one (it does since the Jan 2026 versioning rollout). Used
+    // by the version-history panel to highlight the current row without
+    // an extra round trip on open.
+    if (el.version_id && el.version_id !== doc.current_version_id) {
+      $set.current_version_id = el.version_id;
+    }
+    if (Object.keys($set).length > 0) {
+      $set.updated_at = new Date();
       const updated = await col.findOneAndUpdate(
         { _id: doc._id },
-        {
-          $set: {
-            config_cache: projected,
-            updated_at: new Date(),
-          },
-        },
+        { $set },
         { returnDocument: "after" },
       );
       if (updated) freshened = updated;
@@ -53,6 +61,26 @@ export async function GET(
   } catch (err) {
     // Keep serving cached config — ElevenLabs unreachable shouldn't kill the page.
     if (!(err instanceof ElevenLabsError)) throw err;
+  }
+
+  // Lazy backfill of `main_branch_id` for agents predating the versioning
+  // rollout. Best-effort: a failure here doesn't block the page — the
+  // version-history endpoint will retry the lookup when the panel opens.
+  if (!freshened.main_branch_id) {
+    try {
+      const branches = await listAgentBranches(freshened.elevenlabs_agent_id);
+      const main = branches.find((b) => b.name === "main") ?? branches[0];
+      if (main) {
+        const updated = await col.findOneAndUpdate(
+          { _id: freshened._id },
+          { $set: { main_branch_id: main.id, updated_at: new Date() } },
+          { returnDocument: "after" },
+        );
+        if (updated) freshened = updated;
+      }
+    } catch (err) {
+      if (!(err instanceof ElevenLabsError)) throw err;
+    }
   }
 
   const dto: AgentDTO = {
@@ -63,6 +91,8 @@ export async function GET(
     revision: freshened.revision,
     config_cache: freshened.config_cache,
     last_error: freshened.last_error,
+    main_branch_id: freshened.main_branch_id ?? null,
+    current_version_id: freshened.current_version_id ?? null,
     created_at: freshened.created_at.toISOString(),
     updated_at: freshened.updated_at.toISOString(),
   };

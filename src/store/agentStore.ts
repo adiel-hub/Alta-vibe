@@ -59,6 +59,13 @@ type State = {
   agent: AgentDTO | null;
   config: AgentConfigCache | null;
   revision: number;
+  /**
+   * Cached `agtvrsn_…` id of the version currently applied to the agent.
+   * Updated on hydrate from the DTO and by the version-history panel after
+   * a successful restore. The panel falls back to highlighting the topmost
+   * (newest) version row when this is null.
+   */
+  currentVersionId: string | null;
   inFlight: Set<SectionKey>;
   errors: Record<string, string>;
   turns: ChatTurn[];
@@ -92,6 +99,7 @@ type Actions = {
   ) => void;
   applyPatch: (revision: number, patch: Partial<AgentConfigCache>) => void;
   applyConfigDirect: (patch: Partial<AgentConfigCache>, revision: number) => void;
+  setCurrentVersionId: (versionId: string | null) => void;
   setInFlight: (section: SectionKey, busy: boolean) => void;
   setError: (section: string, message: string | null) => void;
   appendUserTurn: (id: string, text: string) => void;
@@ -128,6 +136,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   agent: null,
   config: null,
   revision: 0,
+  currentVersionId: null,
   inFlight: new Set(),
   errors: {},
   turns: [],
@@ -147,6 +156,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       agent,
       config: agent.config_cache,
       revision: agent.revision,
+      currentVersionId: agent.current_version_id ?? null,
       turns,
       streaming: null,
       inFlight: new Set(),
@@ -215,6 +225,8 @@ export const useAgentStore = create<State & Actions>((set) => ({
         evalPendingAnimationIds,
       };
     }),
+
+  setCurrentVersionId: (versionId) => set({ currentVersionId: versionId }),
 
   setInFlight: (section, busy) =>
     set((s) => {

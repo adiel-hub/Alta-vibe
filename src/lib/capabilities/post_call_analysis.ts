@@ -81,8 +81,77 @@ export const postCallAnalysisCapability: Capability = {
     ),
 
     tool(
+      "update_data_collection_field",
+      "Edit an EXISTING data collection field in place — type, description, and/or enum. The field name is IMMUTABLE because it's the id call-log consumers reference; if the user wants a different name, remove + add. Omitted args leave that property unchanged. For `enum`: pass an array of values to replace the constraint, OR pass an empty array `[]` to explicitly clear it (free-form again). Use this instead of remove + add whenever the user wants to tighten a description, switch a type, or grow/shrink the allowed-values list.",
+      {
+        name: z.string().min(1).describe("Name of the field to edit (immutable)."),
+        type: z.enum(["string", "number", "integer", "boolean"]).optional(),
+        description: z.string().min(1).max(500).optional(),
+        enum: z
+          .array(z.string().min(1))
+          .max(50)
+          .optional()
+          .describe(
+            "Replace the allowed-values list. Empty array clears the constraint; omit to leave it as-is.",
+          ),
+      },
+      async ({ name, type, description, enum: enumValues }) =>
+        runToolStep(ctx, "data", "update_data_field", async () => {
+          const idx = ctx.config.data_collection.findIndex((d) => d.name === name);
+          if (idx === -1) {
+            throw new Error(`No data field named "${name}". Call read_agent_config({ section: "data_collection" }) to see what exists.`);
+          }
+          const current = ctx.config.data_collection[idx];
+          // Same merge semantics as the REST PATCH route:
+          //   enum === undefined → leave as-is
+          //   enum === []        → clear
+          //   enum === [...]     → replace
+          const merged: DataCollectionField = {
+            ...current,
+            ...(type !== undefined ? { type } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(enumValues === undefined
+              ? {}
+              : enumValues.length === 0
+                ? { enum: undefined }
+                : { enum: enumValues }),
+          };
+          // Strip the enum key when it's been cleared so subsequent wire
+          // serializations don't carry `enum: undefined` forward.
+          if (merged.enum === undefined) {
+            delete (merged as { enum?: string[] }).enum;
+          }
+          const next = [...ctx.config.data_collection];
+          next[idx] = merged;
+          await patchAgent(ctx.elevenlabs_agent_id, {
+            data_collection: toUpstreamDataCollection(next),
+          });
+          // Build a precise summary so the chat pill tells the user exactly
+          // what changed instead of a generic "updated".
+          const changes: string[] = [];
+          if (type !== undefined && type !== current.type) {
+            changes.push(`type → ${type}`);
+          }
+          if (description !== undefined && description !== current.description) {
+            changes.push("description");
+          }
+          if (enumValues !== undefined) {
+            if (enumValues.length === 0) changes.push("cleared enum");
+            else changes.push(`enum (${enumValues.length} values)`);
+          }
+          return {
+            patch: { data_collection: next },
+            summary:
+              changes.length === 0
+                ? `Field "${name}" had nothing to change.`
+                : `Updated "${name}": ${changes.join(", ")}.`,
+          };
+        }),
+    ),
+
+    tool(
       "remove_data_collection_field",
-      "Remove a data collection field by name.",
+      "Remove a data collection field by name. Wipes the field from the agent AND any future call-log extraction results for it. For edits to type/description/enum, use update_data_collection_field instead — removing + recreating churns extraction history.",
       { name: z.string().min(1) },
       async ({ name }) =>
         runToolStep(ctx, "data", "remove_data_field", async () => {

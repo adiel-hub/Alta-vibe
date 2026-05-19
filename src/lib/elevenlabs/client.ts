@@ -5,6 +5,7 @@ const log = createLogger("voice-provider");
 import {
   DEFAULT_VOICE_SETTINGS,
   type AgentConfigCache,
+  type CallEvent,
   type CallLogDetail,
   type CallLogSummary,
   type DataCollectionField,
@@ -216,8 +217,47 @@ export async function listTtsModels(): Promise<TTSModel[]> {
 
 // --- Agent CRUD -------------------------------------------------------------
 
+/**
+ * Version metadata returned by ElevenLabs' branch + version endpoints.
+ * `id` is the opaque `agtvrsn_…` snapshot id; pass it as `?version_id=` on
+ * GET /agents/{id} to fetch the historical config.
+ */
+export type ElevenAgentVersion = {
+  id: string;
+  branch_id?: string;
+  created_at?: number; // unix seconds
+  created_by_user_id?: string | null;
+  commit_message?: string | null;
+  name?: string | null;
+};
+
+/**
+ * A branch on an agent. Every agent has a default `main` branch; additional
+ * branches must be created explicitly via POST /branches (not used by us yet).
+ * Field shape mirrors `AgentBranchResponse` from the API reference.
+ */
+export type ElevenAgentBranch = {
+  id: string;
+  name: string;
+  agent_id: string;
+  description?: string | null;
+  created_at?: number;
+  last_committed_at?: number;
+  is_archived?: boolean;
+  protection_status?: string;
+  current_live_percentage?: number;
+  parent_branch_id?: string | null;
+  draft_exists?: boolean;
+  most_recent_versions?: ElevenAgentVersion[];
+};
+
 export type ElevenAgentRaw = {
   agent_id: string;
+  /**
+   * Snapshot version id of the config returned. Present on responses since
+   * the Jan 2026 version-control rollout; older responses may omit it.
+   */
+  version_id?: string | null;
   name?: string;
   conversation_config?: {
     agent?: {
@@ -331,12 +371,83 @@ export async function createAgent(seed: {
   return (await res.json()) as { agent_id: string };
 }
 
-export async function getAgent(agentId: string): Promise<ElevenAgentRaw> {
-  const res = await elFetch(`/v1/convai/agents/${agentId}`, {
+export async function getAgent(
+  agentId: string,
+  opts?: { version_id?: string; branch_id?: string },
+): Promise<ElevenAgentRaw> {
+  const qs = new URLSearchParams();
+  if (opts?.version_id) qs.set("version_id", opts.version_id);
+  if (opts?.branch_id) qs.set("branch_id", opts.branch_id);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await elFetch(`/v1/convai/agents/${agentId}${suffix}`, {
     method: "GET",
     section: "read",
   });
   return (await res.json()) as ElevenAgentRaw;
+}
+
+/**
+ * List the branches on an agent. We currently only care about `main`, but
+ * the endpoint is the canonical way to discover its opaque id (the upstream
+ * id is NOT the string "main") and to surface `most_recent_versions` for
+ * the version-history panel.
+ */
+export async function listAgentBranches(
+  agentId: string,
+  opts?: { include_archived?: boolean; limit?: number },
+): Promise<ElevenAgentBranch[]> {
+  const qs = new URLSearchParams();
+  qs.set("include_archived", String(opts?.include_archived ?? false));
+  qs.set("limit", String(opts?.limit ?? 100));
+  const res = await elFetch(
+    `/v1/convai/agents/${agentId}/branches?${qs.toString()}`,
+    { method: "GET", section: "branches" },
+  );
+  const json = (await res.json()) as
+    | { results?: ElevenAgentBranch[] }
+    | ElevenAgentBranch[];
+  if (Array.isArray(json)) return json;
+  return json.results ?? [];
+}
+
+/**
+ * GET a single branch including its `most_recent_versions` array. Note:
+ * the *list* endpoint returns AgentBranchSummary which does NOT include
+ * versions — only this single-branch GET does (AgentBranchResponse).
+ */
+export async function getAgentBranch(
+  agentId: string,
+  branchId: string,
+): Promise<ElevenAgentBranch> {
+  const res = await elFetch(
+    `/v1/convai/agents/${agentId}/branches/${branchId}`,
+    { method: "GET", section: "branches" },
+  );
+  return (await res.json()) as ElevenAgentBranch;
+}
+
+/**
+ * List the versions on a branch via the single-branch GET. ElevenLabs
+ * doesn't expose a standalone "all versions" endpoint — the `most_recent_versions`
+ * field on the branch is the canonical source.
+ */
+export async function listAgentVersions(
+  agentId: string,
+  branchId: string,
+): Promise<ElevenAgentVersion[]> {
+  const branch = await getAgentBranch(agentId, branchId);
+  return branch.most_recent_versions ?? [];
+}
+
+/**
+ * Fetch the agent config at a specific historical version. Returned shape
+ * matches a normal GET /agents/{id} — i.e. ready for `projectAgentConfig`.
+ */
+export async function getAgentAtVersion(
+  agentId: string,
+  versionId: string,
+): Promise<ElevenAgentRaw> {
+  return getAgent(agentId, { version_id: versionId });
 }
 
 export async function deleteAgent(agentId: string): Promise<void> {
@@ -522,6 +633,7 @@ function scrubPromptConflicts(promptSlice: Record<string, unknown>): void {
 export async function patchAgent(
   agentId: string,
   patch: AgentPatch,
+  opts?: { branch_id?: string },
 ): Promise<ElevenAgentRaw> {
   const incoming: Record<string, unknown> = {};
   if (patch.name !== undefined) incoming.name = patch.name;
@@ -709,7 +821,10 @@ export async function patchAgent(
         ?.agent?.prompt?.tools
     ),
   });
-  const res = await elFetch(`/v1/convai/agents/${agentId}`, {
+  const qs = new URLSearchParams();
+  if (opts?.branch_id) qs.set("branch_id", opts.branch_id);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  const res = await elFetch(`/v1/convai/agents/${agentId}${suffix}`, {
     method: "PATCH",
     section: "update",
     headers: { "content-type": "application/json" },
@@ -1416,8 +1531,24 @@ export async function getConversationDetail(
     status: string;
     transcript?: Array<{
       role: "user" | "agent" | "system";
-      message: string;
+      message: string | null;
       time_in_call_secs?: number;
+      interrupted?: boolean;
+      tool_calls?: Array<{
+        tool_name?: string;
+        request_id?: string;
+        type?: string;
+        params_as_json?: string;
+        tool_details?: unknown;
+      }>;
+      tool_results?: Array<{
+        tool_name?: string;
+        request_id?: string;
+        type?: string;
+        is_error?: boolean;
+        result_value?: unknown;
+        tool_has_been_called?: boolean;
+      }>;
     }>;
     analysis?: {
       transcript_summary?: string;
@@ -1463,9 +1594,10 @@ export async function getConversationDetail(
     transcript:
       json.transcript?.map((t) => ({
         role: t.role,
-        message: t.message,
+        message: t.message ?? "",
         time_in_call_seconds: t.time_in_call_secs,
       })) ?? [],
+    events: buildCallEvents(json.transcript),
     recording_url: hasRealAudio
       ? `${BASE_URL}/v1/convai/conversations/${conversationId}/audio`
       : null,
@@ -1475,6 +1607,86 @@ export async function getConversationDetail(
       data_collection: dataCollection,
     },
   };
+}
+
+/**
+ * Flatten ElevenLabs' nested transcript into a chronological event log.
+ * Each transcript item can carry a message, an array of tool_calls, AND
+ * an array of tool_results. We emit one CallEvent per leaf so the events
+ * tab can render them in order on a single timeline. params_as_json is
+ * parsed best-effort; if it isn't valid JSON we surface the raw string
+ * so debugging never loses the upstream payload.
+ */
+function buildCallEvents(
+  transcript:
+    | Array<{
+        role: "user" | "agent" | "system";
+        message: string | null;
+        time_in_call_secs?: number;
+        interrupted?: boolean;
+        tool_calls?: Array<{
+          tool_name?: string;
+          request_id?: string;
+          type?: string;
+          params_as_json?: string;
+          tool_details?: unknown;
+        }>;
+        tool_results?: Array<{
+          tool_name?: string;
+          request_id?: string;
+          type?: string;
+          is_error?: boolean;
+          result_value?: unknown;
+          tool_has_been_called?: boolean;
+        }>;
+      }>
+    | undefined,
+): CallEvent[] {
+  if (!transcript) return [];
+  const events: CallEvent[] = [];
+  for (const item of transcript) {
+    const t = item.time_in_call_secs ?? 0;
+    const trimmed = (item.message ?? "").trim();
+    if (trimmed.length > 0) {
+      events.push({
+        kind: "message",
+        time_in_call_seconds: t,
+        role: item.role,
+        message: trimmed,
+        interrupted: item.interrupted,
+      });
+    }
+    for (const call of item.tool_calls ?? []) {
+      let params: unknown = call.params_as_json ?? null;
+      if (typeof call.params_as_json === "string") {
+        try {
+          params = JSON.parse(call.params_as_json);
+        } catch {
+          params = call.params_as_json;
+        }
+      }
+      events.push({
+        kind: "tool_call",
+        time_in_call_seconds: t,
+        tool_name: call.tool_name ?? "unknown",
+        params,
+        request_id: call.request_id,
+        tool_type: call.type,
+      });
+    }
+    for (const result of item.tool_results ?? []) {
+      events.push({
+        kind: "tool_result",
+        time_in_call_seconds: t,
+        tool_name: result.tool_name,
+        request_id: result.request_id,
+        is_error: !!result.is_error,
+        result: result.result_value,
+        tool_type: result.type,
+      });
+    }
+  }
+  return events;
 }
 
 export async function fetchConversationAudio(

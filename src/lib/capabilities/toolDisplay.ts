@@ -38,6 +38,7 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   remove_mcp_integration: { emoji: "🔌", label: "Disconnecting an MCP server" },
   // post-call
   add_data_collection_field: { emoji: "📊", label: "Adding a data field" },
+  update_data_collection_field: { emoji: "📊", label: "Updating a data field" },
   remove_data_collection_field: { emoji: "📊", label: "Removing a data field" },
   add_call_outcome: { emoji: "🎯", label: "Adding a call outcome" },
   update_call_outcome: { emoji: "🎯", label: "Updating a call outcome" },

@@ -241,6 +241,62 @@ export function composeSystemPromptWithWorkflow(prompt: string): string {
 }
 
 /**
+ * Pre-flight validation matching ElevenLabs' upstream validator. We catch
+ * the cases that would otherwise come back as opaque 422s ("workflow.edges:
+ * Value error, …") and throw a clear, agent-actionable error first.
+ *
+ * Today the only rule we mirror is the most painful one: a single source
+ * node may have AT MOST ONE unconditional outgoing edge. If the agent tries
+ * to wire two `from: X` edges without conditions, upstream rejects because
+ * the runtime branch-picker would be ambiguous.
+ *
+ * Throws on the first violation with enough context (node id, label, the
+ * conflicting edge ids) for the agent to self-correct in one follow-up
+ * tool call instead of guessing.
+ */
+function validateWorkflow(w: WorkflowState): void {
+  const labelById = new Map(w.nodes.map((n) => [n.id, n.label]));
+  const unconditionalBySource = new Map<string, string[]>();
+  for (const e of w.edges) {
+    const isUnconditional = !e.condition || e.condition.trim().length === 0;
+    if (!isUnconditional) continue;
+    const list = unconditionalBySource.get(e.from) ?? [];
+    list.push(e.id);
+    unconditionalBySource.set(e.from, list);
+  }
+  for (const [sourceId, edgeIds] of unconditionalBySource) {
+    if (edgeIds.length > 1) {
+      const label = labelById.get(sourceId) ?? "(unknown)";
+      throw new Error(
+        `Node "${sourceId}" ("${label}") has ${edgeIds.length} unconditional outgoing edges (${edgeIds.join(
+          ", ",
+        )}). Upstream requires at most one unconditional next step per node — keep one as the default and put a natural-language condition on the rest (e.g. "the caller wants billing"), OR remove the extras.`,
+      );
+    }
+  }
+  // Edges must reference existing nodes. set_workflow already checks this,
+  // but edit_workflow's add_edge can let stale ids through if the agent
+  // composes ops sloppily. A clear pre-flight beats a 404 from upstream.
+  const nodeIds = new Set(w.nodes.map((n) => n.id));
+  for (const e of w.edges) {
+    if (!nodeIds.has(e.from)) {
+      throw new Error(
+        `Edge "${e.id}" references unknown source node "${e.from}". Available node ids: ${[
+          ...nodeIds,
+        ].join(", ")}.`,
+      );
+    }
+    if (!nodeIds.has(e.to)) {
+      throw new Error(
+        `Edge "${e.id}" references unknown target node "${e.to}". Available node ids: ${[
+          ...nodeIds,
+        ].join(", ")}.`,
+      );
+    }
+  }
+}
+
+/**
  * Lazily provision the `report_workflow_state` client tool that powers the
  * live-node highlight during test calls. Returns the new RuntimeTool entry
  * if one was created, or null when the deployed agent already has it.
@@ -283,6 +339,10 @@ async function persistWorkflow(
   nextWorkflow: WorkflowState,
 ): Promise<{ tools?: RuntimeTool[] }> {
   const tTotal = Date.now();
+  // Pre-flight validate BEFORE we translate or PATCH, so the agent sees
+  // a precise error ("Node X has 2 unconditional outgoing edges") rather
+  // than upstream's generic 422.
+  validateWorkflow(nextWorkflow);
   const cleanPrompt = composeSystemPromptWithWorkflow(
     ctx.config.system_prompt ?? "",
   );

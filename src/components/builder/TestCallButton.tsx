@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
@@ -52,14 +52,17 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
     onMessage: (msg: { message?: string; source?: string }) => {
       if (!msg.message || !msg.source) return;
       log.trace("transcript", { role: msg.source, len: msg.message.length });
-      setTranscript((t) => [
-        ...t,
-        {
-          role: msg.source === "ai" ? "agent" : "user",
-          text: msg.message ?? "",
-          ts: Date.now(),
-        },
-      ]);
+      const role: "agent" | "user" = msg.source === "ai" ? "agent" : "user";
+      const text = msg.message;
+      setTranscript((t) => {
+        // Dedupe user echoes: if we just optimistically pushed the same
+        // text from sendDraft, ignore the SDK's echo to avoid duplicates.
+        const last = t[t.length - 1];
+        if (role === "user" && last?.role === "user" && last.text === text) {
+          return t;
+        }
+        return [...t, { role, text, ts: Date.now() }];
+      });
     },
     onDisconnect: () => {
       log.info("conversation disconnected");
@@ -218,6 +221,13 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
           onEnd={() => void endCall()}
           onSendText={(text) => {
             log.debug("sending text to call", { len: text.length });
+            // Optimistically render the user bubble — the SDK doesn't echo
+            // typed messages back via onMessage, so without this the text
+            // never appears on screen. onMessage dedupes if it does echo.
+            setTranscript((t) => [
+              ...t,
+              { role: "user", text, ts: Date.now() },
+            ]);
             conversation.sendUserMessage(text);
           }}
         />
@@ -409,12 +419,14 @@ function CallTranscriptDrawer({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState("");
 
-  // Auto-scroll to the bottom whenever a new line lands so the latest
-  // utterance is always in view.
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [transcript]);
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [transcript, scrollToBottom]);
 
   const sendDraft = () => {
     const text = draft.trim();
@@ -501,7 +513,11 @@ function CallTranscriptDrawer({
                     : "bg-(--color-accent) text-(--color-accent-foreground)"
                 }`}
               >
-                <span dir="auto">{t.text}</span>
+                {t.role === "agent" ? (
+                  <TypewriterText text={t.text} onTick={scrollToBottom} />
+                ) : (
+                  <span dir="auto">{t.text}</span>
+                )}
               </div>
             </div>
           ))
@@ -538,6 +554,39 @@ function CallTranscriptDrawer({
       </div>
     </aside>
   );
+}
+
+// ── Typewriter (agent lines reveal char-by-char as if being typed) ──────
+
+function TypewriterText({
+  text,
+  onTick,
+  speedMs = 18,
+}: {
+  text: string;
+  onTick?: () => void;
+  speedMs?: number;
+}) {
+  const [count, setCount] = useState(0);
+  const onTickRef = useRef(onTick);
+  useEffect(() => {
+    onTickRef.current = onTick;
+  }, [onTick]);
+
+  useEffect(() => {
+    setCount(0);
+    if (!text) return;
+    let i = 0;
+    const id = window.setInterval(() => {
+      i = Math.min(i + 1, text.length);
+      setCount(i);
+      onTickRef.current?.();
+      if (i >= text.length) window.clearInterval(id);
+    }, speedMs);
+    return () => window.clearInterval(id);
+  }, [text, speedMs]);
+
+  return <span dir="auto">{text.slice(0, count)}</span>;
 }
 
 // ── Icons ────────────────────────────────────────────────────────────────

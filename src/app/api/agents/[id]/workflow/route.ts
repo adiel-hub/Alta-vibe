@@ -96,9 +96,28 @@ export async function POST(
   };
   const edges: WorkflowEdge[] = [...agent.config_cache.workflow.edges];
   if (parsed.data.after_node_id) {
+    const sourceId = parsed.data.after_node_id;
+    // ElevenLabs validates: a single source node may have AT MOST ONE
+    // unconditional outgoing edge (anything more would make the runtime's
+    // branch picker ambiguous). If the source already has one, "add
+    // downstream" from the UI means SPLICE — re-point the existing
+    // unconditional edge to come from the new node instead, then wire
+    // parent → newNode. That preserves the user's chain while inserting
+    // the tool in the middle, exactly as the "+" button visually suggests.
+    // If the source has no unconditional edge yet (terminal node, or a
+    // pure router with only conditional edges), just append.
+    const unconditionalIdx = edges.findIndex(
+      (e) =>
+        e.from === sourceId &&
+        (!e.condition || e.condition.trim().length === 0),
+    );
+    if (unconditionalIdx !== -1) {
+      const existing = edges[unconditionalIdx];
+      edges[unconditionalIdx] = { ...existing, from: node.id };
+    }
     edges.push({
       id: newId("edge"),
-      from: parsed.data.after_node_id,
+      from: sourceId,
       to: node.id,
       label: parsed.data.edge_label,
     });

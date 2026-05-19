@@ -20,7 +20,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { ObjectId } from "mongodb";
-import { agentsCol, integrationsCol } from "@/lib/mongodb";
+import { agentsCol, customToolsCol, integrationsCol } from "@/lib/mongodb";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
@@ -351,6 +351,14 @@ export async function uninstallProviderTool(
     tool_ids: nextTools.map((t) => t.id),
   });
   await deleteRuntimeTool(target.id).catch(() => {});
+  // Cascade: if this was a write_tool / create_custom_runtime_tool tool,
+  // drop the backing custom_tools row so its proxy_secret + upstream spec
+  // don't orphan when the UI/route-driven uninstall runs (the chat-driven
+  // remove_runtime_tool already does the same cleanup).
+  const customTools = await customToolsCol();
+  await customTools
+    .deleteOne({ agent_id: _id, elevenlabs_tool_id: target.id })
+    .catch(() => {});
   await agents.updateOne(
     { _id },
     {

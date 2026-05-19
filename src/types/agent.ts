@@ -170,6 +170,19 @@ export type AgentDocument = {
   revision: number;
   config_cache: AgentConfigCache;
   last_error: AgentLastError;
+  /**
+   * Cached id of the upstream `main` branch — lazily backfilled the first
+   * time we hit ElevenLabs' branches endpoint for this agent. Old documents
+   * keep working with this null (we just look it up on demand).
+   */
+  main_branch_id?: string | null;
+  /**
+   * Opaque `agtvrsn_…` id of the version we last synced from upstream.
+   * Best-effort: we update it from PATCH responses where it's present, but
+   * the version-history UI doesn't depend on this — it always pulls fresh
+   * from ElevenLabs and treats the topmost (newest) entry as current.
+   */
+  current_version_id?: string | null;
   /** Rolling summary of conversation turns older than the live window. */
   conversation_summary?: string | null;
   /** Most recent chat_message _id covered by conversation_summary. */
@@ -389,12 +402,45 @@ export type CallLogSummary = {
   has_recording: boolean;
 };
 
+/**
+ * Chronological event in a call, derived from the ElevenLabs transcript.
+ * `time_in_call_seconds` is the same clock the transcript uses, so events
+ * can be interleaved with bubble messages on a single timeline.
+ */
+export type CallEvent =
+  | {
+      kind: "message";
+      time_in_call_seconds: number;
+      role: "user" | "agent" | "system";
+      message: string;
+      interrupted?: boolean;
+    }
+  | {
+      kind: "tool_call";
+      time_in_call_seconds: number;
+      tool_name: string;
+      params: unknown;
+      request_id?: string;
+      tool_type?: string;
+    }
+  | {
+      kind: "tool_result";
+      time_in_call_seconds: number;
+      tool_name?: string;
+      request_id?: string;
+      is_error: boolean;
+      result: unknown;
+      tool_type?: string;
+    };
+
 export type CallLogDetail = CallLogSummary & {
   transcript: Array<{
     role: "user" | "agent" | "system";
     message: string;
     time_in_call_seconds?: number;
   }>;
+  /** Chronological tool + message events for the monitoring view. */
+  events: CallEvent[];
   recording_url: string | null;
   analysis: {
     summary?: string;
