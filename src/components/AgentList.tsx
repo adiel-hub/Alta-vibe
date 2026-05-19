@@ -76,11 +76,6 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
                   <div dir="auto" className="agent-card-name">
                     {a.name}
                   </div>
-                  {a.first_message && (
-                    <div dir="auto" className="agent-card-greeting">
-                      {a.first_message}
-                    </div>
-                  )}
                   <div className="agent-card-meta">
                     <span>{a.language?.toUpperCase() || "EN"}</span>
                     <span aria-hidden>·</span>
