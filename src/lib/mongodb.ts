@@ -2,6 +2,7 @@ import { MongoClient, type Db, type Collection } from "mongodb";
 import type {
   AgentDocument,
   AgentSecretDocument,
+  AgentVersionMetaDocument,
   ChatMessageDocument,
   CustomToolDocument,
   IntegrationDocument,
@@ -72,6 +73,12 @@ export async function getDb(): Promise<Db> {
       db
         .collection<CustomToolDocument>("custom_tools")
         .createIndex({ agent_id: 1, name: 1 }, { unique: true }),
+      db
+        .collection<AgentVersionMetaDocument>("agent_version_meta")
+        .createIndex(
+          { elevenlabs_agent_id: 1, version_id: 1 },
+          { unique: true },
+        ),
     ]);
     log.info("indexes ensured");
     globalThis.__altaVibeIndexesEnsured = true;
@@ -105,4 +112,12 @@ export async function agentSecretsCol(): Promise<Collection<AgentSecretDocument>
 
 export async function customToolsCol(): Promise<Collection<CustomToolDocument>> {
   return (await getDb()).collection<CustomToolDocument>("custom_tools");
+}
+
+export async function agentVersionMetaCol(): Promise<
+  Collection<AgentVersionMetaDocument>
+> {
+  return (await getDb()).collection<AgentVersionMetaDocument>(
+    "agent_version_meta",
+  );
 }

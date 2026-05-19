@@ -8,7 +8,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { requireSharedSecret } from "@/lib/auth";
-import { agentsCol } from "@/lib/mongodb";
+import { agentsCol, agentVersionMetaCol } from "@/lib/mongodb";
 import {
   getAgentBranch,
   listAgentBranches,
@@ -60,8 +60,33 @@ export async function GET(
     );
     const versions: ElevenAgentVersion[] = mainBranch.most_recent_versions ?? [];
 
+    // Join our locally-generated title/description meta (Haiku output).
+    // Older versions that pre-date the meta-generation hook simply have no
+    // row here; the UI falls back to a generic title for those.
+    const metaCol = await agentVersionMetaCol();
+    const metaRows = await metaCol
+      .find({
+        elevenlabs_agent_id: agent.elevenlabs_agent_id,
+        version_id: { $in: versions.map((v) => v.id) },
+      })
+      .toArray();
+    const metaById = new Map(metaRows.map((m) => [m.version_id, m]));
+    const enriched = versions.map((v) => {
+      const meta = metaById.get(v.id);
+      if (!meta) return v;
+      return {
+        ...v,
+        // Our generated text wins over upstream's boilerplate. We attach
+        // them as separate optional fields rather than overwriting
+        // `version_description` so it's clear in the wire response which
+        // came from where.
+        title: meta.title,
+        description: meta.description,
+      };
+    });
+
     return NextResponse.json({
-      versions,
+      versions: enriched,
       current_version_id: agent.current_version_id ?? null,
       branch_id: mainSummary.id,
     });

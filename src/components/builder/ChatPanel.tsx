@@ -11,6 +11,7 @@ import type { ContentBlock } from "@/types/agent";
 import { ChatWidget } from "./ChatWidget";
 import { Typewriter } from "./Typewriter";
 import { VersionHistoryPanel } from "./VersionHistoryPanel";
+import { TodoListCard } from "./TodoListCard";
 import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 
 const log = createClientLogger("chat");
@@ -151,6 +152,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
       ) : (
       <>
       <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5 text-(--color-foreground)">
+        <TodoListCard />
         {turns.length === 0 && !streaming && (
           <div className="space-y-2 text-sm text-(--color-muted) animate-fade-in">
             <p>Try one of:</p>
@@ -522,10 +524,10 @@ function TurnView({
     <>
       {streamingHint && (
         <div className="flex items-center gap-1 text-xs italic text-(--color-muted)">
+          <span className="mr-2">thinking</span>
           <span className="dot-flash" />
           <span className="dot-flash" style={{ animationDelay: "120ms" }} />
           <span className="dot-flash" style={{ animationDelay: "240ms" }} />
-          <span className="ml-2">thinking</span>
         </div>
       )}
       {groupConsecutiveTools(content, widgetToolUseIds).map((item, i, arr) => {

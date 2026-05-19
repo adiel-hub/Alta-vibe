@@ -7,7 +7,10 @@
  */
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createBuilderTools } from "./tools";
-import { BUILDER_SYSTEM_PROMPT } from "./systemPrompt";
+import {
+  BUILDER_FIRST_TURN_ADDENDUM,
+  BUILDER_SYSTEM_PROMPT,
+} from "./systemPrompt";
 import { CAPABILITIES } from "@/lib/capabilities";
 import { createLogger } from "@/lib/logger";
 import type {
@@ -82,6 +85,13 @@ function formatTranscript(
 
 function buildSystemPrompt(input: RunTurnInput): string {
   const enabledCapabilities = CAPABILITIES.map((c) => `- ${c.id}: ${c.label}`).join("\n");
+  // True only for the very first user message after agent creation. Once
+  // any turn has happened the transcript carries it (or, after enough
+  // turns, conversationSummary does). We use this to skip the long
+  // FIRST-TURN BUILD FLOW addendum on every subsequent turn — it would
+  // otherwise burn tokens on guidance the agent has already executed.
+  const isFirstTurn =
+    input.transcript.length === 0 && !input.conversationSummary;
   const sections: string[] = [
     BUILDER_SYSTEM_PROMPT,
     "",
@@ -124,6 +134,10 @@ function buildSystemPrompt(input: RunTurnInput): string {
     `RECENT CONVERSATION — last ${MAX_HISTORY_TURNS} turns, newest last:`,
     formatTranscript(input.transcript),
   );
+
+  if (isFirstTurn) {
+    sections.push("", BUILDER_FIRST_TURN_ADDENDUM);
+  }
 
   return sections.join("\n");
 }

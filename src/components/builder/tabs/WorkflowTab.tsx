@@ -5,6 +5,7 @@ import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
 import type {
   AgentConfigCache,
+  RuntimeTool,
   WorkflowEdge,
   WorkflowNode,
   WorkflowNodeType,
@@ -204,6 +205,19 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // tool (voice, llm, etc.) too — that re-render storm is one of the things
   // that makes the page freeze when `set_workflow` lands mid-stream.
   const workflow = useAgentStore((s) => s.config?.workflow);
+  // Runtime tools available to attach to a tool_call workflow node. Filter
+  // to in_call phase (workflow nodes only fire during the conversation,
+  // so pre_call / post_call tools are irrelevant) and drop the workflow
+  // tracking heartbeat tool — that's machinery, not something a user
+  // would ever want to wire as an explicit graph step.
+  const allTools = useAgentStore((s) => s.config?.tools);
+  const configTools = useMemo<RuntimeTool[]>(
+    () =>
+      (allTools ?? []).filter(
+        (t) => t.phase === "in_call" && t.name !== "report_workflow_state",
+      ),
+    [allTools],
+  );
   const liveNodeId = useAgentStore((s) => s.liveWorkflowNodeId);
   const inFlight = useAgentStore((s) => s.inFlight);
 
@@ -270,6 +284,13 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   /** Which node currently has its "+ add child" popup open. */
   const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
+  // Two-step state for the add-downstream popover. "kinds" shows the node-type
+  // picker; "pick_tool" shows the agent's runtime tools so picking "Tool"
+  // wires `data.tool_id` in the same gesture instead of creating an empty
+  // tool_call node the user has to open the inspector to fix.
+  const [addMenuStep, setAddMenuStep] = useState<"kinds" | "pick_tool">(
+    "kinds",
+  );
   /** Per-node pending state (so we can grey out actions during PATCH). */
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
 
@@ -526,14 +547,21 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     parentId: string,
     type: WorkflowNodeType,
     label: string,
+    data?: Record<string, unknown>,
   ) => {
     setPendingNodeId(parentId);
     setAddMenuFor(null);
+    setAddMenuStep("kinds");
     try {
       const res = await appFetch(`/api/agents/${agentId}/workflow`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ type, label, after_node_id: parentId }),
+        body: JSON.stringify({
+          type,
+          label,
+          after_node_id: parentId,
+          ...(data ? { data } : {}),
+        }),
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as
@@ -868,6 +896,10 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                       disabled={isPending}
                       onClick={(e) => {
                         e.stopPropagation();
+                        // Always reopen on the kinds step. Otherwise toggling
+                        // the menu away mid-pick_tool would re-open into the
+                        // tool list, which would be jarring.
+                        setAddMenuStep("kinds");
                         setAddMenuFor((cur) => (cur === n.id ? null : n.id));
                       }}
                       className={`vb-el-plus ${menuOpen ? "vb-el-plus-on" : ""}`}
@@ -876,8 +908,12 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     </button>
                   )}
 
-                  {/* Popup menu rooted at the "+" button. */}
-                  {menuOpen && (
+                  {/* Popup menu rooted at the "+" button. Two steps:
+                      "kinds"     — node-type picker (Say / Ask / Router / Tool / Transfer / End).
+                      "pick_tool" — runtime-tool picker shown after the user
+                                    chose "Tool", so the new tool_call node is
+                                    wired with a tool_id from the start.        */}
+                  {menuOpen && addMenuStep === "kinds" && (
                     <div
                       className="vb-el-add-menu"
                       role="menu"
@@ -891,6 +927,12 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                           className="vb-el-add-menu-item"
                           onClick={(e) => {
                             e.stopPropagation();
+                            // Tool needs a second step (pick which runtime
+                            // tool); everything else creates immediately.
+                            if (opt.type === "tool_call") {
+                              setAddMenuStep("pick_tool");
+                              return;
+                            }
                             void addChildNode(n.id, opt.type, opt.defaultLabel);
                           }}
                         >
@@ -909,6 +951,22 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                         </button>
                       ))}
                     </div>
+                  )}
+
+                  {menuOpen && addMenuStep === "pick_tool" && (
+                    <ToolPickerMenu
+                      tools={workflow ? configTools : []}
+                      onBack={(e) => {
+                        e.stopPropagation();
+                        setAddMenuStep("kinds");
+                      }}
+                      onPick={(tool, e) => {
+                        e.stopPropagation();
+                        void addChildNode(n.id, "tool_call", tool.name, {
+                          tool_id: tool.id,
+                        });
+                      }}
+                    />
                   )}
                 </div>
               );
@@ -1593,6 +1651,78 @@ function IconTrash() {
       <path d="M14 11v6" />
       <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
     </svg>
+  );
+}
+
+/**
+ * Second-step popover content rendered when the user picks "Tool" from the
+ * add-downstream menu. Lists the agent's in-call runtime tools so the new
+ * tool_call node lands with `data.tool_id` already set — instead of an
+ * empty node the user has to open the inspector to fix.
+ */
+function ToolPickerMenu({
+  tools,
+  onBack,
+  onPick,
+}: {
+  tools: RuntimeTool[];
+  onBack: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  onPick: (
+    tool: RuntimeTool,
+    e: React.MouseEvent<HTMLButtonElement>,
+  ) => void;
+}) {
+  return (
+    <div
+      className="vb-el-add-menu"
+      role="menu"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        onClick={onBack}
+        className="vb-el-add-menu-item"
+        style={{ borderBottom: "1px solid var(--color-border)" }}
+      >
+        <span className="vb-el-icon" aria-hidden>
+          ←
+        </span>
+        <span className="vb-el-add-menu-label">Back</span>
+        <span className="vb-el-add-menu-hint">Pick a different node type</span>
+      </button>
+      {tools.length === 0 ? (
+        <div
+          style={{
+            padding: "12px 14px",
+            fontSize: 12,
+            color: "var(--color-muted)",
+            lineHeight: 1.5,
+          }}
+        >
+          No in-call runtime tools yet. Ask Alta in chat to{" "}
+          <em>&ldquo;add a tool that…&rdquo;</em> or connect an integration,
+          then come back to attach it to this node.
+        </div>
+      ) : (
+        tools.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="menuitem"
+            onClick={(e) => onPick(t, e)}
+            className="vb-el-add-menu-item"
+          >
+            <span className="vb-el-icon vb-el-icon-tool_call" aria-hidden>
+              🔧
+            </span>
+            <span className="vb-el-add-menu-label">{t.name}</span>
+            <span className="vb-el-add-menu-hint">
+              {t.description?.slice(0, 80) ?? "Runtime tool"}
+            </span>
+          </button>
+        ))
+      )}
+    </div>
   );
 }
 

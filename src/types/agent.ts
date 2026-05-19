@@ -119,6 +119,22 @@ export type ConnectedIntegration = {
   connected_at: string | null;
 };
 
+// --- Build progress todo list --------------------------------------------
+
+export type TodoItemStatus = "pending" | "in_progress" | "completed";
+
+/**
+ * One item on the builder agent's visible plan-of-action. The agent writes
+ * the full list at the start of a multi-step task (especially the first
+ * turn) and updates the statuses as it works, so the user can see what's
+ * coming next without reading the streamed tool calls.
+ */
+export type TodoItem = {
+  id: string;
+  label: string;
+  status: TodoItemStatus;
+};
+
 // --- Aggregate config ------------------------------------------------------
 
 export type AgentConfigCache = {
@@ -140,6 +156,8 @@ export type AgentConfigCache = {
   phone_numbers: PhoneNumber[];
   workflow: WorkflowState;
   integrations: ConnectedIntegration[];
+  /** Builder agent's plan-of-action for the current multi-step task. */
+  todo_list: TodoItem[];
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
@@ -189,6 +207,29 @@ export type AgentDocument = {
   summary_through_message_id?: ObjectId | null;
   created_at: Date;
   updated_at: Date;
+};
+
+/**
+ * Per-version metadata we generate ourselves (ElevenLabs' upstream
+ * `version_description` is a meaningless "New version of your agent."
+ * placeholder for every auto-version). A cheap Haiku call summarises the
+ * recent chat + the patch's top-level keys into a short title +
+ * description, persisted here so the version-history panel can show
+ * something useful instead of the boilerplate.
+ *
+ * Keyed by (`elevenlabs_agent_id`, `version_id`). Backfilled lazily on
+ * each successful PATCH — older versions that pre-date this feature have
+ * no row and the UI falls back to "Version N".
+ */
+export type AgentVersionMetaDocument = {
+  _id: ObjectId;
+  elevenlabs_agent_id: string;
+  version_id: string;
+  title: string;
+  description: string;
+  /** Top-level fields the producing PATCH touched. Useful for debugging. */
+  patch_keys: string[];
+  generated_at: Date;
 };
 
 export type AgentDTO = Omit<AgentDocument, "_id" | "created_at" | "updated_at"> & {

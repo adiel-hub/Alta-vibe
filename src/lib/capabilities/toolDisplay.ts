@@ -7,6 +7,13 @@
  * to a humanised version of the name.
  */
 const MAP: Record<string, { emoji: string; label: string }> = {
+  // plan-of-action card
+  update_todo_list: { emoji: "✅", label: "Updating the plan" },
+  // workspace discovery
+  list_workspace_integrations: {
+    emoji: "🔌",
+    label: "Checking your connected integrations",
+  },
   // identity
   update_agent_name: { emoji: "🏷️", label: "Renaming the agent" },
   update_first_message: { emoji: "👋", label: "Polishing the greeting" },

@@ -15,7 +15,7 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { ObjectId } from "mongodb";
-import { integrationsCol } from "@/lib/mongodb";
+import { agentsCol, integrationsCol } from "@/lib/mongodb";
 import { PROVIDERS, getProvider, scopedToolName } from "@/lib/integrations/providers";
 import {
   installProviderTool,
@@ -41,6 +41,69 @@ export const integrationsCapability: Capability = {
             { type: "text", text: JSON.stringify(ctx.config.integrations) },
           ],
         };
+      },
+    ),
+
+    tool(
+      "list_workspace_integrations",
+      "List third-party integrations the user has already connected on OTHER agents in this workspace. Use this during the resource-recommendation step of the first turn to spot CRMs / messaging / calendar providers the user has previously set up, so you can offer one-click reuse here. Returns [{ provider, display_name, agent_count, sample_agent_names, already_connected_here }]. `already_connected_here` is true if THIS agent already has the provider — skip those when recommending.",
+      {},
+      async () => {
+        try {
+          const [ints, agents] = await Promise.all([
+            integrationsCol().then((c) =>
+              c.find({ status: "connected" }).toArray(),
+            ),
+            agentsCol().then((c) =>
+              c
+                .find({}, { projection: { _id: 1, name: 1 } })
+                .toArray(),
+            ),
+          ]);
+          const agentNameById = new Map(
+            agents.map((a) => [a._id.toHexString(), a.name]),
+          );
+          const here = new Set(ctx.config.integrations.map((i) => i.provider));
+          const byProvider = new Map<
+            string,
+            { display_name: string; agent_ids: Set<string> }
+          >();
+          for (const i of ints) {
+            const def = getProvider(i.provider);
+            const display_name = def?.name ?? i.provider;
+            const entry = byProvider.get(i.provider) ?? {
+              display_name,
+              agent_ids: new Set<string>(),
+            };
+            entry.agent_ids.add(i.agent_id.toHexString());
+            byProvider.set(i.provider, entry);
+          }
+          const rows = [...byProvider.entries()].map(([provider, entry]) => ({
+            provider,
+            display_name: entry.display_name,
+            agent_count: entry.agent_ids.size,
+            sample_agent_names: [...entry.agent_ids]
+              .map((id) => agentNameById.get(id))
+              .filter((n): n is string => !!n)
+              .slice(0, 3),
+            already_connected_here: here.has(provider),
+          }));
+          return {
+            content: [{ type: "text", text: JSON.stringify(rows) }],
+          };
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : "Unknown error";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `list_workspace_integrations failed: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     ),
 

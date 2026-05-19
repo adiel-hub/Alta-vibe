@@ -11,10 +11,20 @@ const log = createClientLogger("version-history");
 type Version = {
   id: string;
   branch_id?: string;
-  created_at?: number;
-  created_by_user_id?: string | null;
-  commit_message?: string | null;
-  name?: string | null;
+  /** Unix seconds (upstream field: `time_committed_secs`). */
+  time_committed_secs?: number;
+  /** Sequential version number on the branch (upstream: `seq_no_in_branch`). */
+  seq_no_in_branch?: number;
+  /** Upstream-generated change description (upstream: `version_description`). */
+  version_description?: string;
+  /**
+   * Locally-generated title (Haiku). Present once `recordVersionForChange`
+   * has run for this version; absent for older versions that pre-date the
+   * meta-generation hook.
+   */
+  title?: string;
+  /** Locally-generated short sentence summarising the change (Haiku). */
+  description?: string;
 };
 
 type ListResponse = {
@@ -59,10 +69,14 @@ export function VersionHistoryPanel({
         throw new Error(body.error ?? `Failed to load history (${res.status})`);
       }
       const json = (await res.json()) as ListResponse;
-      // Newest first. created_at is unix seconds; missing values sort last.
-      const sorted = [...json.versions].sort(
-        (a, b) => (b.created_at ?? 0) - (a.created_at ?? 0),
-      );
+      // Newest first. time_committed_secs is unix seconds; if missing, fall
+      // back to seq_no_in_branch (higher = newer) so the order stays sane.
+      const sorted = [...json.versions].sort((a, b) => {
+        const at = a.time_committed_secs ?? 0;
+        const bt = b.time_committed_secs ?? 0;
+        if (at !== bt) return bt - at;
+        return (b.seq_no_in_branch ?? 0) - (a.seq_no_in_branch ?? 0);
+      });
       setVersions(sorted);
       if (json.current_version_id && json.current_version_id !== currentVersionId) {
         setCurrentVersionId(json.current_version_id);
@@ -155,22 +169,26 @@ export function VersionHistoryPanel({
                 >
                   <div className="flex items-center gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5 text-[12px] font-medium text-(--color-foreground-strong)">
-                        <span>{formatRelative(v.created_at)}</span>
+                      <div className="flex items-center gap-1.5 text-[12px] font-semibold text-(--color-foreground-strong)">
+                        <span>{titleForVersion(v)}</span>
                         {isLive && (
                           <span className="rounded-full bg-(--color-accent) px-1.5 py-[1px] text-[9px] font-semibold uppercase tracking-wider text-white">
                             Current
                           </span>
                         )}
                       </div>
-                      <div className="mt-0.5 font-mono text-[10px] text-(--color-muted-soft)">
-                        {v.id}
+                      <div className="mt-0.5 text-[10px] text-(--color-muted-soft)">
+                        {formatRelative(v.time_committed_secs)}
                       </div>
-                      {v.commit_message && (
-                        <div className="mt-1 line-clamp-2 text-[11px] text-(--color-muted)">
-                          {v.commit_message}
-                        </div>
-                      )}
+                      {(() => {
+                        const desc = descriptionForVersion(v);
+                        if (!desc) return null;
+                        return (
+                          <div className="mt-1 line-clamp-2 text-[11px] text-(--color-muted)">
+                            {desc}
+                          </div>
+                        );
+                      })()}
                     </div>
                     {!isLive && (
                       <button
@@ -197,9 +215,9 @@ export function VersionHistoryPanel({
   );
 }
 
-function formatRelative(createdAt: number | undefined): string {
-  if (!createdAt) return "Unknown time";
-  const ms = createdAt * 1000;
+function formatRelative(committedSecs: number | undefined): string {
+  if (!committedSecs) return "Unknown time";
+  const ms = committedSecs * 1000;
   const diffSec = Math.floor((Date.now() - ms) / 1000);
   if (diffSec < 60) return "Just now";
   if (diffSec < 3600) {
@@ -213,4 +231,51 @@ function formatRelative(createdAt: number | undefined): string {
   const d = Math.floor(diffSec / 86_400);
   if (d < 30) return `${d} day${d === 1 ? "" : "s"} ago`;
   return new Date(ms).toLocaleDateString();
+}
+
+/**
+ * ElevenLabs' auto-versioning sets `version_description` to this exact
+ * boilerplate for every version it auto-creates. It carries zero info,
+ * so we treat it as "no description" and fall back to a synthesized title.
+ */
+const UPSTREAM_BOILERPLATE_DESCRIPTIONS: ReadonlySet<string> = new Set([
+  "New version of your agent.",
+  "New version of your agent",
+]);
+
+function isMeaningfulDescription(raw: string | undefined): raw is string {
+  if (!raw) return false;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return false;
+  return !UPSTREAM_BOILERPLATE_DESCRIPTIONS.has(trimmed);
+}
+
+/**
+ * Build a human-friendly row title. Resolution order:
+ *   1. Our locally-generated Haiku title (the good case for any version
+ *      created since the meta-generation hook landed).
+ *   2. A non-boilerplate upstream `version_description`.
+ *   3. "Version N" from `seq_no_in_branch`.
+ *   4. Generic "Edit" as a last resort.
+ */
+function titleForVersion(v: Version): string {
+  const local = v.title?.trim();
+  if (local) return local;
+  const desc = v.version_description?.trim();
+  if (isMeaningfulDescription(desc) && desc.length <= 60) return desc;
+  if (v.seq_no_in_branch !== undefined) return `Version ${v.seq_no_in_branch}`;
+  return "Edit";
+}
+
+/**
+ * Subtitle description. Prefer our locally-generated sentence; otherwise
+ * fall back to a non-boilerplate upstream description; otherwise null.
+ * Always returns null if the resolved string would just duplicate the
+ * row title.
+ */
+function descriptionForVersion(v: Version): string | null {
+  const candidate = v.description?.trim() || v.version_description?.trim();
+  if (!isMeaningfulDescription(candidate)) return null;
+  if (candidate === titleForVersion(v)) return null;
+  return candidate;
 }

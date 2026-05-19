@@ -218,17 +218,26 @@ export async function listTtsModels(): Promise<TTSModel[]> {
 // --- Agent CRUD -------------------------------------------------------------
 
 /**
- * Version metadata returned by ElevenLabs' branch + version endpoints.
- * `id` is the opaque `agtvrsn_…` snapshot id; pass it as `?version_id=` on
- * GET /agents/{id} to fetch the historical config.
+ * Version metadata returned by ElevenLabs' branch + version endpoints
+ * (AgentVersionMetadata in the OpenAPI spec). `id` is the opaque
+ * `agtvrsn_…` snapshot id; pass it as `?version_id=` on GET /agents/{id}
+ * to fetch the historical config.
+ *
+ * Field names mirror upstream EXACTLY — do NOT assume `created_at` or
+ * `commit_message` (those don't exist). Upstream uses
+ * `time_committed_secs`, `seq_no_in_branch`, `version_description`.
  */
 export type ElevenAgentVersion = {
   id: string;
+  agent_id?: string;
   branch_id?: string;
-  created_at?: number; // unix seconds
-  created_by_user_id?: string | null;
-  commit_message?: string | null;
-  name?: string | null;
+  /** Unix seconds when this version was committed. */
+  time_committed_secs?: number;
+  /** Sequential index on the branch (e.g. version 7 of main). */
+  seq_no_in_branch?: number;
+  /** Upstream-generated change description for this version. */
+  version_description?: string;
+  parents?: unknown;
 };
 
 /**
@@ -830,7 +839,32 @@ export async function patchAgent(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(incoming),
   });
-  return (await res.json()) as ElevenAgentRaw;
+  const raw = (await res.json()) as ElevenAgentRaw;
+
+  // Fire-and-forget: synthesise a title + description for this brand-new
+  // upstream version so the history panel has something readable. Dynamic
+  // import avoids pulling Mongo + Anthropic into the client module graph
+  // until a patch actually succeeds.
+  if (raw.version_id) {
+    const versionId = raw.version_id;
+    const patchKeys = Object.keys(patch);
+    void import("@/lib/builder-agent/versionMeta")
+      .then(({ recordVersionForChange }) =>
+        recordVersionForChange({
+          elevenlabs_agent_id: agentId,
+          version_id: versionId,
+          patch_keys: patchKeys,
+        }),
+      )
+      .catch((err) => {
+        log.warn("version meta hook failed to load", {
+          agent_id: agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+  }
+
+  return raw;
 }
 
 // --- Knowledge base ---------------------------------------------------------
@@ -1821,6 +1855,8 @@ export function projectAgentConfig(
     ),
     // Integrations are platform-side metadata; carry forward.
     integrations: fallback.integrations,
+    // Todo list is builder-agent state — not stored upstream, carry forward.
+    todo_list: fallback.todo_list,
   };
 }
 
