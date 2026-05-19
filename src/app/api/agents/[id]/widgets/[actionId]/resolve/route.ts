@@ -111,7 +111,7 @@ export async function POST(
           );
           log.info("integration registered", { provider, added_tools });
           summary = `Connected ${provider}.`;
-          effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent, and pre-call enrichment is active.`;
+          effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent, and pre-call enrichment is active. Ask the user — in one short message — whether they want to wire ${provider} into the workflow now (e.g., add tool_call nodes that look up / create / update records at the right step). If they say yes, propose a concrete spot in the current workflow and use edit_workflow to add the node(s); if they say no or "later", acknowledge briefly and move on. Do NOT modify the workflow before they answer.`;
         } catch (err) {
           const message = err instanceof Error ? err.message : "register failed";
           log.error("integration register failed", { provider, message });

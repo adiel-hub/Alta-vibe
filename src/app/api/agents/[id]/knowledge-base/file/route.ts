@@ -77,6 +77,7 @@ export async function POST(
       revision_before: agent.revision,
       revision_after: agent.revision + 1,
       created_at: new Date(),
+      panel_action: true,
     } as never);
 
     return NextResponse.json({

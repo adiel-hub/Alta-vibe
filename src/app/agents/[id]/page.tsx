@@ -39,11 +39,18 @@ export default async function AgentBuilderPage({
     .sort({ created_at: 1 })
     .toArray();
 
-  const turns: ChatTurn[] = messages.map((m) => ({
-    id: m._id.toHexString(),
-    role: m.role,
-    content: m.content,
-  }));
+  // Panel-edit endpoints write synthetic messages so the agent's transcript
+  // loader sees the mutation on the next turn. The chat UI doesn't need to
+  // echo them — the user already saw the panel action happen — so we strip
+  // them client-side. The server transcript (runner.ts priorMessages) is
+  // unaffected, so the agent still receives them.
+  const turns: ChatTurn[] = messages
+    .filter((m) => !m.panel_action)
+    .map((m) => ({
+      id: m._id.toHexString(),
+      role: m.role,
+      content: m.content,
+    }));
 
   const widgetDocs = await (await widgetActionsCol())
     .find({ agent_id: doc._id })

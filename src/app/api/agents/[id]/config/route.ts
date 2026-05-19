@@ -120,6 +120,7 @@ export async function PATCH(
       revision_before: agent.revision,
       revision_after: newRevision,
       created_at: new Date(),
+      panel_action: true,
     } as never);
 
     return NextResponse.json({

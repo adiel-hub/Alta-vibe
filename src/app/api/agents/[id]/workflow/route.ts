@@ -15,7 +15,7 @@ import { patchAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import {
   composeSystemPromptWithWorkflow,
   toElevenWorkflow,
-} from "@/lib/capabilities/workflow";
+} from "@/lib/capabilities/experience/workflow";
 import type {
   AgentConfigCache,
   WorkflowEdge,
@@ -181,6 +181,7 @@ export async function POST(
     revision_before: agent.revision,
     revision_after: nextRevision,
     created_at: new Date(),
+    panel_action: true,
   } as never);
 
   return NextResponse.json({

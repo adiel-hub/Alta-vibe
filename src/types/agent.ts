@@ -264,6 +264,14 @@ export type ChatMessageDocument = {
   revision_before: number;
   revision_after: number;
   created_at: Date;
+  /**
+   * Set by panel-edit endpoints (workflow / config / KB / outcomes /
+   * data-collection) so the chat UI can hide these synthetic messages
+   * while the agent still receives them in its transcript on the next
+   * turn. The user already sees the panel mutation directly in the UI,
+   * so echoing it as a chat bubble is noise.
+   */
+  panel_action?: boolean;
 };
 
 export type ChatMessageDTO = {

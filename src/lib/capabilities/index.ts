@@ -8,25 +8,25 @@
 import type { AgentConfigCache } from "@/types/agent";
 import type { Capability } from "./types";
 
-import { identityCapability } from "./identity";
-import { introspectionCapability } from "./introspection";
-import { voiceCapability } from "./voice";
-import { llmCapability } from "./llm";
-import { knowledgeBaseCapability } from "./knowledge_base";
-import { runtimeToolsCapability } from "./runtime_tools";
-import { writeToolCapability } from "./write_tool";
-import { mcpCapability } from "./mcp";
-import { postCallAnalysisCapability } from "./post_call_analysis";
-import { telephonyCapability } from "./telephony";
-import { workflowCapability } from "./workflow";
-import { widgetsCapability } from "./widgets";
-import { integrationsCapability } from "./integrations";
-import { turnDetectionCapability } from "./turn_detection";
-import { asrCapability } from "./asr";
-import { conversationFlowCapability } from "./conversation_flow";
-import { batchCallingCapability } from "./batch_calling";
-import { workspaceSecretsCapability } from "./workspace_secrets";
-import { todoListCapability } from "./todo_list";
+import { identityCapability } from "./identity/identity";
+import { introspectionCapability } from "./meta/introspection";
+import { voiceCapability } from "./voice/voice";
+import { llmCapability } from "./intelligence/llm";
+import { knowledgeBaseCapability } from "./intelligence/knowledge_base";
+import { runtimeToolsCapability } from "./tools/runtime_tools";
+import { writeToolCapability } from "./tools/write_tool";
+import { mcpCapability } from "./tools/mcp";
+import { postCallAnalysisCapability } from "./analysis/post_call_analysis";
+import { telephonyCapability } from "./telephony/telephony";
+import { workflowCapability } from "./experience/workflow";
+import { widgetsCapability } from "./experience/widgets";
+import { integrationsCapability } from "./tools/integrations";
+import { turnDetectionCapability } from "./voice/turn_detection";
+import { asrCapability } from "./voice/asr";
+import { conversationFlowCapability } from "./intelligence/conversation_flow";
+import { batchCallingCapability } from "./telephony/batch_calling";
+import { workspaceSecretsCapability } from "./security/workspace_secrets";
+import { todoListCapability } from "./meta/todo_list";
 
 export const CAPABILITIES: Capability[] = [
   todoListCapability,

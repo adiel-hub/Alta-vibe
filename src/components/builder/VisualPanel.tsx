@@ -2,14 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore, type SectionKey } from "@/store/agentStore";
-import { OverviewTab } from "./tabs/OverviewTab";
-import { WorkflowTab } from "./tabs/WorkflowTab";
-import { VoiceTab } from "./tabs/VoiceTab";
-import { KnowledgeBaseTab } from "./tabs/KnowledgeBaseTab";
-import { CallOutcomesTab } from "./tabs/CallOutcomesTab";
-import { ToolsTab } from "./tabs/ToolsTab";
-import { PhoneTab } from "./tabs/PhoneTab";
-import { CallLogsTab } from "./tabs/CallLogsTab";
+import { OverviewTab } from "./tabs/Overview";
+import { WorkflowTab } from "./tabs/Workflow";
+import { VoiceTab } from "./tabs/Voice";
+import { KnowledgeBaseTab } from "./tabs/KnowledgeBase";
+import { CallOutcomesTab } from "./tabs/CallOutcomes";
+import { ToolsTab } from "./tabs/Tools";
+import { PhoneTab } from "./tabs/Phone";
+import { CallLogsTab } from "./tabs/CallLogs";
 import { TestCallButton } from "./TestCallButton";
 
 const TABS = [
