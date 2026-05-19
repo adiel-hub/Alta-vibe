@@ -16,11 +16,13 @@
  * mutating it would orphan historical extraction results. Users can
  * delete + recreate when they want a new identifier.
  */
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
 import { Button } from "@/components/ui/Button";
 import type { DataCollectionField } from "@/types/agent";
+import { useTypewriter } from "../_shared/useTypewriter";
+import { useDataExtractionReveal } from "./useDataExtractionReveal";
 
 type FieldType = "string" | "number" | "integer" | "boolean";
 
@@ -54,8 +56,11 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // Reveal hook runs before the early return so hook order is stable.
+  const fields = config?.data_collection ?? [];
+  const { isRevealed, isTyping } = useDataExtractionReveal(fields);
+
   if (!config) return null;
-  const fields = config.data_collection ?? [];
 
   const handle = async (run: () => Promise<Response>, key: string) => {
     setError(null);
@@ -147,20 +152,27 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
       </div>
 
       <div className="mt-4 space-y-3">
-        {fields.map((f, i) => (
-          <div
-            key={f.id}
-            style={{ animationDelay: `${Math.min(i, 8) * 40}ms` }}
-            className="animate-message-in"
-          >
-            <FieldRow
-              field={f}
-              busy={busy === f.id}
-              onSave={(next) => onUpdate(f.id, next)}
-              onDelete={() => onDelete(f.id)}
-            />
-          </div>
-        ))}
+        {fields
+          .filter((f) => isRevealed(f.id))
+          .map((f, i) => (
+            <div
+              key={f.id}
+              style={{
+                animationDelay: isTyping(f.id)
+                  ? "0ms"
+                  : `${Math.min(i, 8) * 40}ms`,
+              }}
+              className="animate-message-in"
+            >
+              <FieldRow
+                field={f}
+                busy={busy === f.id}
+                typewriter={isTyping(f.id)}
+                onSave={(next) => onUpdate(f.id, next)}
+                onDelete={() => onDelete(f.id)}
+              />
+            </div>
+          ))}
 
         {creating ? (
           <FieldDraftRow
@@ -200,11 +212,13 @@ export function DataExtractionSection({ agentId }: { agentId: string }) {
 function FieldRow({
   field,
   busy,
+  typewriter,
   onSave,
   onDelete,
 }: {
   field: DataCollectionField;
   busy: boolean;
+  typewriter: boolean;
   onSave: (next: {
     type?: FieldType;
     description?: string;
@@ -219,6 +233,26 @@ function FieldRow({
     description: field.description,
     enumValues: field.enum ?? [],
   });
+  const markDataAnimationDone = useAgentStore((s) => s.markDataAnimationDone);
+
+  // Type the name first (mono, snake_case — keep cps modest so individual
+  // underscores read), then the description, mirroring OutcomeRow's two-
+  // stage cadence so this section looks consistent with Call outcomes.
+  const typedName = useTypewriter(field.name, typewriter, 55);
+  const nameDone = typedName.length >= field.name.length;
+  const onDescDone = useCallback(() => {
+    markDataAnimationDone(field.id);
+  }, [field.id, markDataAnimationDone]);
+  const typedDesc = useTypewriter(
+    field.description,
+    typewriter && nameDone,
+    220,
+    onDescDone,
+  );
+  const showNameCursor = typewriter && !nameDone;
+  const showDescCursor =
+    typewriter && nameDone && typedDesc.length < field.description.length;
+  const descDone = typedDesc.length >= field.description.length;
 
   const save = async () => {
     if (draft.description.trim().length < 1) return;
@@ -269,19 +303,33 @@ function FieldRow({
             dir="auto"
             className="font-mono text-sm font-semibold text-(--color-foreground-strong)"
           >
-            {field.name}
+            {typedName}
+            {showNameCursor && (
+              <span
+                aria-hidden
+                className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+              />
+            )}
           </span>
-          <span className="rounded-full bg-(--color-panel-soft) px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-(--color-muted)">
-            {field.enum && field.enum.length > 0 ? "enum" : field.type}
-          </span>
+          {nameDone && (
+            <span className="rounded-full bg-(--color-panel-soft) px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-(--color-muted)">
+              {field.enum && field.enum.length > 0 ? "enum" : field.type}
+            </span>
+          )}
         </div>
         <p
           dir="auto"
           className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-(--color-muted)"
         >
-          {field.description}
+          {typedDesc}
+          {showDescCursor && (
+            <span
+              aria-hidden
+              className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+            />
+          )}
         </p>
-        {field.enum && field.enum.length > 0 && (
+        {descDone && field.enum && field.enum.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
             {field.enum.map((v) => (
               <span
@@ -294,27 +342,29 @@ function FieldRow({
           </div>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Edit"
-          aria-label="Edit"
-          className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
-        >
-          <PencilIcon />
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          disabled={busy}
-          title="Delete"
-          aria-label="Delete"
-          className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-danger)/10 hover:text-(--color-danger) disabled:opacity-50"
-        >
-          {busy ? <span className="text-[10px]">…</span> : <TrashIcon />}
-        </button>
-      </div>
+      {!typewriter && (
+        <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Edit"
+            aria-label="Edit"
+            className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+          >
+            <PencilIcon />
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={busy}
+            title="Delete"
+            aria-label="Delete"
+            className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) transition hover:bg-(--color-danger)/10 hover:text-(--color-danger) disabled:opacity-50"
+          >
+            {busy ? <span className="text-[10px]">…</span> : <TrashIcon />}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

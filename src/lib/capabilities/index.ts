@@ -26,10 +26,8 @@ import { asrCapability } from "./voice/asr";
 import { conversationFlowCapability } from "./intelligence/conversation_flow";
 import { batchCallingCapability } from "./telephony/batch_calling";
 import { workspaceSecretsCapability } from "./security/workspace_secrets";
-import { todoListCapability } from "./meta/todo_list";
 
 export const CAPABILITIES: Capability[] = [
-  todoListCapability,
   introspectionCapability,
   identityCapability,
   voiceCapability,
@@ -71,7 +69,6 @@ export function defaultAgentConfig(): AgentConfigCache {
     phone_numbers: [],
     workflow: { nodes: [{ id: "start", type: "start", label: "Call connects", data: {} }], edges: [] },
     integrations: [],
-    todo_list: [],
   };
   for (const cap of CAPABILITIES) {
     Object.assign(base, cap.defaultSlice());

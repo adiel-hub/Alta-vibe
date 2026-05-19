@@ -89,6 +89,10 @@ type State = {
    *  add_call_outcome / update_call_outcome / remove_call_outcome cause
    *  a patch with a previously-unseen criterion id. */
   evalPendingAnimationIds: Set<string>;
+  /** Same idea for data-extraction fields — populated when a patch lands
+   *  a previously-unseen data_collection field id (agent-created via the
+   *  add_data_field tool). */
+  dataPendingAnimationIds: Set<string>;
 };
 
 type Actions = {
@@ -130,6 +134,7 @@ type Actions = {
   bumpActiveSection: (key: SectionKey) => void;
   markKbAnimationDone: (id: string) => void;
   markEvalAnimationDone: (id: string) => void;
+  markDataAnimationDone: (id: string) => void;
 };
 
 export const useAgentStore = create<State & Actions>((set) => ({
@@ -150,6 +155,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   lastActiveSection: null,
   kbPendingAnimationIds: new Set(),
   evalPendingAnimationIds: new Set(),
+  dataPendingAnimationIds: new Set(),
 
   hydrate: (agent, turns, widgets) =>
     set({
@@ -170,6 +176,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       // Page load / agent switch: docs are already there, no animation.
       kbPendingAnimationIds: new Set(),
       evalPendingAnimationIds: new Set(),
+      dataPendingAnimationIds: new Set(),
     }),
 
   applyPatch: (revision, patch) =>
@@ -187,6 +194,11 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.evaluation_criteria,
         s.evalPendingAnimationIds,
       );
+      const dataPendingAnimationIds = diffDataForAnimation(
+        s.config.data_collection,
+        patch.data_collection,
+        s.dataPendingAnimationIds,
+      );
       // Keep the AgentDTO mirror in sync — agent.name is the top-level
       // name shown in the agent picker, but the source of truth for
       // edits flows through config_cache.name. Without this, renaming
@@ -200,6 +212,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
         revision,
         kbPendingAnimationIds,
         evalPendingAnimationIds,
+        dataPendingAnimationIds,
         agent: nextAgent,
       };
     }),
@@ -218,11 +231,17 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.evaluation_criteria,
         s.evalPendingAnimationIds,
       );
+      const dataPendingAnimationIds = diffDataForAnimation(
+        s.config.data_collection,
+        patch.data_collection,
+        s.dataPendingAnimationIds,
+      );
       return {
         config: merged,
         revision: Math.max(s.revision, revision),
         kbPendingAnimationIds,
         evalPendingAnimationIds,
+        dataPendingAnimationIds,
       };
     }),
 
@@ -392,6 +411,14 @@ export const useAgentStore = create<State & Actions>((set) => ({
       next.delete(id);
       return { evalPendingAnimationIds: next };
     }),
+
+  markDataAnimationDone: (id) =>
+    set((s) => {
+      if (!s.dataPendingAnimationIds.has(id)) return s;
+      const next = new Set(s.dataPendingAnimationIds);
+      next.delete(id);
+      return { dataPendingAnimationIds: next };
+    }),
 }));
 
 /**
@@ -436,6 +463,28 @@ function diffEvalForAnimation(
     if (current.has(c.id)) continue;
     next ??= new Set(current);
     next.add(c.id);
+  }
+  return next ?? current;
+}
+
+/**
+ * Mirror of `diffEvalForAnimation` for data-extraction fields. Any field id
+ * in the patch that wasn't in the previous list is treated as "just added"
+ * and queued for the typewriter on the Data extraction section.
+ */
+function diffDataForAnimation(
+  prev: AgentConfigCache["data_collection"] | undefined,
+  patchFields: AgentConfigCache["data_collection"] | undefined,
+  current: Set<string>,
+): Set<string> {
+  if (!patchFields) return current;
+  const prevIds = new Set((prev ?? []).map((f) => f.id));
+  let next: Set<string> | null = null;
+  for (const f of patchFields) {
+    if (prevIds.has(f.id)) continue;
+    if (current.has(f.id)) continue;
+    next ??= new Set(current);
+    next.add(f.id);
   }
   return next ?? current;
 }

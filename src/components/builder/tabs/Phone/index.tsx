@@ -51,13 +51,22 @@ function isoFromE164(raw: string): string | null {
   return null;
 }
 
-function flagFor(iso: string): string {
-  // ISO alpha-2 → regional indicator emoji
-  return iso
-    .toUpperCase()
-    .split("")
-    .map((c) => String.fromCodePoint(127397 + c.charCodeAt(0)))
-    .join("");
+function Flag({ iso }: { iso: string }) {
+  // Static rectangular SVG flag from flagcdn (free public CDN keyed by
+  // lowercase ISO 3166-1 alpha-2). The OS-native regional-indicator emoji
+  // renders as a "waving" illustration on most platforms, which clashes
+  // with the rest of the card's flat aesthetic.
+  const code = iso.toLowerCase();
+  return (
+    <img
+      src={`https://flagcdn.com/${code}.svg`}
+      alt={iso}
+      width={24}
+      height={18}
+      className="h-[18px] w-[24px] rounded-[2px] object-cover shadow-[0_0_0_1px_rgba(0,0,0,0.06)]"
+      loading="lazy"
+    />
+  );
 }
 
 /**
@@ -196,10 +205,10 @@ function PhoneCard({
         return (
           <span
             title={iso}
-            className="text-xl leading-none"
+            className="leading-none"
             aria-label={`Country: ${iso}`}
           >
-            {flagFor(iso)}
+            <Flag iso={iso} />
           </span>
         );
       })()}

@@ -119,22 +119,6 @@ export type ConnectedIntegration = {
   connected_at: string | null;
 };
 
-// --- Build progress todo list --------------------------------------------
-
-export type TodoItemStatus = "pending" | "in_progress" | "completed";
-
-/**
- * One item on the builder agent's visible plan-of-action. The agent writes
- * the full list at the start of a multi-step task (especially the first
- * turn) and updates the statuses as it works, so the user can see what's
- * coming next without reading the streamed tool calls.
- */
-export type TodoItem = {
-  id: string;
-  label: string;
-  status: TodoItemStatus;
-};
-
 // --- Aggregate config ------------------------------------------------------
 
 export type AgentConfigCache = {
@@ -156,8 +140,6 @@ export type AgentConfigCache = {
   phone_numbers: PhoneNumber[];
   workflow: WorkflowState;
   integrations: ConnectedIntegration[];
-  /** Builder agent's plan-of-action for the current multi-step task. */
-  todo_list: TodoItem[];
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {

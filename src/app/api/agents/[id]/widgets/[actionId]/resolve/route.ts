@@ -98,9 +98,25 @@ export async function POST(
               },
             },
           );
+          const rejectedMessage = `User attempted to connect ${provider} but the token was rejected: ${credsResult.error} In one short message, tell the user what likely went wrong (wrong token type, missing scopes, or a typo) and the simplest next step. Do NOT re-open the connect widget automatically — wait for the user to confirm they want to retry before calling request_user_action again.`;
+          const rejectedJobId = await enqueueTurnJob(
+            agentId,
+            rejectedMessage,
+            "system",
+          );
+          if (!process.env.USE_RAILWAY_WORKER) {
+            after(async () => {
+              try {
+                await processTurnJob(rejectedJobId);
+              } catch {
+                // job runner handles its own failures
+              }
+            });
+          }
           return NextResponse.json({
             status: "failed",
             error: credsResult.error,
+            resumed_job_id: rejectedJobId.toHexString(),
           });
         }
         try {

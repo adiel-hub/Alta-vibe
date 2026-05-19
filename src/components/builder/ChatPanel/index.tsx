@@ -6,8 +6,8 @@ import { useAgentStore } from "@/store/agentStore";
 import { attachToTurn, sendMessage } from "@/store/sseClient";
 import { appFetch } from "@/lib/apiClient";
 import { createClientLogger } from "@/lib/clientLogger";
+import { friendlyTurnError } from "@/lib/errorMessages";
 import { VersionHistoryPanel } from "../VersionHistoryPanel";
-import { TodoListCard } from "../TodoListCard";
 import { EditableAgentName } from "./Header/EditableAgentName";
 import { BackArrowIcon, HistoryIcon } from "./Header/icons";
 import { TurnView } from "./Turn";
@@ -25,9 +25,15 @@ export function ChatPanel({ agentId }: { agentId: string }) {
   // SSE end), not just while sendMessage is in flight. Drives the spinner
   // on the send button.
   const activeJobId = useAgentStore((s) => s.activeJobId);
+  // Server-emitted turn-level errors (state_error events with section "turn")
+  // land here via the SSE client. We surface them in the same banner as local
+  // send/resume failures.
+  const turnError = useAgentStore((s) => s.errors["turn"] ?? null);
+  const clearStoreError = useAgentStore((s) => s.setError);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const error = friendlyTurnError(localError ?? turnError);
   const [historyOpen, setHistoryOpen] = useState(false);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -49,9 +55,12 @@ export function ChatPanel({ agentId }: { agentId: string }) {
         setSending(true);
         await attachToTurn(agentId, json.active.id, 0);
       } catch (err) {
-        log.warn("resume failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn("resume failed", { error: msg });
+        // First-turn failures (e.g. Claude API 529) reach us only through the
+        // resume effect. Surface the message so the user isn't left staring
+        // at an empty chat.
+        setLocalError(msg);
       } finally {
         setSending(false);
       }
@@ -73,14 +82,16 @@ export function ChatPanel({ agentId }: { agentId: string }) {
     log.debug("user send", { text_len: text.length });
     setInput("");
     setSending(true);
-    setError(null);
+    setLocalError(null);
+    // Clear any prior server-side turn error so retries start with a clean banner.
+    clearStoreError("turn", null);
     try {
       await sendMessage(agentId, text);
     } catch (err) {
       log.error("send error", {
         error: err instanceof Error ? err.message : String(err),
       });
-      setError(err instanceof Error ? err.message : "Stream failed");
+      setLocalError(err instanceof Error ? err.message : "Stream failed");
     } finally {
       setSending(false);
     }
@@ -150,7 +161,6 @@ export function ChatPanel({ agentId }: { agentId: string }) {
       ) : (
       <>
       <div ref={scrollerRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5 text-(--color-foreground)">
-        <TodoListCard />
         {turns.length === 0 && !streaming && (
           <div className="space-y-2 text-sm text-(--color-muted) animate-fade-in">
             <p>Try one of:</p>
@@ -173,19 +183,30 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             </ul>
           </div>
         )}
-        {turns.map((turn, i) => (
-          <TurnView
-            key={turn.id}
-            role={turn.role}
-            content={turn.content}
-            agentId={agentId}
-            // Live-typewriter the final assistant turn while the run is still
-            // active; otherwise show fully.
-            live={false}
-            isLast={i === turns.length - 1}
-          />
-        ))}
-        {streaming && (
+        {turns.map((turn, i) => {
+          // When the SDK emits text → tool → text, the post-tool deltas
+          // keep filling `streaming` with the SAME id as the turn that
+          // was already pushed into `turns` by appendToolCallStart. Render
+          // those deltas INSIDE the existing turn so the user sees one
+          // "Alex" bubble that grows, not a second header that appears
+          // during streaming and merges back in on turn_done.
+          const isStreamingThis = !!streaming && streaming.id === turn.id;
+          const content =
+            isStreamingThis && streaming.text
+              ? [...turn.content, { type: "text" as const, text: streaming.text }]
+              : turn.content;
+          return (
+            <TurnView
+              key={turn.id}
+              role={turn.role}
+              content={content}
+              agentId={agentId}
+              live={isStreamingThis}
+              isLast={i === turns.length - 1 && !streaming}
+            />
+          );
+        })}
+        {streaming && !turns.some((t) => t.id === streaming.id) && (
           <TurnView
             role="assistant"
             content={[{ type: "text", text: streaming.text || "" }]}
@@ -201,8 +222,22 @@ export function ChatPanel({ agentId }: { agentId: string }) {
       </div>
 
       {error && (
-        <div className="border-t border-(--color-danger) bg-(--color-danger)/10 px-5 py-2 text-xs text-(--color-danger) animate-fade-in">
-          {error}
+        <div
+          role="alert"
+          className="flex items-start gap-2 border-t border-(--color-danger) bg-(--color-danger)/10 px-5 py-2 text-xs text-(--color-danger) animate-fade-in"
+        >
+          <span className="flex-1 leading-snug">{error}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setLocalError(null);
+              clearStoreError("turn", null);
+            }}
+            aria-label="Dismiss error"
+            className="shrink-0 rounded px-1.5 text-(--color-danger)/70 transition hover:bg-(--color-danger)/15 hover:text-(--color-danger)"
+          >
+            ✕
+          </button>
         </div>
       )}
 

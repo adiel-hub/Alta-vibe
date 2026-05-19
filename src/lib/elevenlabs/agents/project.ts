@@ -132,8 +132,6 @@ export function projectAgentConfig(
     ),
     // Integrations are platform-side metadata; carry forward.
     integrations: fallback.integrations,
-    // Todo list is builder-agent state — not stored upstream, carry forward.
-    todo_list: fallback.todo_list,
   };
 }
 
