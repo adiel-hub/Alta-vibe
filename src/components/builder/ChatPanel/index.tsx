@@ -128,18 +128,6 @@ export function ChatPanel({ agentId }: { agentId: string }) {
           <EditableAgentName agentId={agentId} value={agentName ?? ""} />
         )}
         <div className="ml-auto flex items-center gap-2">
-          {activeJobId && (
-            <span
-              className="flex items-center gap-1 text-(--color-accent) animate-fade-in"
-              role="status"
-              aria-label="Agent is working"
-              title="Agent is working"
-            >
-              <span className="dot-flash" />
-              <span className="dot-flash" style={{ animationDelay: "120ms" }} />
-              <span className="dot-flash" style={{ animationDelay: "240ms" }} />
-            </span>
-          )}
           <button
             type="button"
             onClick={() => setHistoryOpen((v) => !v)}
@@ -195,6 +183,17 @@ export function ChatPanel({ agentId }: { agentId: string }) {
             isStreamingThis && streaming.text
               ? [...turn.content, { type: "text" as const, text: streaming.text }]
               : turn.content;
+          // Show "thinking…" at the end of the turn when we're streaming
+          // into it but there's no new prose yet and no tool currently
+          // running — e.g. the gap between one tool finishing and the
+          // model deciding what to do next. `liveTool` keeps the last
+          // tool's success/error badge visible until turn_done, so we
+          // explicitly require `running` here — a completed tool means
+          // the model has handed control back and is thinking again.
+          const showHint =
+            isStreamingThis &&
+            !streaming.text &&
+            (!liveTool || liveTool.status !== "running");
           return (
             <TurnView
               key={turn.id}
@@ -203,6 +202,7 @@ export function ChatPanel({ agentId }: { agentId: string }) {
               agentId={agentId}
               live={isStreamingThis}
               isLast={i === turns.length - 1 && !streaming}
+              streamingHint={showHint}
             />
           );
         })}

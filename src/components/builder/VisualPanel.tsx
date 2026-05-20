@@ -52,7 +52,33 @@ export function VisualPanel({ agentId }: { agentId: string }) {
   const activeJobId = useAgentStore((s) => s.activeJobId);
   const lastActiveSection = useAgentStore((s) => s.lastActiveSection);
   const inFlight = useAgentStore((s) => s.inFlight);
+  const turns = useAgentStore((s) => s.turns);
   const lastAutoSwitchAt = useRef<number>(0);
+
+  // Hide the right-side sections during the initial create flow and play
+  // the Katie sketching gif instead. The trigger is "the builder agent
+  // has called update_first_message at least once in this conversation"
+  // — checking the first_message field directly doesn't work because
+  // brand-new agents are seeded with a default greeting, so the field is
+  // never empty.
+  const hasPolishedGreeting = turns.some(
+    (t) =>
+      t.role === "assistant" &&
+      t.content.some(
+        (b) => b.type === "tool_use" && b.name.endsWith("update_first_message"),
+      ),
+  );
+  const showCreationAnim = !hasPolishedGreeting;
+
+  // Each new turn starts with a fresh auto-switch budget. Without this
+  // reset, lastAutoSwitchAt.current carries forward the timestamp from
+  // turn N's final switch (or a manual click between turns), and turn
+  // N+1's first tool can lose the timestamp race — the panel stays on
+  // whatever tab the previous turn ended on (commonly Post-call analysis
+  // after add_call_outcome / add_data_collection_field).
+  useEffect(() => {
+    if (activeJobId) lastAutoSwitchAt.current = 0;
+  }, [activeJobId]);
 
   // Auto-switch to whichever tab the live turn just started touching.
   useEffect(() => {
@@ -67,10 +93,33 @@ export function VisualPanel({ agentId }: { agentId: string }) {
 
   const fullBleed = FULL_BLEED_TABS.includes(tab);
 
+  if (showCreationAnim) {
+    return (
+      <div className="preparing-canvas grid h-full place-items-center animate-fade-in">
+        <div className="flex flex-col items-center gap-6">
+          {/* Plain <img> is intentional — next/image rewrites GIFs and can
+              kill the animation. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/katie-pencil.gif"
+            alt="Setting up your agent"
+            className="h-auto w-[28rem] max-w-[70vw] rounded-2xl"
+          />
+          <p className="text-xl font-semibold text-(--color-foreground-strong)">
+            Preparing your agent
+            <span className="dot-flash ml-1" />
+            <span className="dot-flash" style={{ animationDelay: "120ms" }} />
+            <span className="dot-flash" style={{ animationDelay: "240ms" }} />
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-14 shrink-0 items-end gap-1 border-b border-(--color-border) bg-(--color-panel) px-5">
-        <nav className="flex flex-1 gap-0 overflow-x-auto pb-0">
+        <nav className="flex flex-1 gap-0 overflow-x-auto pb-0 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {TABS.map((t) => {
             const sectionsForTab = (
               Object.entries(SECTION_TO_TAB) as [SectionKey, TabId][]

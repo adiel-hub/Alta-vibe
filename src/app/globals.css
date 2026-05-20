@@ -876,6 +876,32 @@ textarea, input, select {
   isolation: isolate;
 }
 
+/* Same ambient violet-glow vibe as the landing page, but at roughly half
+   the saturation — used by the "Preparing your agent" splash so the
+   purple feels calm in the smaller viewport instead of glaring. */
+.preparing-canvas {
+  position: relative;
+  background: #ffffff;
+  overflow: hidden;
+  isolation: isolate;
+}
+.preparing-canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 50% 50% at 28% 35%, rgba(99, 102, 241, 0.12), transparent 65%),
+    radial-gradient(ellipse 60% 50% at 72% 42%, rgba(124, 58, 237, 0.10), transparent 65%),
+    radial-gradient(ellipse 45% 50% at 50% 78%, rgba(168, 85, 247, 0.08), transparent 65%);
+  filter: blur(60px);
+  pointer-events: none;
+  z-index: 0;
+}
+.preparing-canvas > * {
+  position: relative;
+  z-index: 1;
+}
+
 /* Ambient indigo/violet glow — diffused, low-opacity, replaces hero imagery. */
 .hero-glow {
   position: absolute;

@@ -524,34 +524,68 @@ deliver the finished thing, not to negotiate.
        - list_workspace_integrations — distinct connected providers
          across all of the user's agents. Each entry includes
          \`already_connected_here\` — ignore those.
-     Interpret the results and write a SINGLE concise closing message
-     that EITHER:
-       (a) Confirms the agent is ready and there's nothing to reuse —
-           "All set. Want me to set up a phone number or connect a
-           CRM next?". Use this when both lists are empty.
-       (b) Makes ONE concrete recommendation per available resource,
-           each as a clear yes/no question the user can answer in one
-           word. Examples:
-             - One free number found:
-               "I see you already own +1-415-555-0123 in this
-               workspace — want me to attach it for inbound calls?"
-             - Multiple numbers:
-               "You have 3 numbers in this workspace. Want me to
-               attach one — and which? (+1-415-555-0123, +972-…, …)"
-             - A CRM the workflow could use (look at the workflow's
-               tool_call nodes for fit):
-               "HubSpot is already connected on 'Sales Bot' — want
-               me to wire it up here too so the agent can look up
-               callers and log notes?"
-     Rules:
+     Interpret the results and write the closing message. The chat
+     renders **Markdown**. Your message MUST use this exact structure
+     (the renderer needs the literal characters: \`✨\`, \`**\` for bold,
+     \`- \` for bullets, BLANK LINES between sections).
+
+     **COPY THIS LAYOUT EXACTLY — fill the \`<…>\` slots with real values.
+     Do NOT smash it into one paragraph.**
+
+     —— begin example ——
+
+     ✨ <Agent name> is ready!
+
+     Here's what I set up:
+
+     - **Persona** — <agent name>, <one-line tone description>
+     - **Workflow** — <N> nodes (<one-phrase scope, e.g. "greet → triage → resolve → wrap">)
+     - **Voice** — <Voice name> (<one-word descriptor>)
+     - **Knowledge base** — <N> notes covering <topics, comma-separated>
+     - **Call outcomes** — <N> tracked
+     - **Data extraction** — <N> fields
+
+     <One short paragraph for recommendation #1 — one yes/no question.>
+
+     <One short paragraph for recommendation #2, if any — one yes/no question.>
+
+     —— end example ——
+
+     **DO:**
+       - Output literal newlines between sections (i.e. emit \`\\n\\n\`).
+       - Use \`- \` (hyphen + space) at the START of every bullet line.
+       - **Bold** the noun at the start of each bullet (\`- **Voice** — …\`).
+       - One question per closing paragraph. Multiple recommendations =
+         multiple paragraphs, EACH separated by a blank line.
+       - Bold phone numbers (\`**+1-415-555-0123**\`) and provider names
+         (\`**HubSpot**\`) so they pop.
+
+     **DO NOT:**
+       - Write everything as one big paragraph. (Most common failure mode.)
+       - Combine two questions into one sentence with "or" / "and also".
+       - Write a bullet whose count is 0 (skip the row entirely).
+       - Use raw \`<…>\` placeholders in the actual output — replace them.
+       - Add "Now I'll…" or "Let me know if…" filler. The shape above is
+         the whole message.
+
+     **Recommendation patterns** (pick whichever apply, one paragraph each):
+       - 0 reusable resources →
+         \`Want me to set up a phone number or connect a CRM next, or are you good to go?\`
+       - Exactly one free number →
+         \`I noticed you already own **+1-415-555-0123** in this workspace — want me to attach it for inbound calls?\`
+       - Multiple free numbers → ask once and list them as a nested bullet list:
+         \`You already have a few numbers in this workspace — want me to attach one?\\n- **+1-415-555-0123**\\n- **+972-…**\\n- **+44-…**\`
+       - All numbers attached elsewhere →
+         \`Your existing numbers are all attached to other agents — want me to detach one (e.g. **+1-941-253-3039**) and point it here, or grab a new number?\`
+       - CRM connected on another agent (only if workflow has tool_call nodes or persona implies caller lookup) →
+         \`**HubSpot** is already connected on 'Sales Bot' — want me to wire it up here too so the agent can look up callers and log notes?\`
+
+     **Hard rules:**
        - Do NOT auto-attach a phone number or auto-connect an
          integration. Ask first; act on the next turn after the user
          confirms.
-       - Tailor CRM recommendations to the workflow: only push
-         HubSpot/Salesforce/etc. if the workflow has tool_call nodes
-         or the persona implies caller lookup / record updates.
-       - Keep the whole closing message to 1-3 short sentences. Bias
-         to brevity; long recommendation lists feel pushy.
-     ➜ This is the ONLY place in this turn where you write
-       user-facing prose. After this message, end the turn and wait
-       for the user's reply.`;
+       - Tailor CRM recommendations to the workflow — only push HubSpot/
+         Salesforce/etc. if the workflow has tool_call nodes or the
+         persona implies caller lookup / record updates.
+
+     ➜ After this message, end the turn and wait for the user's reply.`;

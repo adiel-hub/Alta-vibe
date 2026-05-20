@@ -69,14 +69,6 @@ export function TurnView({
   }
   const blocks = (
     <>
-      {streamingHint && (
-        <div className="flex items-center gap-1 text-xs italic text-(--color-muted)">
-          <span className="mr-2">thinking</span>
-          <span className="dot-flash" />
-          <span className="dot-flash" style={{ animationDelay: "120ms" }} />
-          <span className="dot-flash" style={{ animationDelay: "240ms" }} />
-        </div>
-      )}
       {groupConsecutiveTools(content, widgetToolUseIds).map((item, i, arr) => {
         if (item.kind === "group") {
           return (
@@ -103,6 +95,14 @@ export function TurnView({
           />
         );
       })}
+      {streamingHint && (
+        <div className="mt-2 flex items-center gap-1 pl-3 text-xs italic text-(--color-muted)">
+          <span className="mr-2">thinking</span>
+          <span className="dot-flash" />
+          <span className="dot-flash" style={{ animationDelay: "120ms" }} />
+          <span className="dot-flash" style={{ animationDelay: "240ms" }} />
+        </div>
+      )}
     </>
   );
 
