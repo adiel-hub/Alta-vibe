@@ -1,5 +1,6 @@
 import type {
   AgentConfigCache,
+  AgentKind,
   AgentLastError,
   ContentBlock,
 } from "@/types/agent";
@@ -9,6 +10,8 @@ export type RunTurnInput = {
   elevenlabsAgentId: string;
   agentName: string;
   agentDescription: string;
+  /** Defaults to "voice_agent" when missing; controls prompt assembly. */
+  agentKind: AgentKind;
   lastError: AgentLastError;
   currentConfig: AgentConfigCache;
   startingRevision: number;

@@ -26,6 +26,7 @@ import { asrCapability } from "./voice/asr";
 import { conversationFlowCapability } from "./intelligence/conversation_flow";
 import { batchCallingCapability } from "./telephony/batch_calling";
 import { workspaceSecretsCapability } from "./security/workspace_secrets";
+import { pdlCapability } from "./tools/pdl";
 
 export const CAPABILITIES: Capability[] = [
   introspectionCapability,
@@ -46,6 +47,7 @@ export const CAPABILITIES: Capability[] = [
   conversationFlowCapability,
   batchCallingCapability,
   workspaceSecretsCapability,
+  pdlCapability,
 ];
 
 /** Build the initial config_cache by merging every capability's default slice. */
@@ -67,8 +69,7 @@ export function defaultAgentConfig(): AgentConfigCache {
     data_collection: [],
     evaluation_criteria: [],
     phone_numbers: [],
-    workflow: { nodes: [{ id: "start", type: "start", label: "Call connects", data: {} }], edges: [] },
-    integrations: [],
+    workflow: { nodes: [{ id: "start_node", type: "start", label: "Call connects", data: {} }], edges: [] },
   };
   for (const cap of CAPABILITIES) {
     Object.assign(base, cap.defaultSlice());

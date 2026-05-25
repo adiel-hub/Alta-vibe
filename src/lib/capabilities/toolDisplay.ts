@@ -27,7 +27,7 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   update_max_call_duration: { emoji: "⏱️", label: "Setting call limits" },
   // knowledge base
   add_knowledge_base_url: { emoji: "🔗", label: "Indexing a URL" },
-  add_knowledge_base_text: { emoji: "📄", label: "Writing a knowledge note" },
+  add_knowledge_base_text: { emoji: "📄", label: "Writing a knowledge base" },
   read_website: { emoji: "👀", label: "Reading the site" },
   scrape_website_to_knowledge_base: { emoji: "🕸️", label: "Crawling the site" },
   scrape_single_page_to_knowledge_base: { emoji: "🕸️", label: "Scraping the page" },
@@ -36,7 +36,7 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   // runtime tools
   create_custom_runtime_tool: { emoji: "🛠️", label: "Building a runtime tool" },
   remove_runtime_tool: { emoji: "🗑️", label: "Removing a runtime tool" },
-  write_tool: { emoji: "🛠️", label: "Synthesizing a tool" },
+  write_tool: { emoji: "🛠️", label: "Creating a tool" },
   delete_custom_tool: { emoji: "🗑️", label: "Deleting a custom tool" },
   // mcp
   add_mcp_integration: { emoji: "🔌", label: "Connecting an MCP server" },

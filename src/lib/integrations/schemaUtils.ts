@@ -11,10 +11,43 @@ import type { RuntimePhase } from "@/types/agent";
 
 const SECRET_REF_REGEX = /\{\{secret:([a-z0-9_]+)\}\}/g;
 
+/** Fields that are part of JSON-Schema but rejected by ElevenLabs' Pydantic
+ *  per-type validators. Scrubbed recursively from every nested object so a
+ *  synthesizer that emits e.g. `additionalProperties: false` on a sub-field
+ *  doesn't get rejected with "Extra inputs are not permitted" deep in the
+ *  schema tree. */
+const FORBIDDEN_KEYS = [
+  "additionalProperties",
+  "$schema",
+  "$id",
+  "$ref",
+  "definitions",
+  "$defs",
+  "patternProperties",
+  "unevaluatedProperties",
+] as const;
+
+function scrubNode(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map(scrubNode);
+  }
+  if (!node || typeof node !== "object") return node;
+  const obj = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if ((FORBIDDEN_KEYS as readonly string[]).includes(k)) continue;
+    out[k] = scrubNode(v);
+  }
+  return out;
+}
+
 /**
  * Normalise a JSON-Schema object so ElevenLabs' /v1/convai/tools accepts
  * it. Returns `undefined` if the input is empty (the api_schema shape
  * forbids `null` / `{}` for body/query — omit the field entirely).
+ *
+ * Recurses into `properties` and `items` so forbidden keys are stripped at
+ * every depth, not just the root.
  */
 export function normalizeElevenlabsSchema(
   schema: unknown,
@@ -25,15 +58,13 @@ export function normalizeElevenlabsSchema(
   }
   const raw = schema as Record<string, unknown>;
   if (Object.keys(raw).length === 0) return undefined;
-  const s: Record<string, unknown> = { ...raw };
+  const scrubbed = scrubNode(raw) as Record<string, unknown>;
   if (kind === "body") {
-    s.type = "object";
+    scrubbed.type = "object";
   } else {
-    delete s.type;
+    delete scrubbed.type;
   }
-  delete s.additionalProperties;
-  delete s.$schema;
-  return s;
+  return scrubbed;
 }
 
 /**

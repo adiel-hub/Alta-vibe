@@ -20,33 +20,65 @@ import { PROVIDERS, getProvider, scopedToolName } from "@/lib/integrations/provi
 import {
   installProviderTool,
   uninstallProviderTool,
+  disconnectProviderForAgent,
 } from "@/lib/integrations/registerProviderTools";
-import { patchAgent } from "@/lib/elevenlabs/client";
-import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
 
 export const integrationsCapability: Capability = {
   id: "integrations",
   label: "Integrations",
-  defaultSlice: () => ({ integrations: [] }),
+  // Integrations are workspace-shared and live in the `integrations`
+  // collection — there is no per-agent slice in `config_cache`.
+  defaultSlice: () => ({}),
   tools: (ctx) => [
     tool(
       "list_connected_integrations",
-      "List third-party integrations currently connected to this agent.",
+      "List third-party integrations currently connected in this workspace. Integrations are workspace-shared, so anything connected on any agent is usable here. Returns [{ provider, display_name, status, connected_at, has_installed_tools_here }]. `has_installed_tools_here` is true when THIS agent has at least one tool from the provider already installed.",
       {},
       async () => {
-        return {
-          content: [
-            { type: "text", text: JSON.stringify(ctx.config.integrations) },
-          ],
-        };
+        try {
+          const ints = await integrationsCol();
+          const rows = await ints
+            .find({ status: "connected" })
+            .toArray();
+          const installedProviders = new Set(
+            ctx.config.tools
+              .map((t) => t.provider)
+              .filter((p): p is string => !!p),
+          );
+          const result = rows.map((r) => {
+            const def = getProvider(r.provider);
+            return {
+              provider: r.provider,
+              display_name: def?.name ?? r.provider,
+              status: r.status,
+              connected_at: r.connected_at?.toISOString() ?? null,
+              has_installed_tools_here: installedProviders.has(r.provider),
+            };
+          });
+          return {
+            content: [{ type: "text", text: JSON.stringify(result) }],
+          };
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : "Unknown error";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `list_connected_integrations failed: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     ),
 
     tool(
       "list_workspace_integrations",
-      "List third-party integrations the user has already connected on OTHER agents in this workspace. Use this during the resource-recommendation step of the first turn to spot CRMs / messaging / calendar providers the user has previously set up, so you can offer one-click reuse here. Returns [{ provider, display_name, agent_count, sample_agent_names, already_connected_here }]. `already_connected_here` is true if THIS agent already has the provider — skip those when recommending.",
+      "List third-party integrations connected anywhere in this workspace, with usage stats so you can surface reuse opportunities during the resource-recommendation step of the first turn. Integrations are workspace-shared, so any of these are usable on this agent without re-connecting. Returns [{ provider, display_name, agent_count, sample_agent_names, has_installed_tools_here }].",
       {},
       async () => {
         try {
@@ -63,7 +95,11 @@ export const integrationsCapability: Capability = {
           const agentNameById = new Map(
             agents.map((a) => [a._id.toHexString(), a.name]),
           );
-          const here = new Set(ctx.config.integrations.map((i) => i.provider));
+          const installedProviders = new Set(
+            ctx.config.tools
+              .map((t) => t.provider)
+              .filter((p): p is string => !!p),
+          );
           const byProvider = new Map<
             string,
             { display_name: string; agent_ids: Set<string> }
@@ -86,7 +122,7 @@ export const integrationsCapability: Capability = {
               .map((id) => agentNameById.get(id))
               .filter((n): n is string => !!n)
               .slice(0, 3),
-            already_connected_here: here.has(provider),
+            has_installed_tools_here: installedProviders.has(provider),
           }));
           return {
             content: [{ type: "text", text: JSON.stringify(rows) }],
@@ -182,48 +218,19 @@ export const integrationsCapability: Capability = {
 
     tool(
       "disconnect_integration",
-      "Disconnect a provider and remove ALL of its runtime tools from the agent.",
+      "Disconnect a provider from the WORKSPACE and remove its runtime tools from THIS agent. Because integrations are workspace-shared, the OAuth token is marked disconnected for every agent — any other agent that had its tools installed will also stop being able to fire them until the provider is reconnected. The runtime-tool rows on those other agents are NOT removed here; only this agent's tools are dropped.",
       { provider: z.string().min(1) },
       async ({ provider }) =>
         runToolStep(ctx, "integrations", "disconnect_integration", async () => {
-          const ints = await integrationsCol();
-          await ints.updateOne(
-            { agent_id: new ObjectId(ctx.agentMongoId), provider },
-            { $set: { status: "disconnected", updated_at: new Date() } },
-          );
-          const remainingIntegrations = ctx.config.integrations.filter(
-            (i) => i.provider !== provider,
+          const { tools, system_prompt } = await disconnectProviderForAgent(
+            ctx.agentMongoId,
+            provider,
           );
           const providerDef = getProvider(provider);
-          const toolNamesToRemove = new Set(
-            providerDef?.runtime_tools.map((t) => scopedToolName(t)) ?? [],
-          );
-          const remainingTools = ctx.config.tools.filter(
-            (t) => !toolNamesToRemove.has(t.name) && t.provider !== provider,
-          );
-
-          // If we're disconnecting a CRM that injected the caller-context
-          // block (currently only HubSpot), strip it back out of the
-          // system prompt and clear the dynamic-variable defaults.
-          const isCrm = provider === "hubspot";
-          const nextSystemPrompt = isCrm
-            ? stripCallerContextBlock(ctx.config.system_prompt)
-            : ctx.config.system_prompt;
-
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: remainingTools.map((t) => t.id),
-            ...(isCrm
-              ? {
-                  system_prompt: nextSystemPrompt,
-                  dynamic_variables: {},
-                }
-              : {}),
-          });
           return {
             patch: {
-              integrations: remainingIntegrations,
-              tools: remainingTools,
-              ...(isCrm ? { system_prompt: nextSystemPrompt } : {}),
+              tools,
+              ...(system_prompt !== undefined ? { system_prompt } : {}),
             },
             summary: `Disconnected ${providerDef?.name ?? provider}.`,
           };

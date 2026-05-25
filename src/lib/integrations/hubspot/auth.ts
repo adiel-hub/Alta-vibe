@@ -5,6 +5,7 @@
  */
 import { ObjectId } from "mongodb";
 import { integrationsCol } from "@/lib/mongodb";
+import { findWorkspaceIntegration } from "@/lib/integrations/store";
 import { decryptToken } from "@/lib/integrations/tokens";
 
 export type HubspotAccountInfo = {
@@ -43,15 +44,13 @@ export async function validateToken(
  * there is no connected integration row.
  */
 export async function getHubspotToken(
-  agentMongoId: string,
+  // Kept as a parameter for backwards compat with existing call sites,
+  // but no longer used — integrations are now workspace-shared, so we
+  // look up by provider alone. Future per-account scoping will resolve
+  // the workspace from session context inside findWorkspaceIntegration.
+  _agentMongoId?: string,
 ): Promise<string | null> {
-  if (!ObjectId.isValid(agentMongoId)) return null;
-  const ints = await integrationsCol();
-  const doc = await ints.findOne({
-    agent_id: new ObjectId(agentMongoId),
-    provider: "hubspot",
-    status: "connected",
-  });
+  const doc = await findWorkspaceIntegration("hubspot");
   if (!doc) return null;
   const blob = (doc.credentials as { access_token?: unknown }).access_token;
   if (typeof blob !== "string") return null;

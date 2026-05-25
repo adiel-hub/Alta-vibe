@@ -16,12 +16,12 @@ import { loadVoicesCached } from "./_shared/voicesCache";
 //
 // Surfaces every field the ElevenLabs workflow node schema exposes, keyed
 // off our internal node.type:
-//   - speak     → maps to override_agent: additional_prompt + voice/llm/kb/tool overrides
+//   - speak     → maps to override_agent: additional_prompt
 //   - collect   → override_agent + a `collect_field` data key
 //   - condition → override_agent acting as router; surfaces `expression`
-//   - tool_call → dispatch_tool: tool_id (dropdown of agent's tools) + instruction
-//   - transfer  → transfer_to_number (phone_number) OR agent_transfer
-//                 (target_agent_id) — picker selects mode
+//   - tool_call → tool: tools[].tool_id (dropdown of agent's tools)
+//   - transfer  → phone_number (data.phone_number → transfer_destination)
+//                 OR standalone_agent (data.agent_id) — picker selects mode
 //   - start/end → no editable fields
 //
 // Plus a read-only "Connections" section listing outgoing edges with their
@@ -61,6 +61,7 @@ export function NodeInspector({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [voices, setVoices] = useState<InspectorVoice[]>([]);
 
   const canDelete = node?.id !== "start";
 
@@ -86,19 +87,15 @@ export function NodeInspector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
 
-  // Lazy-load the voice list once per session for the override dropdown.
-  const [voices, setVoices] = useState<InspectorVoice[]>([]);
-  const [voicesError, setVoicesError] = useState<string | null>(null);
+  // Lazy-load voice list once per session for the override dropdown.
   useEffect(() => {
     let cancelled = false;
     loadVoicesCached()
       .then((vs) => {
         if (!cancelled) setVoices(vs);
       })
-      .catch((e) => {
-        if (!cancelled) {
-          setVoicesError(e instanceof Error ? e.message : "load failed");
-        }
+      .catch(() => {
+        /* non-fatal — the override section just shows fewer options */
       });
     return () => {
       cancelled = true;
@@ -243,46 +240,37 @@ export function NodeInspector({
 
       case "tool_call":
         return (
-          <>
-            <Field
-              label="Tool"
-              hint="Which webhook/client tool this node will dispatch. Maps to dispatch_tool.tool_id."
+          <Field
+            label="Tool"
+            hint="Which runtime tool this node dispatches. Serialized as tools: [{ tool_id }] on the ElevenLabs tool node."
+          >
+            <select
+              value={(data.tool_id as string) ?? ""}
+              onChange={(e) => setField("tool_id", e.target.value)}
+              className="vb-field-input"
             >
-              <select
-                value={(data.tool_id as string) ?? ""}
-                onChange={(e) => setField("tool_id", e.target.value)}
-                className="vb-field-input"
-              >
-                <option value="">— pick a tool —</option>
-                {availableTools.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                    {t.provider ? ` · ${t.provider}` : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field
-              label="Instruction"
-              hint="Optional natural-language instruction telling the agent how to use the tool here."
-            >
-              <textarea
-                dir="auto"
-                value={(data.instruction as string) ?? ""}
-                onChange={(e) => setField("instruction", e.target.value)}
-                className="vb-field-input vb-field-textarea"
-                rows={5}
-                placeholder="e.g. Look up the caller in the CRM using their email."
-              />
-            </Field>
-          </>
+              <option value="">— pick a tool —</option>
+              {availableTools.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.provider ? ` · ${t.provider}` : ""}
+                </option>
+              ))}
+            </select>
+          </Field>
         );
 
       case "transfer": {
+        // Read both keys for back-compat with agents whose cache still
+        // carries the legacy `target_agent_id`. Saves always use `agent_id`.
+        const agentIdValue =
+          (data.agent_id as string | undefined) ??
+          (data.target_agent_id as string | undefined) ??
+          "";
         const mode: "number" | "agent" =
           (data.phone_number as string | undefined)?.length
             ? "number"
-            : (data.target_agent_id as string | undefined)?.length
+            : agentIdValue.length
               ? "agent"
               : "number";
         return (
@@ -292,6 +280,7 @@ export function NodeInspector({
                 <button
                   type="button"
                   onClick={() => {
+                    setField("agent_id", undefined);
                     setField("target_agent_id", undefined);
                     setField("phone_number", data.phone_number ?? "");
                   }}
@@ -307,7 +296,8 @@ export function NodeInspector({
                   type="button"
                   onClick={() => {
                     setField("phone_number", undefined);
-                    setField("target_agent_id", data.target_agent_id ?? "");
+                    setField("target_agent_id", undefined);
+                    setField("agent_id", agentIdValue);
                   }}
                   className={`flex-1 rounded-md border px-3 py-1.5 text-xs ${
                     mode === "agent"
@@ -320,43 +310,119 @@ export function NodeInspector({
               </div>
             </Field>
             {mode === "number" ? (
-              <Field
-                label="Phone number"
-                hint="E.164 format. Maps to transfer_to_number.phone_number."
-              >
-                <input
-                  value={(data.phone_number as string) ?? ""}
-                  onChange={(e) => setField("phone_number", e.target.value)}
-                  className="vb-field-input"
-                  placeholder="+1555…"
-                />
-              </Field>
+              <>
+                <Field
+                  label="Phone number"
+                  hint="E.164 number, or a dynamic variable like {{caller_number}}. Wrapped server-side into transfer_destination (phone | phone_dynamic_variable)."
+                >
+                  <input
+                    value={(data.phone_number as string) ?? ""}
+                    onChange={(e) => setField("phone_number", e.target.value)}
+                    className="vb-field-input"
+                    placeholder="+1555… or {{caller_number}}"
+                  />
+                </Field>
+                <Field
+                  label="Transfer type"
+                  hint="conference = stay on the line; blind = drop after dial; sip_refer = SIP REFER handoff (provider-dependent)."
+                >
+                  <select
+                    value={(data.transfer_type as string) ?? "conference"}
+                    onChange={(e) => setField("transfer_type", e.target.value)}
+                    className="vb-field-input"
+                  >
+                    <option value="conference">conference (default)</option>
+                    <option value="blind">blind</option>
+                    <option value="sip_refer">sip_refer</option>
+                  </select>
+                </Field>
+                <Field
+                  label="Post-dial digits"
+                  hint="DTMF digits to send after connect. Use 'w' for a 0.5s pause (e.g. 'ww1234'). Twilio transfers only. Wrap in {{var}} to use a dynamic value."
+                >
+                  <input
+                    value={(data.post_dial_digits as string) ?? ""}
+                    onChange={(e) =>
+                      setField("post_dial_digits", e.target.value)
+                    }
+                    className="vb-field-input font-mono"
+                    placeholder="ww1234"
+                  />
+                </Field>
+              </>
             ) : (
-              <Field
-                label="Target agent id"
-                hint="ElevenLabs agent_id to hand off to. Maps to agent_transfer.target_agent_id."
-              >
-                <input
-                  value={(data.target_agent_id as string) ?? ""}
-                  onChange={(e) => setField("target_agent_id", e.target.value)}
-                  className="vb-field-input font-mono"
-                  placeholder="agent_…"
-                />
-              </Field>
+              <>
+                <Field
+                  label="Target agent id"
+                  hint="ElevenLabs agent_id to hand off to. Maps to standalone_agent.agent_id."
+                >
+                  <input
+                    value={agentIdValue}
+                    onChange={(e) => {
+                      setField("agent_id", e.target.value);
+                      setField("target_agent_id", undefined);
+                    }}
+                    className="vb-field-input font-mono"
+                    placeholder="agent_…"
+                  />
+                </Field>
+                <Field
+                  label="Transfer message"
+                  hint="Optional line the agent says to the caller right before the handoff."
+                >
+                  <textarea
+                    dir="auto"
+                    value={(data.transfer_message as string) ?? ""}
+                    onChange={(e) =>
+                      setField("transfer_message", e.target.value)
+                    }
+                    className="vb-field-input vb-field-textarea"
+                    rows={3}
+                    placeholder="Transferring you to our billing team — one moment…"
+                  />
+                </Field>
+                <Field
+                  label="Delay before transfer (ms)"
+                  hint="Artificial wait before initiating the transfer. Leave blank for 0."
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    value={
+                      typeof data.delay_ms === "number"
+                        ? String(data.delay_ms)
+                        : ""
+                    }
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setField(
+                        "delay_ms",
+                        v === "" ? undefined : Math.max(0, Number(v) || 0),
+                      );
+                    }}
+                    className="vb-field-input"
+                    placeholder="0"
+                  />
+                </Field>
+                <label className="flex items-center gap-2 text-[12px] text-(--color-foreground-strong)">
+                  <input
+                    type="checkbox"
+                    checked={
+                      data.enable_transferred_agent_first_message === true
+                    }
+                    onChange={(e) =>
+                      setField(
+                        "enable_transferred_agent_first_message",
+                        e.target.checked ? true : undefined,
+                      )
+                    }
+                  />
+                  <span>
+                    Let the transferred agent send its own first message
+                  </span>
+                </label>
+              </>
             )}
-            <Field
-              label="Transfer reason (optional)"
-              hint="Optional instruction the agent reads before transferring."
-            >
-              <textarea
-                dir="auto"
-                value={(data.instruction as string) ?? ""}
-                onChange={(e) => setField("instruction", e.target.value)}
-                className="vb-field-input vb-field-textarea"
-                rows={3}
-                placeholder="e.g. Let the caller know we're transferring them to billing."
-              />
-            </Field>
           </>
         );
       }
@@ -426,34 +492,14 @@ export function NodeInspector({
             </summary>
             <div className="space-y-3 px-3 pb-3">
               <Field
-                label="System prompt override"
-                hint="Replaces the agent's global system prompt while at this node."
-              >
-                <textarea
-                  dir="auto"
-                  value={(data.system_prompt_override as string) ?? ""}
-                  onChange={(e) =>
-                    setField("system_prompt_override", e.target.value)
-                  }
-                  className="vb-field-input vb-field-textarea"
-                  rows={4}
-                />
-              </Field>
-              <Field
                 label="Voice override"
-                hint="Overrides the agent's default voice while this node is active. Leave on 'Use agent default' to inherit."
+                hint="While this node is active, swap the agent's voice. Serialized as conversation_config.tts.voice_id."
               >
-                {voicesError && (
-                  <p
-                    className="vb-field-hint"
-                    style={{ color: "var(--color-danger)" }}
-                  >
-                    Voice list error: {voicesError}
-                  </p>
-                )}
                 {(() => {
                   const currentVoiceId =
-                    typeof data.voice_id === "string" ? data.voice_id : "";
+                    typeof data.override_voice_id === "string"
+                      ? data.override_voice_id
+                      : "";
                   const orphanVoiceId =
                     currentVoiceId &&
                     !voices.some((v) => v.voice_id === currentVoiceId)
@@ -463,15 +509,14 @@ export function NodeInspector({
                     <select
                       value={currentVoiceId}
                       onChange={(e) =>
-                        setField("voice_id", e.target.value || undefined)
+                        setField(
+                          "override_voice_id",
+                          e.target.value || undefined,
+                        )
                       }
                       className="vb-field-input font-medium"
                     >
                       <option value="">Use agent default</option>
-                      {/* Keep an entry for an unknown id so a saved
-                          override still selects correctly even before the
-                          voice list loads or if the voice was deleted
-                          upstream. */}
                       {orphanVoiceId && (
                         <option value={orphanVoiceId}>{orphanVoiceId}</option>
                       )}
@@ -493,6 +538,60 @@ export function NodeInspector({
                   );
                 })()}
               </Field>
+              <Field
+                label="LLM override"
+                hint="Use a different model just for this node. Serialized as conversation_config.agent.prompt.llm."
+              >
+                <input
+                  value={(data.override_llm as string) ?? ""}
+                  onChange={(e) =>
+                    setField("override_llm", e.target.value || undefined)
+                  }
+                  className="vb-field-input font-mono"
+                  placeholder="e.g. gpt-4o-mini, claude-3-5-sonnet"
+                />
+              </Field>
+              <Field
+                label="Per-node first message"
+                hint="Spoken when the agent enters this node. Serialized as conversation_config.agent.first_message."
+              >
+                <textarea
+                  dir="auto"
+                  value={(data.override_first_message as string) ?? ""}
+                  onChange={(e) =>
+                    setField(
+                      "override_first_message",
+                      e.target.value || undefined,
+                    )
+                  }
+                  className="vb-field-input vb-field-textarea"
+                  rows={3}
+                />
+              </Field>
+              <Field
+                label="Additional tool ids"
+                hint="Comma-separated tool ids that become available to the agent only while this node is active. Maps to additional_tool_ids[]."
+              >
+                <input
+                  value={
+                    Array.isArray(data.additional_tool_ids)
+                      ? (data.additional_tool_ids as string[]).join(", ")
+                      : ""
+                  }
+                  onChange={(e) => {
+                    const ids = e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean);
+                    setField(
+                      "additional_tool_ids",
+                      ids.length > 0 ? ids : undefined,
+                    );
+                  }}
+                  className="vb-field-input font-mono"
+                  placeholder="tool_abc, tool_def"
+                />
+              </Field>
             </div>
           </details>
         )}
@@ -509,6 +608,8 @@ export function NodeInspector({
             <ul className="divide-y divide-(--color-border)">
               {outgoingEdges.map((e) => {
                 const target = nodeById(e.to);
+                const fc = e.forward_condition;
+                const bc = e.backward_condition;
                 return (
                   <li key={e.id} className="px-3 py-2 text-xs">
                     <div className="flex items-center gap-2">
@@ -520,19 +621,61 @@ export function NodeInspector({
                         {target?.type ?? "?"}
                       </span>
                     </div>
-                    {(e.label || e.condition) && (
-                      <div className="mt-1 text-[11px] text-(--color-muted)">
+                    {(e.label || e.condition || fc) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--color-muted)">
                         {e.label && (
-                          <span className="mr-2 inline-flex items-center gap-1">
+                          <span className="inline-flex items-center gap-1">
                             <span aria-hidden>↳</span>
                             {e.label}
                           </span>
                         )}
-                        {e.condition && (
+                        {fc?.type === "llm" && (
+                          <span className="font-mono text-(--color-accent)">
+                            when: {fc.condition}
+                          </span>
+                        )}
+                        {fc?.type === "expression" && (
+                          <span className="font-mono text-(--color-accent)">
+                            expr
+                          </span>
+                        )}
+                        {fc?.type === "result" && (
+                          <span
+                            className="font-mono"
+                            style={{
+                              color: fc.successful
+                                ? "var(--color-success, var(--color-accent))"
+                                : "var(--color-danger)",
+                            }}
+                          >
+                            on {fc.successful ? "success" : "failure"}
+                          </span>
+                        )}
+                        {fc?.type === "unconditional" && !e.label && (
+                          <span className="font-mono text-(--color-muted-soft)">
+                            always
+                          </span>
+                        )}
+                        {/* Legacy fallback: edges from before the structured
+                            condition variants existed only carry e.condition. */}
+                        {!fc && e.condition && (
                           <span className="font-mono text-(--color-accent)">
                             when: {e.condition}
                           </span>
                         )}
+                      </div>
+                    )}
+                    {bc && (
+                      <div className="mt-1 text-[11px] text-(--color-muted)">
+                        <span aria-hidden>↩</span>{" "}
+                        <span className="font-mono">
+                          loops back ({bc.type}
+                          {bc.type === "llm" ? `: ${bc.condition}` : ""}
+                          {bc.type === "result"
+                            ? `: ${bc.successful ? "success" : "failure"}`
+                            : ""}
+                          )
+                        </span>
                       </div>
                     )}
                   </li>

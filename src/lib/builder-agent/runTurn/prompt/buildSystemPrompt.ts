@@ -1,4 +1,5 @@
 import {
+  AUDIENCE_BUILDER_ADDENDUM,
   BUILDER_FIRST_TURN_ADDENDUM,
   BUILDER_SYSTEM_PROMPT,
 } from "../../systemPrompt";
@@ -9,13 +10,17 @@ import { formatTranscript } from "./formatTranscript";
 
 export function buildSystemPrompt(input: RunTurnInput): string {
   const enabledCapabilities = CAPABILITIES.map((c) => `- ${c.id}: ${c.label}`).join("\n");
+  const isAudienceBuilder = input.agentKind === "audience_builder";
   // True only for the very first user message after agent creation. Once
   // any turn has happened the transcript carries it (or, after enough
   // turns, conversationSummary does). We use this to skip the long
   // FIRST-TURN BUILD FLOW addendum on every subsequent turn — it would
   // otherwise burn tokens on guidance the agent has already executed.
+  // The audience-builder host never runs the voice-agent build flow.
   const isFirstTurn =
-    input.transcript.length === 0 && !input.conversationSummary;
+    !isAudienceBuilder &&
+    input.transcript.length === 0 &&
+    !input.conversationSummary;
   const sections: string[] = [
     BUILDER_SYSTEM_PROMPT,
     "",
@@ -24,6 +29,7 @@ export function buildSystemPrompt(input: RunTurnInput): string {
     `  platform_record_id: ${input.agentMongoId}`,
     `  internal_name: ${input.agentName}`,
     `  description: ${input.agentDescription || "(none)"}`,
+    `  agent_kind: ${input.agentKind}`,
     "  All your tools are pre-bound to this agent. You CANNOT switch to a",
     "  different agent, create another one, or read another user's data.",
     "  If the user asks for something that would require a different agent",
@@ -59,7 +65,9 @@ export function buildSystemPrompt(input: RunTurnInput): string {
     formatTranscript(input.transcript),
   );
 
-  if (isFirstTurn) {
+  if (isAudienceBuilder) {
+    sections.push("", AUDIENCE_BUILDER_ADDENDUM);
+  } else if (isFirstTurn) {
     sections.push("", BUILDER_FIRST_TURN_ADDENDUM);
   }
 

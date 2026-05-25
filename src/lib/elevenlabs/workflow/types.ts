@@ -4,10 +4,20 @@
 // Nodes and edges are object-keyed maps (not arrays), unlike our internal
 // WorkflowState model.
 
+/**
+ * Discriminated union for `forward_condition` and `backward_condition` on
+ * an ElevenLabs workflow edge. All four variants accept an optional `label`
+ * — the human-readable description that renders on the edge pill.
+ *
+ * `expression` carries an opaque ASTNode JSON tree (and/or/not, operators,
+ * literals); we don't model the AST here because the upstream schema is
+ * deep and we treat it as a pass-through.
+ */
 export type ElevenForwardCondition =
-  | { type: "unconditional" }
-  | { type: "llm"; condition: string }
-  | { type: "expression"; condition: string };
+  | { type: "unconditional"; label?: string }
+  | { type: "llm"; condition: string; label?: string }
+  | { type: "expression"; expression: unknown; label?: string }
+  | { type: "result"; successful: boolean; label?: string };
 
 export type ElevenWorkflowNode = {
   /** Node type recognised by the agent runtime. */
@@ -49,9 +59,13 @@ export type ElevenWorkflowEdge = {
   source: string;
   target: string;
   forward_condition: ElevenForwardCondition;
+  backward_condition?: ElevenForwardCondition;
 };
 
 export type ElevenWorkflow = {
-  nodes: Record<string, ElevenWorkflowNode>;
-  edges: Record<string, ElevenWorkflowEdge>;
+  /** Map keyed by node id. Schema makes this optional — an empty workflow
+   *  legitimately omits it. */
+  nodes?: Record<string, ElevenWorkflowNode>;
+  /** Map keyed by edge id. Same optionality as `nodes`. */
+  edges?: Record<string, ElevenWorkflowEdge>;
 };

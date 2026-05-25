@@ -14,6 +14,7 @@ import { agentsCol, messagesCol } from "@/lib/mongodb";
 import { patchAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import {
   composeSystemPromptWithWorkflow,
+  normalizeStartNodeId,
   toElevenWorkflow,
 } from "@/lib/capabilities/experience/workflow";
 import type {
@@ -122,10 +123,10 @@ export async function POST(
       label: parsed.data.edge_label,
     });
   }
-  const nextWorkflow: WorkflowState = {
+  const nextWorkflow: WorkflowState = normalizeStartNodeId({
     nodes: [...agent.config_cache.workflow.nodes, node],
     edges,
-  };
+  });
   // Strip any legacy "--- WORKFLOW ---" footer the prompt may still carry,
   // and push the structured workflow to conversation_config.workflow so the
   // ElevenAgents runtime walks the graph itself.

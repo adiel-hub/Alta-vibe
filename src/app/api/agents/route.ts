@@ -19,8 +19,10 @@ import { after } from "next/server";
 import { z } from "zod";
 import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol } from "@/lib/mongodb";
-import { createAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
+import { createAgent, getAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import { defaultAgentConfig } from "@/lib/capabilities";
+import { fromElevenWorkflow } from "@/lib/capabilities/experience/workflow";
+import { backfillProviderToolsForAgent } from "@/lib/integrations/registerProviderTools";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { createLogger, newRequestId } from "@/lib/logger";
 import type { AgentDocument } from "@/types/agent";
@@ -39,6 +41,68 @@ const STARTER_SYSTEM_PROMPT =
 const Body = z.object({
   description: z.string().min(10).max(4_000),
 });
+
+/**
+ * Lightweight agent index — name + phone numbers — used by the campaign
+ * modal so the user can pick which agent to use for an outbound campaign.
+ * Returns only the fields the picker needs.
+ */
+export async function GET(req: NextRequest) {
+  const log = createLogger("api", { route: "GET /api/agents", req_id: newRequestId() });
+  const guard = requireSharedSecret(req);
+  if (guard) return guard;
+  try {
+    const col = await agentsCol();
+    const docs = await col
+      // Exclude the audience_builder singleton — it's a workspace-internal
+      // chat host, not a user-facing voice agent. {$ne} also matches docs
+      // where `kind` is missing (legacy voice agents).
+      .find({ kind: { $ne: "audience_builder" } })
+      .sort({ updated_at: -1 })
+      .limit(100)
+      .project({
+        name: 1,
+        elevenlabs_agent_id: 1,
+        "config_cache.name": 1,
+        "config_cache.phone_numbers": 1,
+        updated_at: 1,
+      })
+      .toArray();
+    type DocShape = {
+      _id: { toHexString: () => string };
+      name?: string;
+      elevenlabs_agent_id?: string;
+      config_cache?: {
+        name?: string;
+        phone_numbers?: Array<{
+          id: string;
+          number: string;
+          label?: string;
+          provider?: string;
+        }>;
+      };
+      updated_at?: Date;
+    };
+    const data = (docs as unknown as DocShape[]).map((d) => ({
+      id: d._id.toHexString(),
+      name: d.config_cache?.name || d.name || "Untitled agent",
+      elevenlabs_agent_id: d.elevenlabs_agent_id ?? "",
+      phone_numbers:
+        d.config_cache?.phone_numbers?.map((p) => ({
+          id: p.id,
+          number: p.number,
+          label: p.label ?? "",
+        })) ?? [],
+      updated_at: d.updated_at?.toISOString() ?? new Date(0).toISOString(),
+    }));
+    log.info("ok", { count: data.length });
+    return NextResponse.json({ agents: data });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    log.error("failed", { message });
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
 
 export async function POST(req: NextRequest) {
   const log = createLogger("api", { route: "POST /api/agents", req_id: newRequestId() });
@@ -73,6 +137,30 @@ export async function POST(req: NextRequest) {
       voice_id: DEFAULT_VOICE_ID,
     });
 
+    // ElevenLabs auto-generates a start node with its OWN id during create.
+    // Read it back so our cache stores the real upstream id from day zero
+    // — otherwise our hardcoded "start" id silently overwrites theirs on
+    // the first PATCH and any reference to the start node during the gap
+    // is wrong. If the read fails (transient), fall back to the seeded
+    // default — the next set_workflow will re-anchor anyway.
+    try {
+      const raw = await getAgent(agent_id);
+      // raw.workflow is typed loosely (Record<string, unknown>) on the
+      // ElevenAgentRaw response type; fromElevenWorkflow does its own
+      // runtime guards on the shape so the cast is safe.
+      const upstreamWorkflow = fromElevenWorkflow(
+        raw.workflow as Parameters<typeof fromElevenWorkflow>[0],
+      );
+      if (upstreamWorkflow && upstreamWorkflow.nodes.length > 0) {
+        configCache.workflow = upstreamWorkflow;
+      }
+    } catch (err) {
+      log.warn("could not hydrate upstream workflow after create", {
+        agent_id,
+        message: err instanceof Error ? err.message : "unknown",
+      });
+    }
+
     const now = new Date();
     const col = await agentsCol();
     const insert = await col.insertOne({
@@ -87,6 +175,21 @@ export async function POST(req: NextRequest) {
       created_at: now,
       updated_at: now,
     } as unknown as AgentDocument);
+
+    // Auto-inherit workspace-connected provider tools. If HubSpot /
+    // Google Calendar / etc. are already connected for the workspace,
+    // their default tools land on this new agent immediately so the
+    // first builder turn can reference them. Best-effort: a failure
+    // here just defers the install to the agent's first GET (which
+    // also runs backfill).
+    await backfillProviderToolsForAgent(insert.insertedId.toHexString()).catch(
+      (err) => {
+        log.warn("backfill provider tools failed on create", {
+          mongo_id: insert.insertedId.toHexString(),
+          message: err instanceof Error ? err.message : "unknown",
+        });
+      },
+    );
 
     // Kick off the first builder turn so Alta starts shaping the agent
     // immediately. The user's landing-page description becomes the

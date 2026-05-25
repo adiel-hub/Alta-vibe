@@ -14,6 +14,7 @@ import {
   projectAgentConfig,
   ElevenLabsError,
 } from "@/lib/elevenlabs/client";
+import { backfillProviderToolsForAgent } from "@/lib/integrations/registerProviderTools";
 import type { AgentDocument, AgentDTO } from "@/types/agent";
 
 export const runtime = "nodejs";
@@ -31,6 +32,15 @@ export async function GET(
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   const col = await agentsCol();
+
+  // Workspace cascade backfill: ensure this agent has every default tool
+  // from every workspace-connected integration before we serve its
+  // config. Heals agents that pre-date the cascade or missed it on
+  // connect (transient ElevenLabs failure on that agent). Idempotent and
+  // cheap when there's nothing to install. A failure here must not block
+  // the page — backfill will retry on the next load.
+  await backfillProviderToolsForAgent(id).catch(() => {});
+
   const doc = await col.findOne({ _id: new ObjectId(id) });
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 

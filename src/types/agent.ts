@@ -96,27 +96,50 @@ export type WorkflowNode = {
   position?: { x: number; y: number };
 };
 
+/**
+ * Edge condition discriminated union. Matches ElevenLabs' four accepted
+ * `forward_condition` / `backward_condition` variants:
+ *   - "unconditional"  — always traverse
+ *   - "llm"            — natural-language predicate evaluated by the LLM
+ *   - "expression"     — deterministic AST evaluated against state (the
+ *                        ASTNode shape is treated as an opaque JSON blob)
+ *   - "result"         — branches on a `tool` node's success/failure
+ */
+export type WorkflowEdgeCondition =
+  | { type: "unconditional"; label?: string }
+  | { type: "llm"; condition: string; label?: string }
+  | { type: "expression"; expression: unknown; label?: string }
+  | { type: "result"; successful: boolean; label?: string };
+
 export type WorkflowEdge = {
   id: string;
   from: string;
   to: string;
+  /**
+   * Legacy: free-text label rendered on the edge pill. New code should put
+   * the label inside `forward_condition.label` so it matches the wire shape.
+   * Kept here so cached agents authored before the structured condition
+   * variants existed continue to render their pills.
+   */
   label?: string;
+  /**
+   * Legacy: natural-language LLM condition. Equivalent to setting
+   * `forward_condition: { type: "llm", condition }`. The serializer falls
+   * back to this when `forward_condition` is absent.
+   */
   condition?: string;
+  forward_condition?: WorkflowEdgeCondition;
+  /**
+   * Backward edges enable loops without adding a flipped sibling edge —
+   * the same physical edge is bi-directional, with two independent
+   * conditions.
+   */
+  backward_condition?: WorkflowEdgeCondition;
 };
 
 export type WorkflowState = {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
-};
-
-// --- Connected integrations (third-party providers) -----------------------
-
-export type ConnectedIntegration = {
-  id: string;
-  provider: string;
-  display_name: string;
-  status: "connected" | "disconnected" | "expired";
-  connected_at: string | null;
 };
 
 // --- Aggregate config ------------------------------------------------------
@@ -139,7 +162,6 @@ export type AgentConfigCache = {
   evaluation_criteria: EvaluationCriterion[];
   phone_numbers: PhoneNumber[];
   workflow: WorkflowState;
-  integrations: ConnectedIntegration[];
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
@@ -151,7 +173,10 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
 };
 
 export const DEFAULT_WORKFLOW: WorkflowState = {
-  nodes: [{ id: "start", type: "start", label: "Call connects", data: {} }],
+  // id MUST be "start_node" — ElevenLabs' validator hardcodes that id as
+  // the canonical start node. Any other id surfaces as the misleading
+  // 422 "Workflow must contain a start node." from upstream.
+  nodes: [{ id: "start_node", type: "start", label: "Call connects", data: {} }],
   edges: [],
 };
 
@@ -162,12 +187,23 @@ export type AgentLastError = {
   message: string;
 } | null;
 
+/**
+ * Distinguishes ordinary voice agents (the ones the user builds + tests + dials
+ * with) from the workspace-singleton "audience_builder" agent that hosts the
+ * /audiences chat. The audience_builder agent reuses the same chat / tool /
+ * widget infrastructure but is excluded from the agent picker UI everywhere.
+ * Older docs without this field are treated as "voice_agent".
+ */
+export type AgentKind = "voice_agent" | "audience_builder";
+
 export type AgentDocument = {
   _id: ObjectId;
   elevenlabs_agent_id: string;
   name: string;
   description: string;
   revision: number;
+  /** Defaults to "voice_agent" when unset. */
+  kind?: AgentKind;
   config_cache: AgentConfigCache;
   last_error: AgentLastError;
   /**
@@ -254,6 +290,30 @@ export type ChatMessageDocument = {
    * so echoing it as a chat bubble is noise.
    */
   panel_action?: boolean;
+  /**
+   * Set only on messages belonging to the singleton `audience_builder`
+   * agent. Splits its message log into independent chat threads so the
+   * user can hold multiple audience-build conversations in parallel.
+   * Voice-agent messages leave this unset and continue to share one
+   * timeline per agent_id, exactly like before.
+   */
+  chat_session_id?: ObjectId;
+};
+
+/**
+ * One audience-builder chat thread. The audience_builder agent itself is a
+ * workspace singleton; sessions slice its message log so each chat has its
+ * own transcript and can be resumed independently from the sidebar.
+ */
+export type AudienceChatSessionDocument = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  /** First user message excerpt, used as the sidebar label. Updated lazily. */
+  title: string;
+  created_at: Date;
+  updated_at: Date;
+  /** Timestamp of the most recent message in this session — drives sidebar sort. */
+  last_message_at: Date;
 };
 
 export type ChatMessageDTO = {
@@ -329,7 +389,10 @@ export type WidgetKind =
   | "confirm"
   | "pick_option"
   | "collect_secret"
-  | "phone_number_setup";
+  | "phone_number_setup"
+  | "select_prospects"
+  | "audience_source_picker"
+  | "csv_upload";
 
 export type WidgetActionDocument = {
   _id: ObjectId;
@@ -478,4 +541,101 @@ export type CallLogDetail = CallLogSummary & {
     evaluation?: Array<{ name: string; passed: boolean; rationale?: string }>;
     data_collection?: Array<{ name: string; value: unknown }>;
   };
+};
+
+// --- Prospects / Audiences / Campaigns ----------------------------------
+// Workspace-global outbound calling primitives, sourced from People Data Labs.
+// Prospects are deduped by their PDL id; an audience is just an ordered list
+// of prospect ids; a campaign is one execution of an audience against one
+// agent + phone number.
+
+export type ProspectDocument = {
+  _id: ObjectId;
+  /** PDL person id — unique across the workspace. */
+  pdl_id: string;
+  full_name: string;
+  job_title: string | null;
+  job_company_name: string | null;
+  location_name: string | null;
+  /** E.164 mobile number when present — required to be dialable. */
+  mobile_phone: string | null;
+  /** Any other phone numbers PDL returned (work, home, etc.). */
+  phone_numbers: string[];
+  email: string | null;
+  linkedin_url: string | null;
+  /** Full raw PDL record stored for future re-enrichment / debugging. */
+  raw: Record<string, unknown>;
+  /**
+   * User-tagged custom fields from CSV imports — e.g. {"Lead Score": "42"}.
+   * Distinct from `raw`: only columns the user explicitly mapped as
+   * "Custom" in the upload UI land here. Undefined for PDL / HubSpot rows.
+   */
+  custom_fields?: Record<string, string>;
+  created_at: Date;
+};
+
+export type AudienceDocument = {
+  _id: ObjectId;
+  name: string;
+  description: string;
+  /** Stable order — newest-added prospects last. Treated as a set on write. */
+  prospect_ids: ObjectId[];
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type CallCampaignStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export type CampaignItemStatus =
+  | "queued"
+  | "calling"
+  | "done"
+  | "failed"
+  | "skipped";
+
+export type CampaignItem = {
+  prospect_id: ObjectId;
+  /** Snapshot of the dialed number — prospects can be edited later. */
+  to_number: string;
+  status: CampaignItemStatus;
+  conversation_id: string | null;
+  error: string | null;
+  started_at: Date | null;
+  ended_at: Date | null;
+};
+
+export type CampaignEvent = {
+  seq: number;
+  at: Date;
+  /** Discriminated event for the SSE tail. */
+  event:
+    | { type: "campaign_started"; total: number }
+    | { type: "item_started"; prospect_id: string; to_number: string }
+    | { type: "item_done"; prospect_id: string; conversation_id: string }
+    | { type: "item_failed"; prospect_id: string; error: string }
+    | { type: "item_skipped"; prospect_id: string; reason: string }
+    | { type: "campaign_done"; status: CallCampaignStatus };
+};
+
+export type CallCampaignDocument = {
+  _id: ObjectId;
+  audience_id: ObjectId;
+  agent_id: ObjectId;
+  agent_phone_number_id: string;
+  status: CallCampaignStatus;
+  /** How many prospects we're willing to be on the phone with at once. */
+  concurrency: number;
+  items: CampaignItem[];
+  events: CampaignEvent[];
+  next_seq: number;
+  /** Heartbeat — bumped whenever the runner makes progress. */
+  last_event_at: Date;
+  created_at: Date;
+  started_at: Date | null;
+  ended_at: Date | null;
 };

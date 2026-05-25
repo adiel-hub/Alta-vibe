@@ -13,6 +13,7 @@ import { runTurn } from "@/lib/builder-agent/runTurn";
 import { maybeUpdateConversationSummary } from "@/lib/builder-agent/summarizer";
 import {
   agentsCol,
+  audienceChatSessionsCol,
   messagesCol,
   turnJobsCol,
 } from "@/lib/mongodb";
@@ -27,6 +28,7 @@ export async function enqueueTurnJob(
   agentId: ObjectId,
   userMessage: string,
   role: "user" | "system" = "user",
+  chatSessionId: ObjectId | null = null,
 ): Promise<ObjectId> {
   const jobs = await turnJobsCol();
   const now = new Date();
@@ -40,6 +42,7 @@ export async function enqueueTurnJob(
     error: null,
     started_at: now,
     finished_at: null,
+    chat_session_id: chatSessionId ?? undefined,
   } as never);
 
   const messages = await messagesCol();
@@ -51,15 +54,36 @@ export async function enqueueTurnJob(
     revision_before: 0,
     revision_after: 0,
     created_at: now,
+    ...(chatSessionId ? { chat_session_id: chatSessionId } : {}),
   } as never);
+
+  // Bump the session's last-activity timestamp so the sidebar re-sorts it
+  // to the top, and lazily set the title from the first user message.
+  if (chatSessionId) {
+    await (await audienceChatSessionsCol()).updateOne(
+      { _id: chatSessionId },
+      {
+        $set: { last_message_at: now, updated_at: now },
+        $setOnInsert: { title: deriveSessionTitle(userMessage) },
+      },
+    );
+  }
 
   log.info("enqueued", {
     job_id: insert.insertedId.toHexString(),
     agent_id: agentId.toHexString(),
     role,
     msg_len: userMessage.length,
+    chat_session_id: chatSessionId?.toHexString(),
   });
   return insert.insertedId;
+}
+
+/** Compact a free-text user message into a sidebar-friendly title. */
+function deriveSessionTitle(text: string): string {
+  const cleaned = text.trim().replace(/\s+/g, " ");
+  if (cleaned.length <= 60) return cleaned || "New audience chat";
+  return `${cleaned.slice(0, 57).trimEnd()}…`;
 }
 
 export async function processTurnJob(jobId: ObjectId): Promise<void> {
@@ -99,16 +123,22 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     return;
   }
 
-  // Build prior transcript from chat_messages excluding this job's user turn
+  // Build prior transcript from chat_messages excluding this job's user turn.
+  // When the job is scoped to an audience-builder chat session, only pull
+  // messages from THAT session so independent chats stay siloed. Other agents
+  // (voice agents) never carry chat_session_id and behave like before.
+  const sessionId = (job as { chat_session_id?: ObjectId }).chat_session_id ?? null;
   const messages = await messagesCol();
+  const messageFilter: Record<string, unknown> = {
+    agent_id: agent._id,
+    $or: [
+      { turn_job_id: { $exists: false } },
+      { turn_job_id: { $ne: jobId } },
+    ],
+  };
+  if (sessionId) messageFilter.chat_session_id = sessionId;
   const priorMessages = await messages
-    .find({
-      agent_id: agent._id,
-      $or: [
-        { turn_job_id: { $exists: false } },
-        { turn_job_id: { $ne: jobId } },
-      ],
-    })
+    .find(messageFilter)
     .sort({ created_at: 1 })
     .toArray();
 
@@ -160,6 +190,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
         elevenlabsAgentId: agent.elevenlabs_agent_id,
         agentName: agent.name,
         agentDescription: agent.description,
+        agentKind: agent.kind ?? "voice_agent",
         lastError: agent.last_error,
         currentConfig: agent.config_cache,
         startingRevision: agent.revision,
@@ -180,6 +211,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
     }
     await flush();
 
+    const assistantInsertedAt = new Date();
     await messages.insertOne({
       agent_id: agent._id,
       role: "assistant",
@@ -187,8 +219,15 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
       turn_job_id: jobId,
       revision_before: agent.revision,
       revision_after: result.endingRevision,
-      created_at: new Date(),
+      created_at: assistantInsertedAt,
+      ...(sessionId ? { chat_session_id: sessionId } : {}),
     } as never);
+    if (sessionId) {
+      await (await audienceChatSessionsCol()).updateOne(
+        { _id: sessionId },
+        { $set: { last_message_at: assistantInsertedAt, updated_at: assistantInsertedAt } },
+      );
+    }
 
     if (result.endingRevision !== agent.revision) {
       await agents.updateOne(
@@ -242,6 +281,7 @@ export async function processTurnJob(jobId: ObjectId): Promise<void> {
         revision_before: agent.revision,
         revision_after: agent.revision,
         created_at: new Date(),
+        ...(sessionId ? { chat_session_id: sessionId } : {}),
       } as never);
     }
   }

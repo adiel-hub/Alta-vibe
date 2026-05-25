@@ -18,8 +18,16 @@ const log = createClientLogger("sse-client");
  * stream and drive the store from its events. If the user refreshes mid-turn,
  * the page can call `attachToTurn(jobId, since)` to rejoin from any seq.
  */
-export async function sendMessage(agentId: string, userText: string): Promise<string> {
-  log.info("send", { agent_id: agentId, text_len: userText.length });
+export async function sendMessage(
+  agentId: string,
+  userText: string,
+  opts: { chatSessionId?: string } = {},
+): Promise<string> {
+  log.info("send", {
+    agent_id: agentId,
+    text_len: userText.length,
+    chat_session_id: opts.chatSessionId,
+  });
   const store = useAgentStore.getState();
   const userTurnId = nanoid();
   const assistantTurnId = nanoid();
@@ -29,7 +37,10 @@ export async function sendMessage(agentId: string, userText: string): Promise<st
   const res = await appFetch(`/api/agents/${agentId}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text: userText }),
+    body: JSON.stringify({
+      text: userText,
+      ...(opts.chatSessionId ? { chat_session_id: opts.chatSessionId } : {}),
+    }),
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -48,6 +59,14 @@ export async function sendMessage(agentId: string, userText: string): Promise<st
  * Attach to (or re-attach to) a turn's SSE stream. Replays events from `since`,
  * then tails until the turn finishes. Idempotent w.r.t. seq because the server
  * stamps event ids and we only forward events we haven't seen.
+ *
+ * Cross-agent safety: the global Zustand store is shared across the whole
+ * app, but a single user can have multiple active streams alive at once
+ * (start agent A → navigate home → open agent B while A is still building).
+ * Every store write here is gated on the store's current `agent.id` still
+ * matching the agentId this attach was started for. The moment they diverge
+ * we cancel the reader and stop touching the store so A's stream doesn't
+ * spill into B's chat.
  */
 export async function attachToTurn(
   agentId: string,
@@ -56,6 +75,15 @@ export async function attachToTurn(
   assistantTurnIdOverride?: string,
 ): Promise<void> {
   log.info("attach", { agent_id: agentId, job_id: jobId, since });
+  const isLive = () => useAgentStore.getState().agent?.id === agentId;
+  if (!isLive()) {
+    log.warn("attach skipped — store holds a different agent", {
+      attach_for: agentId,
+      store_agent: useAgentStore.getState().agent?.id,
+    });
+    return;
+  }
+
   const store = useAgentStore.getState();
   let assistantTurnId = assistantTurnIdOverride ?? store.activeAssistantTurnId;
   if (!assistantTurnId) {
@@ -73,7 +101,7 @@ export async function attachToTurn(
   );
   if (!res.ok || !res.body) {
     log.error("attach failed", { status: res.status });
-    store.setActiveTurn(null, null);
+    if (isLive()) store.setActiveTurn(null, null);
     throw new Error(`Stream failed (${res.status})`);
   }
 
@@ -85,6 +113,13 @@ export async function attachToTurn(
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
+    if (!isLive()) {
+      log.info("attach abandoned — user switched agents", {
+        attach_for: agentId,
+      });
+      void reader.cancel().catch(() => {});
+      return;
+    }
     buf += decoder.decode(value, { stream: true });
     let idx: number;
     while ((idx = buf.indexOf("\n\n")) !== -1) {
@@ -99,6 +134,7 @@ export async function attachToTurn(
     }
   }
   log.info("stream end", { job_id: jobId, last_seq: lastSeq });
+  if (!isLive()) return;
   useAgentStore.getState().finalizeAssistantTurn();
   useAgentStore.getState().setActiveTurn(null, null);
 }

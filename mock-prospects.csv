@@ -1,0 +1,21 @@
+first_name,last_name,email,phone,company,title,linkedin_url,location,industry,company_size
+Sarah,Chen,sarah.chen@stripe.com,+14155551234,Stripe,VP of Engineering,https://linkedin.com/in/sarahchen,San Francisco CA,Fintech,5000
+Michael,Rodriguez,m.rodriguez@notion.so,+14085552345,Notion,Head of Product,https://linkedin.com/in/mrodriguez,San Francisco CA,SaaS,800
+Emily,Thompson,emily@figma.com,+12125553456,Figma,Director of Sales,https://linkedin.com/in/emilythompson,New York NY,Design Software,1500
+David,Patel,david.patel@vercel.com,+14155554567,Vercel,Senior Product Manager,https://linkedin.com/in/davidpatel,San Francisco CA,Developer Tools,500
+Jessica,Kim,jkim@linear.app,+13105555678,Linear,Chief Marketing Officer,https://linkedin.com/in/jessicakim,Los Angeles CA,Project Management,200
+Daniel,Schwartz,daniel@retool.com,+16175556789,Retool,VP of Sales,https://linkedin.com/in/danielschwartz,Boston MA,Developer Tools,600
+Priya,Sharma,priya.sharma@airtable.com,+12065557890,Airtable,Director of Engineering,https://linkedin.com/in/priyasharma,Seattle WA,SaaS,1200
+James,O'Brien,jobrien@hubspot.com,+16175558901,HubSpot,Senior Account Executive,https://linkedin.com/in/jamesobrien,Boston MA,CRM,7500
+Olivia,Martinez,o.martinez@asana.com,+14155559012,Asana,Head of Customer Success,https://linkedin.com/in/oliviamartinez,San Francisco CA,Project Management,2000
+Ryan,Nakamura,ryan@datadog.com,+12125550123,Datadog,Engineering Manager,https://linkedin.com/in/ryannakamura,New York NY,Observability,5000
+Aisha,Williams,aisha.w@plaid.com,+14155551111,Plaid,VP of Partnerships,https://linkedin.com/in/aishawilliams,San Francisco CA,Fintech,1500
+Carlos,Mendoza,carlos@segment.com,+14155552222,Segment,Director of Marketing,https://linkedin.com/in/carlosmendoza,San Francisco CA,Data Infrastructure,900
+Hannah,Goldberg,hannah@mixpanel.com,+14155553333,Mixpanel,Product Marketing Lead,https://linkedin.com/in/hannahgoldberg,San Francisco CA,Analytics,400
+Tomoko,Yamamoto,tomoko@amplitude.com,+14155554444,Amplitude,Senior Sales Engineer,https://linkedin.com/in/tomokoyamamoto,San Francisco CA,Analytics,800
+Marcus,Johnson,marcus.j@twilio.com,+14155555555,Twilio,Solutions Architect,https://linkedin.com/in/marcusjohnson,San Francisco CA,Communications,8000
+Nina,Petrov,nina@snowflake.com,+16505556666,Snowflake,Field CTO,https://linkedin.com/in/ninapetrov,San Mateo CA,Data Warehouse,7000
+Ahmed,Hassan,ahmed@databricks.com,+14155557777,Databricks,Enterprise Account Executive,https://linkedin.com/in/ahmedhassan,San Francisco CA,Data Platform,6000
+Rachel,Cohen,rachel.cohen@gong.io,+14155558888,Gong,VP of Revenue Operations,https://linkedin.com/in/rachelcohen,San Francisco CA,Sales Tech,2500
+Luca,Bianchi,luca@intercom.com,+14155559999,Intercom,Director of Product,https://linkedin.com/in/lucabianchi,San Francisco CA,Customer Support,1000
+Zoe,Anderson,zoe@calendly.com,+14045550000,Calendly,Head of Growth,https://linkedin.com/in/zoeanderson,Atlanta GA,Scheduling,600

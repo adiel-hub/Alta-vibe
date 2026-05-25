@@ -41,6 +41,7 @@ import {
   deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import {
   extractSecretRefs,
   normalizeElevenlabsSchema,
@@ -366,47 +367,59 @@ export const writeToolCapability: Capability = {
           } as Omit<CustomToolDocument, "_id"> as never);
           const customToolId = insertRes.insertedId.toHexString();
 
+          // Lifecycle (pre/post) tools fire from our webhook dispatchers,
+          // never from ElevenLabs — skip the upstream tool registration and
+          // mint a local id. The custom_tools row + proxy URL still exist
+          // because dispatch.ts reuses the same secret-substituting proxy.
+          const isLifecycle = phase !== "in_call";
           let created: { id: string; name: string };
           try {
-            const proxyUrl = `${getAppBaseUrl()}/api/custom-tools/proxy/${ctx.agentMongoId}/${customToolId}`;
-            // Build api_schema with only the fields ElevenLabs accepts —
-            // explicitly omit schemas when the synthesizer returned null
-            // or an empty object. Sending `request_body_schema: null`
-            // produces a 422 on /v1/convai/tools.
-            const apiSchema: {
-              url: string;
-              method: "GET" | "POST" | "PUT" | "DELETE";
-              request_headers: Record<string, string>;
-              request_body_schema?: unknown;
-              query_params_schema?: unknown;
-            } = {
-              url: proxyUrl,
-              method: synth.method,
-              request_headers: {
-                Authorization: `Bearer ${proxySecret}`,
-              },
-            };
-            const normalizedBody = normalizeElevenlabsSchema(
-              synth.body_schema,
-              "body",
-            );
-            if (normalizedBody !== undefined) {
-              apiSchema.request_body_schema = normalizedBody;
+            if (isLifecycle) {
+              created = {
+                id: `local_${randomBytes(8).toString("hex")}`,
+                name: scopedName,
+              };
+            } else {
+              const proxyUrl = `${getAppBaseUrl()}/api/custom-tools/proxy/${ctx.agentMongoId}/${customToolId}`;
+              // Build api_schema with only the fields ElevenLabs accepts —
+              // explicitly omit schemas when the synthesizer returned null
+              // or an empty object. Sending `request_body_schema: null`
+              // produces a 422 on /v1/convai/tools.
+              const apiSchema: {
+                url: string;
+                method: "GET" | "POST" | "PUT" | "DELETE";
+                request_headers: Record<string, string>;
+                request_body_schema?: unknown;
+                query_params_schema?: unknown;
+              } = {
+                url: proxyUrl,
+                method: synth.method,
+                request_headers: {
+                  Authorization: `Bearer ${proxySecret}`,
+                },
+              };
+              const normalizedBody = normalizeElevenlabsSchema(
+                synth.body_schema,
+                "body",
+              );
+              if (normalizedBody !== undefined) {
+                apiSchema.request_body_schema = normalizedBody;
+              }
+              const normalizedQuery = normalizeElevenlabsSchema(
+                synth.query_schema,
+                "query",
+              );
+              if (normalizedQuery !== undefined) {
+                apiSchema.query_params_schema = normalizedQuery;
+              }
+              created = await createRuntimeTool({
+                name: scopedName,
+                description: synth.description,
+                type: "webhook",
+                phase,
+                api_schema: apiSchema,
+              });
             }
-            const normalizedQuery = normalizeElevenlabsSchema(
-              synth.query_schema,
-              "query",
-            );
-            if (normalizedQuery !== undefined) {
-              apiSchema.query_params_schema = normalizedQuery;
-            }
-            created = await createRuntimeTool({
-              name: scopedName,
-              description: synth.description,
-              type: "webhook",
-              phase,
-              api_schema: apiSchema,
-            });
           } catch (err) {
             // Roll back the orphaned custom_tools row so we don't leave
             // proxy_secrets pointing at nothing.
@@ -432,9 +445,11 @@ export const writeToolCapability: Capability = {
           };
           const nextTools = [...ctx.config.tools, entry];
 
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: nextTools.map((t) => t.id),
-          });
+          if (!isLifecycle) {
+            await patchAgent(ctx.elevenlabs_agent_id, {
+              tool_ids: externalToolIds(nextTools),
+            });
+          }
 
           return {
             patch: { tools: nextTools },
@@ -472,9 +487,11 @@ export const writeToolCapability: Capability = {
           });
           const next = ctx.config.tools.filter((t) => t.id !== tool_id);
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: next.map((t) => t.id),
+            tool_ids: externalToolIds(next),
           });
-          await deleteRuntimeTool(tool_id).catch(() => {});
+          if (!isLocalToolId(tool_id)) {
+            await deleteRuntimeTool(tool_id).catch(() => {});
+          }
           if (row) {
             await customTools.deleteOne({ _id: row._id }).catch(() => {});
           }

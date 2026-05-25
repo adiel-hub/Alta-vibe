@@ -3,10 +3,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
-import type { AgentConfigCache, WorkflowNodeType } from "@/types/agent";
+import type {
+  AgentConfigCache,
+  RuntimePhase,
+  RuntimeTool,
+  WorkflowNodeType,
+} from "@/types/agent";
+import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 import { useWorkflowReveal } from "./useWorkflowReveal";
 import {
   ADD_NODE_MENU,
+  COL_GAP,
   EDGE_LABEL_W,
   ICON,
   NODE_H,
@@ -32,8 +39,20 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // tool (voice, llm, etc.) too — that re-render storm is one of the things
   // that makes the page freeze when `set_workflow` lands mid-stream.
   const workflow = useAgentStore((s) => s.config?.workflow);
-  const liveNodeId = useAgentStore((s) => s.liveWorkflowNodeId);
   const inFlight = useAgentStore((s) => s.inFlight);
+  // Pre/post-call tools are NOT part of the workflow graph (they fire
+  // outside the in-call lifecycle — pre before initiateOutboundCall, post
+  // when ElevenLabs' workspace webhook hits us). Render them as phantom
+  // nodes flanking `start` / `end` so users see the call's full envelope
+  // without polluting the actual workflow graph that goes to ElevenLabs.
+  const allTools = useAgentStore((s) => s.config?.tools);
+  const { preCallTools, postCallTools } = useMemo(() => {
+    const tools = allTools ?? [];
+    return {
+      preCallTools: tools.filter((t) => t.phase === "pre_call"),
+      postCallTools: tools.filter((t) => t.phase === "post_call"),
+    };
+  }, [allTools]);
 
   // ── Render diagnostics ────────────────────────────────────────────────
   // Bump on every render so we can correlate freezes with re-render storms.
@@ -50,7 +69,6 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     nodes: workflow?.nodes.length,
     edges: workflow?.edges.length,
     workflow_ref_changed: workflowRefChanged,
-    live_node: liveNodeId,
     in_flight_workflow: inFlight.has("workflow"),
   });
 
@@ -70,6 +88,9 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // the workflow tab on a previously-built agent (the scenario that was
   // hanging the browser before the BFS fix landed).
   useEffect(() => {
+    const boundInCall = (workflow?.nodes ?? []).filter(
+      (n) => n.type === "tool_call" && !!(n.data?.tool_id as string | undefined),
+    ).length;
     log.info("WorkflowTab mounted", {
       agent_id: agentId,
       nodes: workflow?.nodes.length ?? 0,
@@ -83,6 +104,9 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
           workflow?.edges.filter((e) => !e.condition || e.condition.length === 0)
             .length ?? 0,
       },
+      pre_call_count: preCallTools.length,
+      post_call_count: postCallTools.length,
+      bound_in_call_count: boundInCall,
       stage_w: baseLayout?.width,
       stage_h: baseLayout?.height,
     });
@@ -268,10 +292,17 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // offset on the inner stage, so the user can drift into negative space.
   const onCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // The whole node footprint — body, side actions, "+" button, popup
-    // menu — sits inside .vb-el-node-wrap. Excluding it here keeps the
-    // canvas pan handler from stealing pointer capture and eating the
-    // click on the "+" or trash buttons.
-    if ((e.target as HTMLElement).closest(".vb-el-node-wrap")) return;
+    // menu — sits inside .vb-el-node-wrap. Phantom cards / ambient chips
+    // / their popovers live OUTSIDE that wrapper. Excluding all of these
+    // here keeps the canvas pan handler from stealing pointer capture
+    // and eating the click on the "+", trash, or "+ Pre-call tool"
+    // buttons (the captured canvas swallows the subsequent click).
+    if (
+      (e.target as HTMLElement).closest(
+        ".vb-el-node-wrap, .vb-el-phantom, .vb-el-phantom-add, .vb-el-phantom-popover",
+      )
+    )
+      return;
     const el = scrollRef.current;
     if (!el) return;
     el.setPointerCapture?.(e.pointerId);
@@ -291,9 +322,13 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       const nx = dragState.current.startX + dx;
       const ny = dragState.current.startY + dy;
       if (Math.abs(dx) + Math.abs(dy) > 2) dragState.current.moved = true;
+      // Capture nodeId locally — the setOverrides updater runs during React's
+      // commit phase, by which time dragState.current may have been nulled
+      // by endPointer firing on a different pointer event.
+      const nodeId = dragState.current.nodeId;
       setOverrides((prev) => ({
         ...prev,
-        [dragState.current!.nodeId]: { x: nx, y: ny },
+        [nodeId]: { x: nx, y: ny },
       }));
       return;
     }
@@ -595,7 +630,6 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                   >
                     <path
                       d={path}
-                      pathLength={1}
                       className="vb-edge-path"
                       fill="none"
                       stroke={
@@ -632,7 +666,6 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
               const p = laid.positions.get(n.id);
               if (!p) return null;
               const isSel = n.id === selectedId;
-              const isLive = liveNodeId === n.id;
               const desc =
                 (n.data?.prompt as string | undefined) ??
                 (n.data?.instruction as string | undefined) ??
@@ -645,6 +678,30 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
               const isPending = pendingNodeId === n.id;
               const menuOpen = addMenuFor === n.id;
               const revealed = visibleNodeIds.has(n.id);
+              // For tool_call nodes, resolve the bound tool from the agent's
+              // installed tools so we can render a chip on the card. Two
+              // failure modes worth distinguishing visually:
+              //   - tool_id missing entirely    → "No tool selected" hint
+              //   - tool_id set but unknown id  → "Tool not found" warning
+              //     (e.g. the tool was uninstalled but the node still
+              //     references it).
+              const boundTool: RuntimeTool | "missing" | "unbound" =
+                n.type === "tool_call"
+                  ? (() => {
+                      const toolId = n.data?.tool_id as string | undefined;
+                      const toolName = n.data?.tool_name as string | undefined;
+                      if (!toolId && !toolName) return "unbound" as const;
+                      const pool = allTools ?? [];
+                      const byId = toolId
+                        ? pool.find((t: RuntimeTool) => t.id === toolId)
+                        : null;
+                      if (byId) return byId;
+                      const byName = toolName
+                        ? pool.find((t: RuntimeTool) => t.name === toolName)
+                        : null;
+                      return byName ?? ("missing" as const);
+                    })()
+                  : "unbound";
               return (
                 <div
                   key={n.id}
@@ -662,7 +719,7 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     onClick={(e) => onNodeClick(e, n.id)}
                     className={`vb-el-node vb-el-${n.type} ${
                       isSel ? "selected" : ""
-                    } ${isLive ? "lit-now" : ""} ${
+                    } ${
                       isTerminal ? "vb-el-terminal" : ""
                     }`}
                     style={{
@@ -691,6 +748,36 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                         {desc && (
                           <div dir="auto" className="vb-el-desc">
                             {desc}
+                          </div>
+                        )}
+                        {n.type === "tool_call" && boundTool !== "unbound" && (
+                          boundTool === "missing" ? (
+                            <div className="vb-el-tool-chip vb-el-tool-chip-missing">
+                              <span aria-hidden>⚠</span>
+                              <span>Tool not found</span>
+                            </div>
+                          ) : (
+                            <div
+                              className="vb-el-tool-chip"
+                              title={boundTool.description}
+                            >
+                              <span aria-hidden>
+                                {friendlyForTool(boundTool.name).emoji}
+                              </span>
+                              <span className="vb-el-tool-chip-label">
+                                {friendlyForTool(boundTool.name).label}
+                              </span>
+                              {boundTool.provider && (
+                                <span className="vb-el-tool-chip-provider">
+                                  {boundTool.provider}
+                                </span>
+                              )}
+                            </div>
+                          )
+                        )}
+                        {n.type === "tool_call" && boundTool === "unbound" && (
+                          <div className="vb-el-tool-chip vb-el-tool-chip-unbound">
+                            No tool selected
                           </div>
                         )}
                       </div>
@@ -761,6 +848,49 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 </div>
               );
             })}
+
+            {/* ── Phantom pre/post-call tool cards ────────────────────────
+                Rendered as decorations flanking `start` / `end`. They are
+                NOT in `workflow.nodes` — projectAgentConfig never sees
+                them, ElevenLabs is unaware they exist. The user gets a
+                visual reminder of the call's full envelope (what fires
+                before the greeting, what fires after hangup) without
+                polluting the in-call graph. Clicking a phantom jumps to
+                the Tools tab where it can actually be edited / removed. */}
+            {(() => {
+              const start = workflow.nodes.find((n) => n.type === "start");
+              const preAnchor = start
+                ? laid.positions.get(start.id) ?? null
+                : null;
+              // Prefer the right-most explicit `end` node, but fall back
+              // to the right-most node of any type. Without this fallback
+              // the post-call lane silently disappears on fresh workflows
+              // (DEFAULT_WORKFLOW ships with only a `start` node).
+              const ends = workflow.nodes.filter((n) => n.type === "end");
+              const pool = ends.length > 0 ? ends : workflow.nodes;
+              let postAnchor: { x: number; y: number } | null = null;
+              for (const n of pool) {
+                const p = laid.positions.get(n.id);
+                if (!p) continue;
+                if (!postAnchor || p.x > postAnchor.x) postAnchor = p;
+              }
+              return (
+                <>
+                  <PhantomLifecycleColumn
+                    agentId={agentId}
+                    tools={preCallTools}
+                    anchor={preAnchor}
+                    side="left"
+                  />
+                  <PhantomLifecycleColumn
+                    agentId={agentId}
+                    tools={postCallTools}
+                    anchor={postAnchor}
+                    side="right"
+                  />
+                </>
+              );
+            })()}
           </div>
           </div>
         )}
@@ -795,3 +925,325 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     </div>
   );
 }
+
+/**
+ * Decorative pre/post-call tool cards that flank the workflow's start /
+ * end nodes. They are NOT workflow nodes — projectAgentConfig never sees
+ * them, ElevenLabs is unaware they exist. Their sole purpose is to make
+ * the call's full lifecycle visible inside the workflow tab so users
+ * understand which tools fire outside the in-call graph.
+ *
+ * `anchor` is the position of the start (for `side="left"`) or end (for
+ * `side="right"`) node, in the same coordinate space as the laid-out
+ * workflow nodes. Tools stack vertically next to that anchor and are
+ * connected to it with a dashed link.
+ */
+function PhantomLifecycleColumn({
+  agentId,
+  tools,
+  anchor,
+  side,
+}: {
+  agentId: string;
+  tools: RuntimeTool[];
+  anchor: { x: number; y: number } | null;
+  side: "left" | "right";
+}) {
+  const phase: RuntimePhase = side === "left" ? "pre_call" : "post_call";
+  const [inspectorFor, setInspectorFor] = useState<RuntimeTool | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function uninstall(toolName: string) {
+    setBusyKey(`uninstall:${toolName}`);
+    setActionError(null);
+    try {
+      const res = await appFetch(
+        `/api/agents/${agentId}/provider-tools?name=${encodeURIComponent(toolName)}`,
+        { method: "DELETE" },
+      );
+      const data = (await res.json()) as {
+        revision?: number;
+        tools?: RuntimeTool[];
+        error?: string;
+      };
+      if (!res.ok || !data.tools) {
+        setActionError(data.error ?? `Uninstall failed (${res.status})`);
+        return;
+      }
+      useAgentStore
+        .getState()
+        .applyConfigDirect({ tools: data.tools }, data.revision ?? 0);
+      setInspectorFor(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Uninstall failed");
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  if (!anchor) return null;
+  // Phantom cards are slightly smaller than real workflow nodes to read as
+  // "different / informational" without forcing a separate scale on the
+  // whole canvas.
+  const PHANTOM_W = 220;
+  const PHANTOM_H = 56;
+  const ADD_BTN_H = 32;
+  const GAP = 12;
+  // Pre-call cards sit to the LEFT of start, post-call to the RIGHT of end.
+  const colX =
+    side === "left"
+      ? anchor.x - PHANTOM_W - COL_GAP
+      : anchor.x + NODE_W + COL_GAP;
+  // Vertically center the stack (cards + add button) around the anchor's
+  // slot midpoint.
+  const stackHeight =
+    tools.length * PHANTOM_H + tools.length * GAP + ADD_BTN_H;
+  const startY = anchor.y + NODE_H / 2 - stackHeight / 2;
+
+  return (
+    <>
+      {/* Phantom cards + dashed connectors. */}
+      {tools.map((t, i) => {
+        const y = startY + i * (PHANTOM_H + GAP);
+        const friendly = friendlyForTool(t.name);
+        const ax = side === "left" ? colX + PHANTOM_W : anchor.x + NODE_W;
+        const ay = y + PHANTOM_H / 2;
+        const bx = side === "left" ? anchor.x : colX;
+        const by = anchor.y + NODE_H / 2;
+        const midX = (ax + bx) / 2;
+        const path = `M ${ax} ${ay} C ${midX} ${ay}, ${midX} ${by}, ${bx} ${by}`;
+        return (
+          <div key={t.id} style={{ position: "absolute", inset: 0 }}>
+            <svg
+              width="100%"
+              height="100%"
+              style={{
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+                overflow: "visible",
+              }}
+            >
+              <path
+                d={path}
+                fill="none"
+                stroke="var(--color-border-strong)"
+                strokeWidth={1.25}
+                strokeDasharray="4 4"
+                opacity={0.55}
+              />
+            </svg>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setInspectorFor(t);
+              }}
+              className="vb-el-phantom"
+              style={{
+                position: "absolute",
+                left: colX,
+                top: y,
+                width: PHANTOM_W,
+                height: PHANTOM_H,
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+              title={
+                side === "left"
+                  ? "Pre-call — fires before the agent's greeting"
+                  : "Post-call — fires after the call ends"
+              }
+            >
+              <div className="vb-el-phantom-tag">
+                {side === "left" ? "Pre-call" : "Post-call"}
+              </div>
+              <div className="vb-el-phantom-body">
+                <span className="vb-el-phantom-emoji" aria-hidden>
+                  {friendly.emoji}
+                </span>
+                <span className="vb-el-phantom-label">{friendly.label}</span>
+              </div>
+            </button>
+          </div>
+        );
+      })}
+
+      {/* "+ Add" button at the bottom of the column. Always visible — when
+          the column is empty, it's the only thing in the lane, so users
+          discover where to wire pre/post tools without leaving the
+          workflow tab. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPickerOpen(true);
+        }}
+        className="vb-el-phantom-add"
+        style={{
+          position: "absolute",
+          left: colX,
+          top: startY + tools.length * (PHANTOM_H + GAP),
+          width: PHANTOM_W,
+          height: ADD_BTN_H,
+        }}
+      >
+        + {side === "left" ? "Pre-call tool" : "Post-call tool"}
+      </button>
+
+      {/* Inspector popover — opens when a phantom card is clicked. Shows the
+          tool's friendly name, description, the dynamic-variable keys its
+          output exposes (pre_call only), and a Remove button. */}
+      {inspectorFor && (
+        <PhantomInspectorPopover
+          tool={inspectorFor}
+          side={side}
+          x={colX}
+          y={(() => {
+            const i = tools.findIndex((t) => t.id === inspectorFor.id);
+            return startY + Math.max(0, i) * (PHANTOM_H + GAP);
+          })()}
+          width={PHANTOM_W}
+          height={PHANTOM_H}
+          busy={busyKey === `uninstall:${inspectorFor.name}`}
+          error={actionError}
+          onRemove={() => uninstall(inspectorFor.name)}
+          onClose={() => {
+            setInspectorFor(null);
+            setActionError(null);
+          }}
+        />
+      )}
+
+      {/* Full Tools picker modal — same one used by the workflow node "+"
+          button, defaulted to this lane's phase so the user lands on the
+          right tab. Installing inside the modal updates the store
+          directly, so no extra wiring is needed here. */}
+      {pickerOpen && (
+        <ToolPickerModal
+          initialPhase={phase}
+          title={`Add ${phase === "pre_call" ? "pre-call" : "post-call"} tool`}
+          subtitle={
+            phase === "pre_call"
+              ? "Fires from our backend before the agent's greeting. Output is exposed as {{pre_<tool>__<field>}} dynamic variables."
+              : "Fires from our backend after the call ends. Use for logging, CRM updates, or evaluation."
+          }
+          onPick={() => {
+            setPickerOpen(false);
+            setActionError(null);
+          }}
+          onClose={() => {
+            setPickerOpen(false);
+            setActionError(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function PhantomInspectorPopover({
+  tool,
+  side,
+  x,
+  y,
+  width,
+  height,
+  busy,
+  error,
+  onRemove,
+  onClose,
+}: {
+  tool: RuntimeTool;
+  side: "left" | "right";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  busy: boolean;
+  error: string | null;
+  onRemove: () => void;
+  onClose: () => void;
+}) {
+  const friendly = friendlyForTool(tool.name);
+  // Pop the inspector to the side of the card so it doesn't cover the
+  // card itself.
+  const popX = side === "left" ? x - 260 - 12 : x + width + 12;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: popX,
+        top: y - 4,
+        width: 260,
+        zIndex: 60,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="vb-el-phantom-popover">
+        <div className="vb-el-phantom-popover-head">
+          <span aria-hidden style={{ fontSize: 14 }}>
+            {friendly.emoji}
+          </span>
+          <span className="vb-el-phantom-popover-title">
+            {friendly.label}
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="vb-el-phantom-popover-close"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="vb-el-phantom-popover-meta">
+          <span className="vb-el-phantom-tag">
+            {side === "left" ? "Pre-call" : "Post-call"}
+          </span>
+          {tool.provider && (
+            <span className="vb-el-phantom-popover-provider">
+              {tool.provider}
+            </span>
+          )}
+        </div>
+        <p className="vb-el-phantom-popover-desc">{tool.description}</p>
+        {side === "left" && (
+          <div className="vb-el-phantom-popover-vars">
+            <div className="vb-el-phantom-popover-varhead">
+              Outputs available as
+            </div>
+            <code className="vb-el-phantom-popover-varcode">
+              {`{{pre_${tool.name}__<field>}}`}
+            </code>
+          </div>
+        )}
+        {error && (
+          <div className="vb-el-phantom-popover-error">{error}</div>
+        )}
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={busy}
+          className="vb-el-phantom-popover-remove"
+        >
+          {busy ? "Removing…" : "Remove"}
+        </button>
+      </div>
+      {/* Click-outside swallow so we don't immediately close ourselves. */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: -1,
+        }}
+      />
+      {/* Suppress unused warning */}
+      <span style={{ display: "none" }}>{height}</span>
+    </div>
+  );
+}
+

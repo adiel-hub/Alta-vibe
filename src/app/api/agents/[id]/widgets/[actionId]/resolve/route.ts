@@ -19,6 +19,8 @@ import { agentsCol, widgetActionsCol } from "@/lib/mongodb";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { registerProviderForAgent } from "@/lib/integrations/registerProviderTools";
 import { encryptToken } from "@/lib/integrations/tokens";
+import { addProspectsToAudience } from "@/lib/audiences/addProspects";
+import type { PdlProspect } from "@/lib/pdl/client";
 import { validateToken as validateHubspotToken } from "@/lib/integrations/hubspot/auth";
 import { storeAgentSecret } from "@/lib/integrations/agentSecrets";
 import {
@@ -74,6 +76,11 @@ export async function POST(
 
   let summary = "User cancelled the action.";
   let effectMessage: string | null = null;
+  // Side-effect-driven config delta for the client store. Set by side-
+  // effect branches (e.g. connect_integration) when they mutate
+  // config_cache directly outside the chat turn lifecycle — the resumed
+  // turn won't emit a state_patch for these, so we return it inline.
+  let configPatch: { revision: number; patch: Record<string, unknown> } | null = null;
   if (parsed.data.status === "done") {
     if (action.kind === "connect_integration") {
       const provider = (action.payload as { provider?: string }).provider;
@@ -128,6 +135,23 @@ export async function POST(
           log.info("integration registered", { provider, added_tools });
           summary = `Connected ${provider}.`;
           effectMessage = `User connected ${provider}. ${added_tools} runtime tool${added_tools === 1 ? "" : "s"} are now available on the agent, and pre-call enrichment is active. Ask the user — in one short message — whether they want to wire ${provider} into the workflow now (e.g., add tool_call nodes that look up / create / update records at the right step). If they say yes, propose a concrete spot in the current workflow and use edit_workflow to add the node(s); if they say no or "later", acknowledge briefly and move on. Do NOT modify the workflow before they answer.`;
+          // Surface the cascade's effects to the client. The cascade
+          // patched config_cache.tools (and possibly system_prompt) on
+          // the agent doc directly, before the resumed turn fires —
+          // which means the SSE stream won't carry a state_patch for
+          // these mutations and the workflow/tools panels would
+          // otherwise keep showing pre-cascade state until reload.
+          const agentsLocal = await agentsCol();
+          const fresh = await agentsLocal.findOne({ _id: new ObjectId(id) });
+          if (fresh) {
+            configPatch = {
+              revision: fresh.revision,
+              patch: {
+                tools: fresh.config_cache.tools,
+                system_prompt: fresh.config_cache.system_prompt,
+              },
+            };
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : "register failed";
           log.error("integration register failed", { provider, message });
@@ -232,17 +256,240 @@ export async function POST(
         );
         return NextResponse.json({ status: "failed", error: message });
       }
-    } else if (action.kind === "collect_secret") {
-      const payload = action.payload as {
-        name?: string;
-        description?: string;
+    } else if (action.kind === "audience_source_picker") {
+      const source = (parsed.data.result as { source?: string } | undefined)
+        ?.source;
+      if (source === "pdl") {
+        summary = "User picked: PDL search.";
+        effectMessage =
+          "User picked PDL for audience source. In ONE short message, ask what kind of prospects they want (industry, role, location). Wait for their answer, then call pdl_search_and_present_prospects. Do NOT search until they answer.";
+      } else if (source === "hubspot") {
+        summary = "User picked: HubSpot CRM.";
+        effectMessage =
+          "User picked HubSpot for audience source. Call present_hubspot_contacts_picker now. If it returns an error because HubSpot isn't connected, then call request_user_action(kind='connect_integration', { provider: 'hubspot', reason: 'so we can sync contacts into your audience' }) — and ONLY after they finish connecting, retry present_hubspot_contacts_picker.";
+      } else if (source === "csv") {
+        summary = "User picked: CSV upload.";
+        effectMessage =
+          "User picked CSV for audience source. Call present_csv_upload_widget now. Your turn will end as soon as the widget appears; the user fills it in and the platform resumes you with the outcome.";
+      } else {
+        log.warn("audience_source_picker rejected: unknown source", { source });
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Unknown source" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Unknown source",
+        });
+      }
+    } else if (action.kind === "csv_upload") {
+      // Same shape as select_prospects — the widget already produced the
+      // prospect rows client-side via applyMapping() over the user's column
+      // mapping. Reuse addProspectsToAudience so dedup / audience upsert is
+      // identical across sources.
+      const result = (parsed.data.result ?? {}) as {
+        prospects?: unknown;
+        audience?: unknown;
       };
-      const value = (parsed.data.result as { value?: unknown } | undefined)?.value;
-      if (
-        typeof payload.name !== "string" ||
-        typeof value !== "string" ||
-        value.trim().length === 0
+      const prospectsFromWidget = Array.isArray(result.prospects)
+        ? (result.prospects as PdlProspect[])
+        : [];
+      const audienceTarget = result.audience as
+        | { id?: string; new_name?: string }
+        | undefined;
+      const target =
+        audienceTarget && typeof audienceTarget.id === "string"
+          ? { id: audienceTarget.id }
+          : audienceTarget && typeof audienceTarget.new_name === "string"
+            ? { new_name: audienceTarget.new_name }
+            : null;
+      if (!target || prospectsFromWidget.length === 0) {
+        log.warn("csv_upload rejected: missing target or prospects");
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Missing audience or prospects" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Missing audience or prospects",
+        });
+      }
+      try {
+        const outcome = await addProspectsToAudience({
+          target,
+          prospects: prospectsFromWidget,
+        });
+        log.info("csv prospects added", {
+          audience: outcome.audience.name,
+          added: outcome.added,
+          skipped: outcome.skipped,
+        });
+        summary = `Imported ${outcome.added} prospect${
+          outcome.added === 1 ? "" : "s"
+        } into "${outcome.audience.name}".`;
+        const skippedNote =
+          outcome.skipped > 0
+            ? ` ${outcome.skipped} were already in the audience and were skipped.`
+            : "";
+        effectMessage = `User imported ${outcome.added} CSV prospect${
+          outcome.added === 1 ? "" : "s"
+        } into the "${outcome.audience.name}" audience. The audience now contains ${outcome.total_in_audience} prospect${
+          outcome.total_in_audience === 1 ? "" : "s"
+        }.${skippedNote} In ONE short message: confirm the count, name the audience, and remind them they can run a campaign from the Audiences page.`;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "import failed";
+        log.error("csv_upload failed", { message });
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: message },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({ status: "failed", error: message });
+      }
+    } else if (action.kind === "select_prospects") {
+      const result = (parsed.data.result ?? {}) as {
+        selected_prospect_ids?: unknown;
+        prospects?: unknown;
+        audience?: unknown;
+      };
+      const selectedIds = Array.isArray(result.selected_prospect_ids)
+        ? (result.selected_prospect_ids.filter((s) => typeof s === "string") as string[])
+        : [];
+      const prospectsFromWidget = Array.isArray(result.prospects)
+        ? (result.prospects as PdlProspect[])
+        : [];
+      // The widget posts back the prospects it already has on hand, so we
+      // don't need to look them up again. Filter to the selected ids just
+      // in case the widget UI ever drifts.
+      const selectedSet = new Set(selectedIds);
+      const chosen = prospectsFromWidget.filter((p) =>
+        selectedSet.has(p.pdl_id),
+      );
+      const audienceTarget = result.audience as
+        | { id?: string; new_name?: string }
+        | undefined;
+      const target =
+        audienceTarget && typeof audienceTarget.id === "string"
+          ? { id: audienceTarget.id }
+          : audienceTarget && typeof audienceTarget.new_name === "string"
+            ? { new_name: audienceTarget.new_name }
+            : null;
+      if (!target || chosen.length === 0) {
+        log.warn("select_prospects rejected: missing target or prospects");
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Missing audience or selected prospects" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Missing audience or selected prospects",
+        });
+      }
+      try {
+        const outcome = await addProspectsToAudience({
+          target,
+          prospects: chosen,
+        });
+        log.info("prospects added to audience", {
+          audience: outcome.audience.name,
+          added: outcome.added,
+          skipped: outcome.skipped,
+          total: outcome.total_in_audience,
+        });
+        summary = `Added ${outcome.added} prospect${
+          outcome.added === 1 ? "" : "s"
+        } to "${outcome.audience.name}".`;
+        const skippedNote =
+          outcome.skipped > 0
+            ? ` ${outcome.skipped} were already in the audience and were skipped.`
+            : "";
+        effectMessage = `User added ${outcome.added} prospect${
+          outcome.added === 1 ? "" : "s"
+        } from the PDL search to the "${outcome.audience.name}" audience. The audience now contains ${outcome.total_in_audience} prospect${
+          outcome.total_in_audience === 1 ? "" : "s"
+        }.${skippedNote} Tell the user in ONE short message: confirm the count, name the audience, and remind them they can start a call campaign from the Audiences page (link in the masthead) when they're ready. Do NOT propose another PDL search unless they ask.`;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "add failed";
+        log.error("select_prospects failed", { message });
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: message },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({ status: "failed", error: message });
+      }
+    } else if (action.kind === "collect_secret") {
+      type SecretEntry = { name?: string; description?: string };
+      const payload = action.payload as
+        | SecretEntry
+        | { secrets?: SecretEntry[] };
+      const entries: SecretEntry[] = Array.isArray(
+        (payload as { secrets?: SecretEntry[] }).secrets,
+      )
+        ? ((payload as { secrets: SecretEntry[] }).secrets)
+        : [payload as SecretEntry];
+      const rawResult = (parsed.data.result ?? {}) as {
+        value?: unknown;
+        values?: unknown;
+      };
+      // Normalise both shapes into a { [name]: value } map.
+      const pairs: Array<{ name: string; description: string; value: string }> =
+        [];
+      if (entries.length === 1 && typeof rawResult.value === "string") {
+        const entry = entries[0];
+        if (typeof entry.name === "string" && rawResult.value.trim().length > 0) {
+          pairs.push({
+            name: entry.name,
+            description: entry.description ?? "",
+            value: rawResult.value,
+          });
+        }
+      } else if (
+        rawResult.values &&
+        typeof rawResult.values === "object" &&
+        !Array.isArray(rawResult.values)
       ) {
+        const map = rawResult.values as Record<string, unknown>;
+        for (const entry of entries) {
+          if (typeof entry.name !== "string") continue;
+          const v = map[entry.name];
+          if (typeof v !== "string" || v.trim().length === 0) continue;
+          pairs.push({
+            name: entry.name,
+            description: entry.description ?? "",
+            value: v,
+          });
+        }
+      }
+      if (pairs.length === 0 || pairs.length !== entries.length) {
         log.warn("collect_secret rejected (missing name or value)");
         await widgets.updateOne(
           { _id: _actionId },
@@ -260,18 +507,23 @@ export async function POST(
         });
       }
       try {
-        await storeAgentSecret(
-          id,
-          payload.name,
-          payload.description ?? "",
-          value,
-        );
-        log.info("secret stored", { name: payload.name });
-        summary = `Saved secret '${payload.name}'.`;
-        effectMessage = `User saved a secret. It is now stored encrypted and addressable as '${payload.name}'. The value is NOT visible to you — when you generate runtime tool code that needs it, reference it by name and the platform will inject it at call time.`;
+        for (const p of pairs) {
+          await storeAgentSecret(id, p.name, p.description, p.value);
+        }
+        const names = pairs.map((p) => p.name);
+        log.info("secret stored", { names });
+        summary =
+          names.length === 1
+            ? `Saved secret '${names[0]}'.`
+            : `Saved secrets: ${names.map((n) => `'${n}'`).join(", ")}.`;
+        const handlesLabel =
+          names.length === 1
+            ? `addressable as '${names[0]}'`
+            : `addressable as ${names.map((n) => `'${n}'`).join(", ")}`;
+        effectMessage = `User saved ${names.length === 1 ? "a secret" : `${names.length} secrets`}. ${names.length === 1 ? "It is" : "They are"} now stored encrypted and ${handlesLabel}. The value${names.length === 1 ? " is" : "s are"} NOT visible to you — when you generate runtime tool code that needs ${names.length === 1 ? "it" : "them"}, reference by name and the platform will inject at call time.`;
       } catch (err) {
         const message = err instanceof Error ? err.message : "store failed";
-        log.error("secret store failed", { name: payload.name, message });
+        log.error("secret store failed", { message });
         await widgets.updateOne(
           { _id: _actionId },
           {
@@ -323,10 +575,15 @@ export async function POST(
       status: parsed.data.status,
       summary,
       resumed_job_id: newJobId.toHexString(),
+      ...(configPatch ? { config_patch: configPatch } : {}),
     });
   }
 
-  return NextResponse.json({ status: parsed.data.status, summary });
+  return NextResponse.json({
+    status: parsed.data.status,
+    summary,
+    ...(configPatch ? { config_patch: configPatch } : {}),
+  });
 }
 
 /**

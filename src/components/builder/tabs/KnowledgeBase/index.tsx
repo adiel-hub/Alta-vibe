@@ -246,16 +246,6 @@ function UploadCard({
   );
 }
 
-const TYPE_GLYPH: Record<string, string> = {
-  text: "📝",
-  pdf: "📕",
-  url: "🔗",
-  html: "🌐",
-  md: "📄",
-  docx: "📃",
-  epub: "📚",
-};
-
 function KbCard({
   agentId,
   doc,
@@ -325,8 +315,6 @@ function KbCard({
     if (next) void loadContent();
   };
 
-  const glyph = TYPE_GLYPH[doc.type.toLowerCase()] ?? "📄";
-
   // Typewriter the title first, then the source line, then the content —
   // the agent fills out one field at a time.
   const typedName = useTypewriter(doc.name, typewriter, 55);
@@ -378,11 +366,53 @@ function KbCard({
       className="group relative flex h-full cursor-pointer flex-col gap-3 rounded-xl border border-(--color-border) bg-(--color-panel) p-4 shadow-[0_1px_2px_rgba(0,0,0,0.03)] transition hover:-translate-y-0.5 hover:border-(--color-border-strong) hover:shadow-[0_6px_18px_rgba(0,0,0,0.06)]"
     >
       <div className="flex items-start justify-between gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-(--color-panel-soft) px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-(--color-muted)">
-          <span aria-hidden>{glyph}</span>
-          {doc.type}
-        </span>
-        <div className="flex items-center gap-1">
+        {editing ? (
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") {
+                onRename(draft);
+                setEditing(false);
+              }
+              if (e.key === "Escape") {
+                setDraft(doc.name);
+                setEditing(false);
+              }
+            }}
+            autoFocus
+            className="min-w-0 flex-1 rounded-md border border-(--color-border) bg-(--color-panel-soft) px-2 py-1 text-sm"
+          />
+        ) : (
+          <div className="flex min-w-0 flex-1 flex-col items-start text-left">
+            <span
+              dir="auto"
+              className="line-clamp-2 text-sm font-semibold leading-snug text-(--color-foreground-strong)"
+            >
+              {typedName}
+              {showNameCursor && (
+                <span
+                  aria-hidden
+                  className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+                />
+              )}
+            </span>
+            {sourceText && (
+              <span className="mt-1 line-clamp-1 break-all font-mono text-[11px] text-(--color-muted)">
+                {typedSource}
+                {showSourceCursor && (
+                  <span
+                    aria-hidden
+                    className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+                  />
+                )}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="flex shrink-0 items-center gap-1">
           {/* Hidden by default; revealed on card hover (parent has `group`)
               or whenever an action inside is focused (keyboard nav). The
               chevron sits next to them and is always visible. */}
@@ -442,58 +472,10 @@ function KbCard({
         </div>
       </div>
 
-      {editing ? (
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => {
-            // Don't let Enter/Space bubble to the card's keyboard handler.
-            e.stopPropagation();
-            if (e.key === "Enter") {
-              onRename(draft);
-              setEditing(false);
-            }
-            if (e.key === "Escape") {
-              setDraft(doc.name);
-              setEditing(false);
-            }
-          }}
-          autoFocus
-          className="w-full rounded-md border border-(--color-border) bg-(--color-panel-soft) px-2 py-1 text-sm"
-        />
-      ) : (
-        <div className="flex min-w-0 flex-col items-start text-left">
-          <span
-            dir="auto"
-            className="line-clamp-2 text-sm font-semibold leading-snug text-(--color-foreground-strong)"
-          >
-            {typedName}
-            {showNameCursor && (
-              <span
-                aria-hidden
-                className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
-              />
-            )}
-          </span>
-          {sourceText && (
-            <span className="mt-1 line-clamp-1 break-all font-mono text-[11px] text-(--color-muted)">
-              {typedSource}
-              {showSourceCursor && (
-                <span
-                  aria-hidden
-                  className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
-                />
-              )}
-            </span>
-          )}
-        </div>
-      )}
-
       {expanded && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="-mx-4 -mb-4 mt-1 rounded-b-xl border-t border-(--color-border) bg-(--color-panel-soft) px-4 py-3"
+          className="-mx-4 -mb-4 mt-1 rounded-b-xl border-t border-(--color-border) bg-(--color-panel-soft) px-1 py-1"
         >
           {loadingContent && (
             <p className="font-mono text-[11px] text-(--color-muted-soft)">

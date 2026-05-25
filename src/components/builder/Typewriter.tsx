@@ -14,7 +14,7 @@ import { MarkdownText } from "./MarkdownText";
 export function Typewriter({
   text,
   live,
-  cps = 90,
+  cps = 50,
   className,
 }: {
   text: string;

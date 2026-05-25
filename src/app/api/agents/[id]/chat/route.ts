@@ -17,7 +17,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
 
-const Body = z.object({ text: z.string().min(1).max(4_000) });
+const Body = z.object({
+  text: z.string().min(1).max(4_000),
+  /** Audience-builder only: scopes the turn to a specific chat thread. */
+  chat_session_id: z.string().optional(),
+});
 
 export async function POST(
   req: NextRequest,
@@ -49,8 +53,25 @@ export async function POST(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const jobId = await enqueueTurnJob(_id, parsed.data.text);
-  log.info("enqueued", { job_id: jobId.toHexString(), agent_id: id });
+  // Audience-builder chat sessions: validate the id is a real ObjectId before
+  // passing it through; otherwise treat the message as legacy (no session).
+  let sessionId: ObjectId | null = null;
+  if (parsed.data.chat_session_id) {
+    if (!ObjectId.isValid(parsed.data.chat_session_id)) {
+      return NextResponse.json(
+        { error: "Invalid chat_session_id" },
+        { status: 400 },
+      );
+    }
+    sessionId = new ObjectId(parsed.data.chat_session_id);
+  }
+
+  const jobId = await enqueueTurnJob(_id, parsed.data.text, "user", sessionId);
+  log.info("enqueued", {
+    job_id: jobId.toHexString(),
+    agent_id: id,
+    chat_session_id: sessionId?.toHexString(),
+  });
 
   // Run the turn in the background. On Vercel this is `waitUntil`-backed and
   // continues after we send the response.

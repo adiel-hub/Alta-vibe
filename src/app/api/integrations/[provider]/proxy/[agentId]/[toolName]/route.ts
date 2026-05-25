@@ -8,9 +8,10 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
-import { integrationsCol } from "@/lib/mongodb";
+import { findWorkspaceIntegration } from "@/lib/integrations/store";
 import { decryptToken } from "@/lib/integrations/tokens";
 import { getProvider, findProviderTool } from "@/lib/integrations/providers";
+import { getValidGoogleToken } from "@/lib/integrations/google/auth";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 /**
@@ -80,12 +81,11 @@ async function handle(
     return NextResponse.json({ error: "Missing bearer" }, { status: 401 });
   }
 
-  const ints = await integrationsCol();
-  const doc = await ints.findOne({
-    agent_id: new ObjectId(params.agentId),
-    provider: params.provider,
-    status: "connected",
-  });
+  // Integrations are workspace-shared: any agent's tool URL points at the
+  // workspace's HubSpot/Google/etc. integration row. The agentId URL
+  // segment is informational (for logs and routing); the bearer secret on
+  // the request authoritatively names the integration.
+  const doc = await findWorkspaceIntegration(params.provider);
   if (!doc) {
     log.warn("no integration");
     return NextResponse.json({ error: "Not connected" }, { status: 401 });
@@ -97,19 +97,30 @@ async function handle(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const encrypted = (doc.credentials as { access_token?: unknown }).access_token;
-  if (typeof encrypted !== "string") {
-    log.error("no encrypted token");
-    return NextResponse.json({ error: "Missing credentials" }, { status: 500 });
-  }
+  // Google Calendar uses OAuth2 with short-lived access tokens — delegate
+  // to a provider-specific resolver that refreshes in-place when needed.
+  // Other providers (HubSpot PAT, Slack bot token) just decrypt the stored
+  // access_token directly.
   let token: string;
   try {
-    token = decryptToken(encrypted);
+    if (params.provider === "google_calendar") {
+      token = await getValidGoogleToken(params.agentId);
+    } else {
+      const encrypted = (doc.credentials as { access_token?: unknown }).access_token;
+      if (typeof encrypted !== "string") {
+        log.error("no encrypted token");
+        return NextResponse.json({ error: "Missing credentials" }, { status: 500 });
+      }
+      token = decryptToken(encrypted);
+    }
   } catch (err) {
-    log.error("decrypt failed", {
+    log.error("token resolve failed", {
       message: err instanceof Error ? err.message : String(err),
     });
-    return NextResponse.json({ error: "Decryption failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Token resolve failed" },
+      { status: 500 },
+    );
   }
 
   // Pull body (or query, for GET/DELETE) up front so we can lift any

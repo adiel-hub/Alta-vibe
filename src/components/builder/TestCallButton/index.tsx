@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
-import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
 import { createClientLogger } from "@/lib/clientLogger";
 import type { TranscriptLine, View } from "./types";
@@ -40,8 +39,6 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
-  const setLiveNode = useAgentStore((s) => s.setLiveWorkflowNode);
-  const liveNode = useAgentStore((s) => s.liveWorkflowNodeId);
 
   const conversation = useConversation({
     onError: (e: unknown) => {
@@ -67,17 +64,6 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
     },
     onDisconnect: () => {
       log.info("conversation disconnected");
-      setLiveNode(null);
-    },
-    clientTools: {
-      report_workflow_state: async ({
-        node_id,
-      }: {
-        node_id?: string;
-      }): Promise<string> => {
-        if (typeof node_id === "string") setLiveNode(node_id);
-        return "tracked";
-      },
     },
   });
   const isActive = conversation.status === "connected";
@@ -109,7 +95,6 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
     log.info("starting web test call", { agent_id: agentId });
     setError(null);
     setStarting(true);
-    setLiveNode(null);
     setTranscript([]);
     setOpen(false);
     try {
@@ -133,7 +118,6 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
   const endCall = async () => {
     log.info("ending web test call");
     await conversation.endSession();
-    setLiveNode(null);
   };
 
   const onButtonClick = () => {
@@ -218,7 +202,6 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
         <CallTranscriptDrawer
           transcript={transcript}
           isSpeaking={conversation.isSpeaking}
-          liveNode={liveNode}
           onEnd={() => void endCall()}
           onSendText={(text) => {
             log.debug("sending text to call", { len: text.length });

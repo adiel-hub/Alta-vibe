@@ -10,13 +10,11 @@ import { SendIcon } from "./icons/SendIcon";
 export function CallTranscriptDrawer({
   transcript,
   isSpeaking,
-  liveNode,
   onEnd,
   onSendText,
 }: {
   transcript: TranscriptLine[];
   isSpeaking: boolean;
-  liveNode: string | null;
   onEnd: () => void;
   onSendText: (text: string) => void;
 }) {
@@ -78,15 +76,6 @@ export function CallTranscriptDrawer({
           End
         </button>
       </header>
-
-      {liveNode && (
-        <div className="border-b border-(--color-border) bg-(--color-panel-soft) px-4 py-1.5 text-[11px] text-(--color-muted)">
-          workflow node:{" "}
-          <span className="font-mono text-(--color-foreground-strong)">
-            {liveNode}
-          </span>
-        </div>
-      )}
 
       <div
         ref={scrollerRef}

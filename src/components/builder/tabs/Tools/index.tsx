@@ -16,14 +16,16 @@ export type { ToolsTabMode } from "./types";
 export function ToolsTab({
   mode = "manage",
   onPick,
+  initialPhase = "in_call",
 }: {
   mode?: ToolsTabMode;
   onPick?: (tool: RuntimeTool) => void;
+  initialPhase?: RuntimePhase;
 } = {}) {
   const agent = useAgentStore((s) => s.agent);
   const config = useAgentStore((s) => s.config);
 
-  const [activePhase, setActivePhase] = useState<RuntimePhase>("in_call");
+  const [activePhase, setActivePhase] = useState<RuntimePhase>(initialPhase);
   const [query, setQuery] = useState("");
 
   const fieldsMatch = useMemo(() => makeMatcher(query), [query]);
@@ -53,7 +55,7 @@ export function ToolsTab({
 
       <p className="mb-4 px-1 text-xs text-(--color-muted)">
         {PHASE_HINTS[activePhase]}
-        {isPick && activePhase !== "in_call" && (
+        {isPick && initialPhase === "in_call" && activePhase !== "in_call" && (
           <span className="ml-1 text-(--color-warn, #b45309)">
             Note: workflow tool_call nodes only execute during the
             conversation. Pick an In-Call tool to wire into the graph.

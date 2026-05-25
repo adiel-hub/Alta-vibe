@@ -10,6 +10,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { requireSharedSecret } from "@/lib/auth";
+import { externalToolIds } from "@/lib/elevenlabs/lifecycle/toolIds";
 import { agentsCol, messagesCol } from "@/lib/mongodb";
 import {
   getAgentAtVersion,
@@ -76,7 +77,7 @@ export async function POST(
         name: d.name,
         type: d.type,
       })),
-      tool_ids: projected.tools.map((t) => t.id),
+      tool_ids: externalToolIds(projected.tools),
       mcp_server_ids: projected.mcp_servers.map((m) => m.id),
       data_collection: Object.fromEntries(
         projected.data_collection.map((f) => [
@@ -97,7 +98,7 @@ export async function POST(
     // 4. Persist the restored config + cache the new upstream version id.
     //    Use the same optimistic-lock pattern as the config route so a
     //    concurrent in-flight edit can't silently overwrite the restore.
-    const next: AgentConfigCache = { ...projected, integrations: agent.config_cache.integrations };
+    const next: AgentConfigCache = projected;
     const $set: Record<string, unknown> = {
       config_cache: next,
       revision: agent.revision + 1,

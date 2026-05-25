@@ -12,6 +12,7 @@ import {
   listPhoneNumbersForAgent,
   updatePhoneNumber,
 } from "@/lib/elevenlabs/client";
+import { enrichCallContext } from "@/lib/integrations/enrichment";
 import type { PhoneNumber } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -68,10 +69,18 @@ export const telephonyCapability: Capability = {
       },
       async ({ to_number, agent_phone_number_id }) => {
         try {
+          // Run every pre_call tool on the agent (HubSpot lookup, custom
+          // synthesized lookups, …) so dynamic_variables are populated
+          // before ElevenLabs places the call. See lifecycle/dispatch.ts.
+          const dynamicVariables = await enrichCallContext({
+            agentMongoId: ctx.agentMongoId,
+            to_number,
+          });
           const { conversation_id } = await initiateOutboundCall({
             agentId: ctx.elevenlabs_agent_id,
             agentPhoneNumberId: agent_phone_number_id,
             toNumber: to_number,
+            dynamicVariables,
           });
           return {
             content: [

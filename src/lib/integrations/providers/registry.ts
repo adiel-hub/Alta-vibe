@@ -1,10 +1,12 @@
 import type { IntegrationProvider, ProviderRuntimeToolSpec } from "./types";
 import { HUBSPOT_PROVIDER } from "./hubspot";
 import { SLACK_PROVIDER } from "./slack";
+import { GOOGLE_CALENDAR_PROVIDER } from "./google";
 
 export const PROVIDERS: IntegrationProvider[] = [
   HUBSPOT_PROVIDER,
   SLACK_PROVIDER,
+  GOOGLE_CALENDAR_PROVIDER,
 ];
 
 export function getProvider(id: string): IntegrationProvider | undefined {

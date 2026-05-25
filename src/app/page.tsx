@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import { DescribeAgentForm } from "@/components/DescribeAgentForm";
 import { AgentList, type AgentListItem } from "@/components/AgentList";
 import { agentsCol } from "@/lib/mongodb";
@@ -23,6 +24,17 @@ export default async function Home() {
             priority
           />
         </a>
+        <nav className="ml-auto flex gap-4 text-sm">
+          <span className="font-semibold text-(--color-foreground-strong)">
+            Agents
+          </span>
+          <Link
+            href="/audiences"
+            className="text-(--color-muted) hover:text-(--color-foreground-strong)"
+          >
+            Audiences
+          </Link>
+        </nav>
       </header>
 
       <section className="hero-stage">
@@ -73,7 +85,9 @@ async function loadAgents(): Promise<AgentListItem[]> {
   try {
     const col = await agentsCol();
     const docs = await col
-      .find()
+      // Hide the workspace-internal audience_builder agent from the
+      // user-facing list. {$ne} also matches docs with no `kind` field.
+      .find({ kind: { $ne: "audience_builder" } })
       .sort({ updated_at: -1 })
       .limit(50)
       .project({

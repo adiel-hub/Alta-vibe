@@ -2,8 +2,12 @@
  * Provider connection + tool installation helpers.
  *
  *   - registerProviderForAgent: called from the widget-resolve route when
- *     the user pastes credentials. Stores the integration, then installs
- *     each tool spec marked `default_install: true` on the provider.
+ *     the user pastes credentials. Stores the workspace integration, then
+ *     installs each provider tool marked `default_install: true` on EVERY
+ *     voice agent in the workspace (connect-time cascade).
+ *   - backfillProviderToolsForAgent: ensures a single agent has all default
+ *     tools from every workspace-connected integration. Called on agent
+ *     load and on new-agent create so the cascade heals retroactively.
  *   - installProviderTool: installs a single named tool on an
  *     already-connected provider. Used by the `install_provider_tool`
  *     capability and the Tools-tab UI to expand coverage beyond the
@@ -21,11 +25,13 @@
 import { randomBytes } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { agentsCol, customToolsCol, integrationsCol } from "@/lib/mongodb";
+import { findWorkspaceIntegration } from "./store";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import {
   getProvider,
   findProviderTool,
@@ -33,9 +39,13 @@ import {
   type ProviderRuntimeToolSpec,
 } from "./providers";
 import { normalizeElevenlabsSchema } from "./schemaUtils";
-import { injectCallerContextBlock, CALLER_CONTEXT_VARS } from "./promptContext";
+import {
+  injectCallerContextBlock,
+  stripCallerContextBlock,
+  CALLER_CONTEXT_VARS,
+} from "./promptContext";
 import type {
-  ConnectedIntegration,
+  AgentDocument,
   RuntimeTool,
 } from "@/types/agent";
 
@@ -59,6 +69,22 @@ type RegisterContext = {
  * our proxy. Returns the new RuntimeTool entry on success, or null if
  * already installed.
  */
+/**
+ * Build a deterministic, ElevenLabs-shaped id for tools whose phase is
+ * pre_call / post_call. These tools are NOT registered upstream — they
+ * run server-side from our lifecycle webhooks — so they need a synthetic
+ * id that downstream code can recognise (anywhere that filters
+ * `tool_ids` going to ElevenLabs strips entries starting with `local_`).
+ */
+function localToolId(): string {
+  return `local_${randomBytes(8).toString("hex")}`;
+}
+
+/** Pre/post-call tools live entirely on our side; in_call still goes upstream. */
+function isLifecycleTool(spec: ProviderRuntimeToolSpec): boolean {
+  return spec.phase !== "in_call";
+}
+
 async function registerOne(
   spec: ProviderRuntimeToolSpec,
   ctx: RegisterContext,
@@ -68,6 +94,24 @@ async function registerOne(
     return null;
   }
   const url = `${getAppBaseUrl()}/api/integrations/${ctx.providerId}/proxy/${ctx.agentMongoId}/${scopedName}`;
+
+  // Lifecycle tools (pre/post) skip ElevenLabs entirely. We persist the
+  // spec in config_cache.tools so the lifecycle dispatcher can find it
+  // when the workspace webhook fires, but EL never sees the tool — there's
+  // no upstream tool_id, no tool_ids patch, no possibility of the LLM
+  // accidentally invoking it mid-conversation.
+  if (isLifecycleTool(spec)) {
+    return {
+      id: localToolId(),
+      name: scopedName,
+      type: "webhook",
+      description: spec.description,
+      phase: spec.phase,
+      method: spec.method,
+      url,
+      provider: ctx.providerId,
+    };
+  }
   // ElevenLabs uses different schema-shape requirements for body vs query;
   // route the spec's shapes into whichever side the LLM will be asked to
   // produce values for. Methods without bodies (GET/DELETE) get the
@@ -130,6 +174,97 @@ async function registerOne(
   };
 }
 
+/**
+ * Install the provider's `default_install: true` tools on a single agent,
+ * and inject the HubSpot caller-context prompt block if applicable.
+ *
+ * Idempotent: tools already present are skipped, the prompt block is only
+ * re-injected when missing, and a no-op call returns 0 without touching
+ * the DB. Errors registering an individual tool upstream are swallowed so
+ * one bad spec doesn't poison the whole cascade — backfill on next agent
+ * load retries.
+ *
+ * Integration connection state itself lives in the workspace-shared
+ * `integrations` collection, not on the agent — there is nothing per-agent
+ * to mark "connected" here.
+ */
+async function installProviderDefaultsForAgent(
+  agent: AgentDocument,
+  providerId: string,
+  proxySecret: string,
+): Promise<number> {
+  const provider = getProvider(providerId);
+  if (!provider) return 0;
+
+  const ctx: RegisterContext = {
+    agentMongoId: agent._id.toHexString(),
+    providerId,
+    proxySecret,
+    agent: { config_cache: { tools: agent.config_cache.tools } },
+  };
+
+  const newTools: RuntimeTool[] = [];
+  for (const spec of provider.runtime_tools) {
+    if (!spec.default_install) continue;
+    const entry = await registerOne(spec, ctx).catch(() => null);
+    if (entry) newTools.push(entry);
+  }
+
+  // HubSpot is currently the only provider with caller-context prompt
+  // injection. Re-inject only when the block isn't already present, so
+  // we don't bump revisions for agents that already have it.
+  const needsPromptInject =
+    providerId === "hubspot" &&
+    !agent.config_cache.system_prompt.includes("alta:caller_context:start");
+
+  if (newTools.length === 0 && !needsPromptInject) {
+    return 0;
+  }
+
+  const nextTools =
+    newTools.length > 0
+      ? [...agent.config_cache.tools, ...newTools]
+      : agent.config_cache.tools;
+
+  const nextSystemPrompt = needsPromptInject
+    ? injectCallerContextBlock(agent.config_cache.system_prompt)
+    : agent.config_cache.system_prompt;
+  const nextDynamicVarPlaceholders: Record<string, string> | undefined =
+    needsPromptInject
+      ? Object.fromEntries(CALLER_CONTEXT_VARS.map((v) => [v, ""]))
+      : undefined;
+
+  // Only PATCH upstream when fields actually change — avoids gratuitous
+  // ElevenLabs revisions for already-synced agents during backfill.
+  const upstreamPatch: Record<string, unknown> = {};
+  if (newTools.length > 0) {
+    upstreamPatch.tool_ids = externalToolIds(nextTools);
+  }
+  if (needsPromptInject) {
+    upstreamPatch.system_prompt = nextSystemPrompt;
+    upstreamPatch.dynamic_variables = nextDynamicVarPlaceholders;
+  }
+  if (Object.keys(upstreamPatch).length > 0) {
+    await patchAgent(agent.elevenlabs_agent_id, upstreamPatch);
+  }
+
+  const localPatch: Record<string, unknown> = {
+    revision: agent.revision + 1,
+    updated_at: new Date(),
+  };
+  if (newTools.length > 0) {
+    localPatch["config_cache.tools"] = nextTools;
+  }
+  if (needsPromptInject) {
+    localPatch["config_cache.system_prompt"] = nextSystemPrompt;
+  }
+
+  const agents = await agentsCol();
+  await agents.updateOne({ _id: agent._id }, { $set: localPatch });
+
+  return newTools.length;
+}
+
 export async function registerProviderForAgent(
   agentMongoId: string,
   providerId: string,
@@ -143,14 +278,12 @@ export async function registerProviderForAgent(
   const agent = await agents.findOne({ _id });
   if (!agent) throw new Error("Agent not found");
 
-  // Reuse an existing proxy_secret if this provider was previously
-  // connected — that way already-installed tools (and their
-  // ElevenLabs-side Authorization bearers) keep working across reconnects.
+  // Integrations are workspace-shared (any agent reuses the same OAuth
+  // token + proxy_secret). Look up by provider alone — if HubSpot was
+  // already connected by another agent in the workspace, reuse its row;
+  // otherwise insert a new one stamped with this agent as the connector.
   const ints = await integrationsCol();
-  const existing = await ints.findOne({
-    agent_id: _id,
-    provider: providerId,
-  });
+  const existing = await ints.findOne({ provider: providerId });
   const proxySecret =
     (existing?.metadata as { proxy_secret?: unknown } | undefined)
       ?.proxy_secret &&
@@ -160,7 +293,7 @@ export async function registerProviderForAgent(
       : randomBytes(32).toString("hex");
 
   await ints.updateOne(
-    { agent_id: _id, provider: providerId },
+    { provider: providerId },
     {
       $set: {
         status: "connected",
@@ -170,6 +303,8 @@ export async function registerProviderForAgent(
         updated_at: new Date(),
       },
       $setOnInsert: {
+        // `agent_id` is informational here — names the agent that first
+        // connected the provider in this workspace. Reads ignore it.
         agent_id: _id,
         provider: providerId,
         created_at: new Date(),
@@ -178,71 +313,91 @@ export async function registerProviderForAgent(
     { upsert: true },
   );
 
-  const ctx: RegisterContext = {
-    agentMongoId,
-    providerId,
-    proxySecret,
-    agent: { config_cache: { tools: agent.config_cache.tools } },
-  };
+  // Workspace cascade: install the provider's default tools on every
+  // voice agent. Each agent gets its own RuntimeTool rows (tool URLs
+  // embed the agent id), so this is N parallel single-agent installs
+  // sharing one workspace proxy_secret. Failures are isolated per-agent
+  // — a transient ElevenLabs error on one agent doesn't break the rest;
+  // backfill on next agent load retries. Skip the audience_builder
+  // singleton ({$ne} also matches docs with no `kind` field — legacy
+  // voice agents).
+  const allAgents = await agents
+    .find({ kind: { $ne: "audience_builder" } })
+    .toArray();
 
-  const newTools: RuntimeTool[] = [];
-  for (const spec of provider.runtime_tools) {
-    if (!spec.default_install) continue;
-    const entry = await registerOne(spec, ctx).catch(() => null);
-    if (entry) newTools.push(entry);
+  let primaryAddedTools = 0;
+  for (const a of allAgents) {
+    let added = 0;
+    try {
+      added = await installProviderDefaultsForAgent(a, providerId, proxySecret);
+    } catch (err) {
+      // Swallow per-agent failure — surfacing one bad cascade would make
+      // the connecting user think the whole connect failed, when most of
+      // the cascade likely succeeded.
+      // eslint-disable-next-line no-console
+      console.error(
+        `[registerProviderForAgent] cascade install failed for agent ${a._id.toHexString()} provider=${providerId}:`,
+        err,
+      );
+    }
+    if (a._id.equals(_id)) primaryAddedTools = added;
   }
 
-  const nextTools = [...agent.config_cache.tools, ...newTools];
-  const integration: ConnectedIntegration = {
-    id: providerId,
-    provider: providerId,
-    display_name: provider.name,
-    status: "connected",
-    connected_at: new Date().toISOString(),
-  };
-  const nextIntegrations = [
-    ...agent.config_cache.integrations.filter((i) => i.provider !== providerId),
-    integration,
-  ];
+  return { added_tools: primaryAddedTools };
+}
 
-  // For HubSpot (the only provider with pre-call enrichment in v1), inject
-  // a delimited caller-context block into the system prompt and seed empty
-  // placeholders for the dynamic variables we'll populate per-call.
-  const nextSystemPrompt =
-    providerId === "hubspot"
-      ? injectCallerContextBlock(agent.config_cache.system_prompt)
-      : agent.config_cache.system_prompt;
-  const nextDynamicVarPlaceholders: Record<string, string> | undefined =
-    providerId === "hubspot"
-      ? Object.fromEntries(CALLER_CONTEXT_VARS.map((v) => [v, ""]))
-      : undefined;
+/**
+ * Ensure a single agent has every default-install tool from every
+ * workspace-connected integration. Called on agent load (heals agents
+ * that pre-date workspace cascade or missed a cascade because EL was
+ * flaky) and on new-agent create (new agents inherit the workspace's
+ * connected providers immediately). Idempotent — already-installed
+ * tools are skipped, so frequent calls are cheap.
+ */
+export async function backfillProviderToolsForAgent(
+  agentMongoId: string,
+): Promise<{ added_tools: number }> {
+  const _id = new ObjectId(agentMongoId);
+  const agents = await agentsCol();
+  let agent = await agents.findOne({ _id });
+  if (!agent) return { added_tools: 0 };
+  // Audience-builder is a workspace-internal chat host, not a voice
+  // agent that needs provider tools.
+  if (agent.kind === "audience_builder") return { added_tools: 0 };
 
-  await patchAgent(agent.elevenlabs_agent_id, {
-    tool_ids: nextTools.map((t) => t.id),
-    ...(providerId === "hubspot"
-      ? {
-          system_prompt: nextSystemPrompt,
-          dynamic_variables: nextDynamicVarPlaceholders,
-        }
-      : {}),
-  });
+  const ints = await integrationsCol();
+  const rows = await ints.find({ status: "connected" }).toArray();
 
-  await agents.updateOne(
-    { _id },
-    {
-      $set: {
-        "config_cache.tools": nextTools,
-        "config_cache.integrations": nextIntegrations,
-        ...(providerId === "hubspot"
-          ? { "config_cache.system_prompt": nextSystemPrompt }
-          : {}),
-        revision: agent.revision + 1,
-        updated_at: new Date(),
-      },
-    },
-  );
+  let total = 0;
+  for (const row of rows) {
+    const proxySecret = (row.metadata as { proxy_secret?: unknown })
+      ?.proxy_secret;
+    if (typeof proxySecret !== "string") continue;
+    let added = 0;
+    try {
+      added = await installProviderDefaultsForAgent(
+        agent,
+        row.provider,
+        proxySecret,
+      );
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[backfillProviderToolsForAgent] failed for agent=${agentMongoId} provider=${row.provider}:`,
+        err,
+      );
+      continue;
+    }
+    if (added > 0) {
+      // Re-read so the next iteration sees the updated tools/prompt and
+      // its own idempotency checks compare against fresh state.
+      const refetched = await agents.findOne({ _id });
+      if (refetched) agent = refetched;
+      total += added;
+    }
+  }
 
-  return { added_tools: newTools.length };
+  return { added_tools: total };
 }
 
 /**
@@ -269,15 +424,12 @@ export async function installProviderTool(
   const agent = await agents.findOne({ _id });
   if (!agent) throw new Error("Agent not found.");
 
-  const ints = await integrationsCol();
-  const integration = await ints.findOne({
-    agent_id: _id,
-    provider: providerId,
-    status: "connected",
-  });
+  // Workspace-shared lookup — any agent in the workspace can install a
+  // tool against the shared integration once one has been connected.
+  const integration = await findWorkspaceIntegration(providerId);
   if (!integration) {
     throw new Error(
-      `${provider.name} is not connected to this agent. Connect it first to provide an API token.`,
+      `${provider.name} is not connected in this workspace. Connect it on any agent first to provide an API token.`,
     );
   }
   const proxySecret = (integration.metadata as { proxy_secret?: unknown })
@@ -309,7 +461,7 @@ export async function installProviderTool(
 
   const nextTools = [...agent.config_cache.tools, entry];
   await patchAgent(agent.elevenlabs_agent_id, {
-    tool_ids: nextTools.map((t) => t.id),
+    tool_ids: externalToolIds(nextTools),
   });
   await agents.updateOne(
     { _id },
@@ -347,10 +499,15 @@ export async function uninstallProviderTool(
   }
 
   const nextTools = agent.config_cache.tools.filter((t) => t.id !== target.id);
-  await patchAgent(agent.elevenlabs_agent_id, {
-    tool_ids: nextTools.map((t) => t.id),
-  });
-  await deleteRuntimeTool(target.id).catch(() => {});
+  // Lifecycle tools live entirely on our side — there's nothing upstream
+  // for ElevenLabs to update or delete. Skip both the patch (the tool_ids
+  // list wasn't going to change anyway) and the DELETE round-trip.
+  if (!isLocalToolId(target.id)) {
+    await patchAgent(agent.elevenlabs_agent_id, {
+      tool_ids: externalToolIds(nextTools),
+    });
+    await deleteRuntimeTool(target.id).catch(() => {});
+  }
   // Cascade: if this was a write_tool / create_custom_runtime_tool tool,
   // drop the backing custom_tools row so its proxy_secret + upstream spec
   // don't orphan when the UI/route-driven uninstall runs (the chat-driven
@@ -370,4 +527,85 @@ export async function uninstallProviderTool(
     },
   );
   return { removed_id: target.id, remaining: nextTools };
+}
+
+/**
+ * Disconnect a workspace-shared provider and tear down its tools on a
+ * specific agent. Marks the workspace `integrations` row as disconnected
+ * (affects every agent's ability to use the token), strips the provider's
+ * runtime tools off this agent's config, and removes the HubSpot
+ * caller-context block from the system prompt when applicable. Other
+ * agents in the workspace keep their provider-tool rows until their own
+ * disconnect/cleanup runs — by design, since this is the per-agent
+ * teardown side of a workspace-level state change.
+ *
+ * Returns the new state so the caller can return it to the client (HTTP
+ * route) or fold it into a chat state_patch (capability).
+ */
+export async function disconnectProviderForAgent(
+  agentMongoId: string,
+  providerId: string,
+): Promise<{
+  revision: number;
+  tools: RuntimeTool[];
+  system_prompt?: string;
+}> {
+  const _id = new ObjectId(agentMongoId);
+  const agents = await agentsCol();
+  const agent = await agents.findOne({ _id });
+  if (!agent) throw new Error("Agent not found.");
+
+  // Workspace-shared: mark the single workspace integration row as
+  // disconnected (no agent_id filter — there's only one row per provider).
+  const ints = await integrationsCol();
+  await ints.updateOne(
+    { provider: providerId },
+    { $set: { status: "disconnected", updated_at: new Date() } },
+  );
+
+  const providerDef = getProvider(providerId);
+  const toolNamesToRemove = new Set(
+    providerDef?.runtime_tools.map((t) => scopedToolName(t)) ?? [],
+  );
+  const remainingTools = agent.config_cache.tools.filter(
+    (t) => !toolNamesToRemove.has(t.name) && t.provider !== providerId,
+  );
+
+  // HubSpot is currently the only provider that injects a caller-context
+  // block into the system prompt at connect time. Strip it on disconnect
+  // so the agent doesn't keep referencing dynamic vars it can no longer
+  // resolve.
+  const isCrm = providerId === "hubspot";
+  const nextSystemPrompt = isCrm
+    ? stripCallerContextBlock(agent.config_cache.system_prompt)
+    : agent.config_cache.system_prompt;
+
+  await patchAgent(agent.elevenlabs_agent_id, {
+    tool_ids: externalToolIds(remainingTools),
+    ...(isCrm
+      ? {
+          system_prompt: nextSystemPrompt,
+          dynamic_variables: {},
+        }
+      : {}),
+  });
+
+  const nextRevision = agent.revision + 1;
+  await agents.updateOne(
+    { _id },
+    {
+      $set: {
+        "config_cache.tools": remainingTools,
+        ...(isCrm ? { "config_cache.system_prompt": nextSystemPrompt } : {}),
+        revision: nextRevision,
+        updated_at: new Date(),
+      },
+    },
+  );
+
+  return {
+    revision: nextRevision,
+    tools: remainingTools,
+    ...(isCrm ? { system_prompt: nextSystemPrompt } : {}),
+  };
 }

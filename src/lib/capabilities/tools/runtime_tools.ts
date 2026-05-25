@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { ObjectId } from "mongodb";
@@ -6,6 +7,7 @@ import {
   deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import { customToolsCol } from "@/lib/mongodb";
 import {
   extractSecretRefs,
@@ -51,26 +53,37 @@ export const runtimeToolsCapability: Capability = {
             throw new Error(`A tool named "${name}" already exists. Pick another name.`);
           }
           const scopedName = scopeToolName(name, phase as RuntimePhase);
-          const created = await createRuntimeTool({
-            name: scopedName,
-            description,
-            type,
-            phase: phase as RuntimePhase,
-            api_schema,
-          });
+          const runtimePhase = phase as RuntimePhase;
+          // Pre/post-call tools are fired by our lifecycle webhooks, not by
+          // ElevenLabs — skip the upstream registration and mint a local id.
+          // See src/lib/elevenlabs/lifecycle/dispatch.ts.
+          const isLifecycle = runtimePhase !== "in_call";
+          const created = isLifecycle
+            ? { id: `local_${randomBytes(8).toString("hex")}` }
+            : await createRuntimeTool({
+                name: scopedName,
+                description,
+                type,
+                phase: runtimePhase,
+                api_schema,
+              });
           const entry: RuntimeTool = {
             id: created.id,
             name: scopedName,
             type,
             description,
-            phase: phase as RuntimePhase,
+            phase: runtimePhase,
             method: api_schema?.method,
             url: api_schema?.url,
           };
           const next = [...ctx.config.tools, entry];
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: next.map((t) => t.id),
-          });
+          // Only push the patch when the in_call tool actually changed what
+          // ElevenLabs sees. Lifecycle tools don't appear in `tool_ids`.
+          if (!isLifecycle) {
+            await patchAgent(ctx.elevenlabs_agent_id, {
+              tool_ids: externalToolIds(next),
+            });
+          }
           // Surface any {{secret:<name>}} references the caller embedded in
           // the api_schema so the user sees which secrets this tool depends
           // on. We don't persist them (runtime_tools has no custom_tools
@@ -103,9 +116,11 @@ export const runtimeToolsCapability: Capability = {
           }
           const next = ctx.config.tools.filter((t) => t.id !== tool_id);
           await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: next.map((t) => t.id),
+            tool_ids: externalToolIds(next),
           });
-          await deleteRuntimeTool(tool_id).catch(() => {});
+          if (!isLocalToolId(tool_id)) {
+            await deleteRuntimeTool(tool_id).catch(() => {});
+          }
           // Cascade: if this tool was synthesized via write_tool, drop the
           // backing custom_tools row so its proxy_secret + upstream spec
           // don't become an orphan.

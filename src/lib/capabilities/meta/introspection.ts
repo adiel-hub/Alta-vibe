@@ -27,7 +27,6 @@ const SECTIONS = [
   "mcp",
   "telephony",
   "phone_numbers",
-  "integrations",
   "data_collection",
   "evaluation_criteria",
 ] as const;
@@ -69,8 +68,6 @@ function sliceConfig(cfg: AgentConfigCache, section: Section): unknown {
     case "telephony":
     case "phone_numbers":
       return cfg.phone_numbers;
-    case "integrations":
-      return cfg.integrations;
     case "data_collection":
       return cfg.data_collection;
     case "evaluation_criteria":

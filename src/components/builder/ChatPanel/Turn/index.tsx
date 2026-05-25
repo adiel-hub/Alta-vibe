@@ -54,18 +54,13 @@ export function TurnView({
     if (!hasVisible) return null;
   }
 
+  // System messages are platform-internal — they carry resolve-side effect
+  // instructions (e.g. "User imported N CSV prospects… in ONE short message
+  // confirm the count…") that the agent reads in its next turn but that
+  // would just be noise for the human. Hide them from the chat surface;
+  // they still live in the transcript so the agent sees them.
   if (isSystem) {
-    const text = content
-      .map((b) => (b.type === "text" ? b.text : ""))
-      .filter(Boolean)
-      .join(" ");
-    return (
-      <div className="flex justify-center animate-message-in">
-        <div className="rounded-full bg-(--color-panel-soft) px-3 py-1 text-[10px] uppercase tracking-wider text-(--color-muted)">
-          {text || "system"}
-        </div>
-      </div>
-    );
+    return null;
   }
   const blocks = (
     <>
@@ -109,7 +104,7 @@ export function TurnView({
   if (isUser) {
     return (
       <div className="animate-message-in flex justify-end">
-        <div className="max-w-[85%] rounded-2xl bg-(--color-panel-soft) px-4 py-2 text-sm text-(--color-foreground-strong)">
+        <div className="max-w-[85%] rounded-2xl bg-gray-200 px-4 py-2 text-sm text-(--color-foreground-strong)">
           {blocks}
         </div>
       </div>

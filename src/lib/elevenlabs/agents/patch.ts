@@ -201,11 +201,18 @@ export async function patchAgent(
   // populated `workflow.nodes` field outside conversation_config).
   if (patch.workflow !== undefined) {
     // Merge so we don't blow away workflow-level settings like
-    // `prevent_subagent_loops` that we don't manage here.
-    incoming.workflow = deepMergeConfig(
+    // `prevent_subagent_loops` that we don't manage here. But `nodes` and
+    // `edges` must be REPLACED wholesale — deep-merging them by key keeps
+    // stale random ids from the prior workflow alive, which upstream
+    // rejects as duplicate edges between the same `from`/`to`.
+    const patchWf = patch.workflow as unknown as Record<string, unknown>;
+    const merged = deepMergeConfig(
       (current?.workflow ?? {}) as Record<string, unknown>,
-      patch.workflow as unknown as Record<string, unknown>,
+      patchWf,
     );
+    if (patchWf.nodes !== undefined) merged.nodes = patchWf.nodes;
+    if (patchWf.edges !== undefined) merged.edges = patchWf.edges;
+    incoming.workflow = merged;
   }
 
   if (Object.keys(platformSlice).length > 0) {

@@ -44,14 +44,14 @@ export const HUBSPOT_SEARCH_BODY_SCHEMA = {
     properties: {
       type: "array",
       description: "HubSpot property names to return on each match.",
-      items: { type: "string" },
+      items: { type: "string", description: "HubSpot property name (e.g. 'email', 'firstname', 'lastname')." },
     },
     limit: { type: "integer", description: "Max records to return (default 10, max 100)." },
     after: { type: "string", description: "Pagination cursor from a previous response." },
     sorts: {
       type: "array",
       description: "Optional list of property-name/direction pairs.",
-      items: { type: "string" },
+      items: { type: "string", description: "Sort spec — either a HubSpot property name (ascending) or '-propertyName' for descending." },
     },
   },
 } as const;

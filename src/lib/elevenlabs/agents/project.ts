@@ -130,8 +130,6 @@ export function projectAgentConfig(
           ?.workflow) as ElevenWorkflow | undefined,
       fallback.workflow,
     ),
-    // Integrations are platform-side metadata; carry forward.
-    integrations: fallback.integrations,
   };
 }
 
@@ -171,10 +169,90 @@ function projectWorkflow(
   };
   const nodes = Object.entries(remote.nodes).map(([id, n]) => {
     const data: Record<string, unknown> = {};
+    const ext = n as Record<string, unknown>;
     if (n.additional_prompt) data.prompt = n.additional_prompt;
-    const extras = n as Record<string, unknown>;
-    for (const k of ["tool_id", "target_agent_id", "phone_number"] as const) {
-      if (extras[k] !== undefined) data[k] = extras[k];
+    // Tool node: current schema is `tools: [{ tool_id }]`. Accept legacy
+    // flat `tool_id` too in case an older saved agent still has it.
+    const toolsArr = ext.tools as Array<{ tool_id?: string }> | undefined;
+    if (toolsArr?.[0]?.tool_id) data.tool_id = toolsArr[0].tool_id;
+    else if (typeof ext.tool_id === "string") data.tool_id = ext.tool_id;
+    // standalone_agent: wire field is `agent_id`. Old serializer wrote
+    // `target_agent_id`; fall back to that for back-compat reads.
+    if (typeof ext.agent_id === "string") data.agent_id = ext.agent_id;
+    else if (typeof ext.target_agent_id === "string")
+      data.agent_id = ext.target_agent_id;
+    if (typeof ext.delay_ms === "number") data.delay_ms = ext.delay_ms;
+    if (typeof ext.transfer_message === "string")
+      data.transfer_message = ext.transfer_message;
+    if (typeof ext.enable_transferred_agent_first_message === "boolean")
+      data.enable_transferred_agent_first_message =
+        ext.enable_transferred_agent_first_message;
+    // phone_number: wire field is `transfer_destination.{phone_number|sip_uri}`.
+    // Re-wrap dynamic variants in {{var}} so the inspector edits the same
+    // string the user typed. Accept the legacy flat `phone_number` too.
+    const td = ext.transfer_destination as
+      | { type?: string; phone_number?: string; sip_uri?: string }
+      | undefined;
+    if (td?.phone_number) {
+      data.phone_number =
+        td.type === "phone_dynamic_variable"
+          ? `{{${td.phone_number}}}`
+          : td.phone_number;
+    } else if (td?.sip_uri) {
+      data.phone_number =
+        td.type === "sip_uri_dynamic_variable"
+          ? `{{${td.sip_uri}}}`
+          : td.sip_uri;
+    } else if (typeof ext.phone_number === "string") {
+      data.phone_number = ext.phone_number;
+    }
+    if (
+      ext.transfer_type === "blind" ||
+      ext.transfer_type === "conference" ||
+      ext.transfer_type === "sip_refer"
+    ) {
+      data.transfer_type = ext.transfer_type;
+    }
+    const postDial = ext.post_dial_digits as
+      | { type?: string; value?: string }
+      | undefined;
+    if (postDial?.value) {
+      data.post_dial_digits =
+        postDial.type === "dynamic"
+          ? `{{${postDial.value}}}`
+          : postDial.value;
+    }
+    const sipHeaders = ext.custom_sip_headers as
+      | Array<{ type?: string; key?: string; value?: string }>
+      | undefined;
+    if (Array.isArray(sipHeaders)) {
+      data.custom_sip_headers = sipHeaders
+        .filter((h) => h.key && h.value)
+        .map((h) => ({
+          key: h.key as string,
+          value:
+            h.type === "dynamic" ? `{{${h.value}}}` : (h.value as string),
+          dynamic: h.type === "dynamic",
+        }));
+    }
+    if (Array.isArray(ext.additional_tool_ids))
+      data.additional_tool_ids = ext.additional_tool_ids;
+    if (Array.isArray(ext.additional_knowledge_base))
+      data.additional_knowledge_base = ext.additional_knowledge_base;
+    const cc = ext.conversation_config as
+      | {
+          tts?: { voice_id?: string };
+          agent?: { prompt?: { llm?: string }; first_message?: string };
+        }
+      | undefined;
+    if (cc) {
+      data.conversation_config = cc;
+      if (typeof cc.tts?.voice_id === "string")
+        data.override_voice_id = cc.tts.voice_id;
+      if (typeof cc.agent?.prompt?.llm === "string")
+        data.override_llm = cc.agent.prompt.llm;
+      if (typeof cc.agent?.first_message === "string")
+        data.override_first_message = cc.agent.first_message;
     }
     return {
       id,
@@ -184,16 +262,16 @@ function projectWorkflow(
     };
   });
   const edges = Object.entries(remote.edges ?? {}).map(([id, e]) => {
-    const cond = e.forward_condition;
+    const fc = e.forward_condition;
+    const bc = e.backward_condition;
     return {
       id,
       from: e.source,
       to: e.target,
-      label: (e as Record<string, unknown>).label as string | undefined,
-      condition:
-        cond?.type === "llm" || cond?.type === "expression"
-          ? cond.condition
-          : undefined,
+      label: fc?.label ?? ((e as Record<string, unknown>).label as string | undefined),
+      condition: fc?.type === "llm" ? fc.condition : undefined,
+      forward_condition: fc,
+      backward_condition: bc ?? undefined,
     };
   });
   return { nodes, edges };

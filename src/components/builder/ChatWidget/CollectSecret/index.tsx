@@ -3,8 +3,23 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
 import { resolveWidget } from "../_shared/resolveWidget";
+
+type SecretEntry = {
+  name: string;
+  title: string;
+  description: string;
+  placeholder?: string;
+  docs_url?: string;
+};
+
+type CollectSecretPayload =
+  | SecretEntry
+  | { secrets: SecretEntry[] };
+
+function isBatch(p: CollectSecretPayload): p is { secrets: SecretEntry[] } {
+  return Array.isArray((p as { secrets?: SecretEntry[] }).secrets);
+}
 
 export function CollectSecretWidget({
   agentId,
@@ -13,33 +28,42 @@ export function CollectSecretWidget({
   agentId: string;
   widget: WidgetEntry;
 }) {
-  const payload = widget.payload as {
-    name: string;
-    title: string;
-    description: string;
-    placeholder?: string;
-    docs_url?: string;
-  };
-  const [value, setValue] = useState("");
-  const [revealed, setRevealed] = useState(false);
+  const payload = widget.payload as CollectSecretPayload;
+  const entries: SecretEntry[] = isBatch(payload) ? payload.secrets : [payload];
+
+  const [values, setValues] = useState<Record<string, string>>(
+    () => Object.fromEntries(entries.map((e) => [e.name, ""])),
+  );
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const setValue = (name: string, v: string) =>
+    setValues((prev) => ({ ...prev, [name]: v }));
+  const toggleReveal = (name: string) =>
+    setRevealed((prev) => ({ ...prev, [name]: !prev[name] }));
+
+  const allFilled = entries.every((e) => (values[e.name] ?? "").trim().length > 0);
+
   const submit = async () => {
-    const trimmed = value.trim();
-    if (trimmed.length < 4) {
-      setError("That value looks too short. Paste the full secret.");
-      return;
+    const trimmedMap: Record<string, string> = {};
+    for (const e of entries) {
+      const v = (values[e.name] ?? "").trim();
+      if (v.length < 4) {
+        setError(`"${e.title}" looks too short. Paste the full value.`);
+        return;
+      }
+      trimmedMap[e.name] = v;
     }
     setError(null);
     setBusy(true);
     try {
-      // Submit through the existing widget resolve endpoint. The plaintext
-      // travels over HTTPS once, the server encrypts and persists, then it
-      // is dropped from memory. We replace local state with an empty string
-      // immediately on submit so the value doesn't linger in React DevTools.
-      await resolveWidget(agentId, widget, "done", { value: trimmed });
-      setValue("");
+      const result =
+        entries.length === 1
+          ? { value: trimmedMap[entries[0].name] }
+          : { values: trimmedMap };
+      await resolveWidget(agentId, widget, "done", result);
+      setValues(Object.fromEntries(entries.map((e) => [e.name, ""])));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -56,80 +80,118 @@ export function CollectSecretWidget({
     }
   };
 
+  const isPending = widget.status === "pending";
+  const isDone = widget.status === "done";
+
   return (
-    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) p-4 shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h4 className="text-sm font-semibold text-(--color-foreground-strong)">
-            {payload.title}
-          </h4>
-          <p className="mt-1 whitespace-pre-line text-xs text-(--color-muted)">
-            {payload.description}
-          </p>
-          <p className="mt-1 font-mono text-[10px] text-(--color-muted-soft)">
-            secret_ref: {payload.name}
-          </p>
-        </div>
-        <StatusBadge status={widget.status} />
+    <div className="animate-scale-in rounded-xl border border-(--color-border) bg-(--color-panel-soft)/60 px-3.5 py-3">
+      <div className="space-y-3">
+        {entries.map((entry, idx) => (
+          <div
+            key={entry.name}
+            className={
+              idx > 0 ? "border-t border-(--color-border)/60 pt-3" : undefined
+            }
+          >
+            <div className="flex items-center gap-2">
+              <span
+                aria-hidden
+                title="Stored encrypted; never shown back to the model in plain text"
+                className="text-(--color-muted)"
+              >
+                <LockIcon />
+              </span>
+              <h4 className="text-[13px] font-medium text-(--color-foreground-strong)">
+                {entry.title}
+              </h4>
+              {isDone && (
+                <span
+                  aria-label="Saved"
+                  className="text-(--color-success)"
+                >
+                  ✓
+                </span>
+              )}
+            </div>
+            {isPending && (
+              <p className="mt-0.5 whitespace-pre-line text-[11px] leading-snug text-(--color-muted)">
+                {entry.description}
+              </p>
+            )}
+            {isPending && (
+              <div className="mt-2">
+                <div className="relative">
+                  <input
+                    type={revealed[entry.name] ? "text" : "password"}
+                    value={values[entry.name] ?? ""}
+                    onChange={(e) => setValue(entry.name, e.target.value)}
+                    disabled={busy}
+                    placeholder={entry.placeholder ?? "Paste the value…"}
+                    spellCheck={false}
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    autoComplete="off"
+                    className="w-full rounded-md border border-(--color-border) bg-(--color-panel) px-2.5 py-1.5 pr-14 font-mono text-xs outline-none focus:border-(--color-accent)"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleReveal(entry.name)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-(--color-muted) hover:text-(--color-foreground)"
+                    aria-label={revealed[entry.name] ? "Hide" : "Show"}
+                  >
+                    {revealed[entry.name] ? "Hide" : "Show"}
+                  </button>
+                </div>
+                {entry.docs_url && (
+                  <a
+                    href={entry.docs_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1 inline-block text-[10px] text-(--color-accent) hover:underline"
+                  >
+                    Where do I find this? →
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
-      {widget.status === "pending" && (
-        <div className="mt-3 space-y-2">
-          <div className="relative">
-            <input
-              type={revealed ? "text" : "password"}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              disabled={busy}
-              placeholder={payload.placeholder ?? "Paste the value…"}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              autoComplete="off"
-              className="w-full rounded-lg border border-(--color-border) bg-(--color-panel) px-3 py-2 pr-16 font-mono text-xs outline-none focus:border-(--color-accent)"
-            />
-            <button
-              type="button"
-              onClick={() => setRevealed((v) => !v)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-2 py-0.5 text-[10px] uppercase tracking-wider text-(--color-muted) hover:text-(--color-foreground)"
-              aria-label={revealed ? "Hide secret" : "Show secret"}
-            >
-              {revealed ? "Hide" : "Show"}
-            </button>
-          </div>
-          {payload.docs_url && (
-            <a
-              href={payload.docs_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block text-[11px] text-(--color-accent) hover:underline"
-            >
-              Where do I find this? →
-            </a>
-          )}
-          <div className="flex gap-2 pt-1">
-            <Button
-              disabled={busy || value.trim().length === 0}
-              onClick={submit}
-            >
-              {busy ? "Saving…" : "Save"}
-            </Button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={cancel}
-              className="rounded-full px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground)"
-            >
-              Cancel
-            </button>
-          </div>
+      {isPending && (
+        <div className="mt-3 flex gap-2">
+          <Button disabled={busy || !allFilled} onClick={submit}>
+            {busy ? "Saving…" : "Save"}
+          </Button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={cancel}
+            className="rounded-full px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground)"
+          >
+            Cancel
+          </button>
         </div>
-      )}
-      {widget.status === "done" && (
-        <p className="mt-2 text-xs text-(--color-success)">
-          Saved. The agent can now use this value via {payload.name}.
-        </p>
       )}
       {error && <p className="mt-2 text-xs text-(--color-danger)">{error}</p>}
     </div>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
   );
 }

@@ -199,6 +199,10 @@
   font-size: 13px;
   margin: 4px 0;
   overflow: hidden;
+  /* Hug the contents instead of stretching to the column width — keeps
+     the indicator/emoji/label inline with the surrounding chat text. */
+  width: fit-content;
+  max-width: 100%;
 }
 .vb-tool-card-head {
   width: 100%;
@@ -919,6 +923,16 @@ textarea, input, select {
   z-index: 0;
 }
 
+/* Softer variant of .hero-glow — same composition, ~half the saturation.
+   Used on the /audiences pages so the purple wash stays atmospheric
+   underneath a long chat without pulling focus from the message column. */
+.hero-glow--soft {
+  background:
+    radial-gradient(ellipse 50% 50% at 28% 35%, rgba(99, 102, 241, 0.12), transparent 65%),
+    radial-gradient(ellipse 60% 50% at 72% 42%, rgba(124, 58, 237, 0.10), transparent 65%),
+    radial-gradient(ellipse 45% 50% at 50% 78%, rgba(168, 85, 247, 0.08), transparent 65%);
+}
+
 /* Masthead — transparent, blends into the canvas. Logo free-floats top-left. */
 .hero-masthead {
   position: relative;
@@ -1418,6 +1432,293 @@ textarea, input, select {
   background: var(--color-border);
 }
 
+/* Tool chip rendered inside a tool_call workflow node card — shows
+   which installed tool is wired up, so users can read the binding from
+   the canvas without opening the inspector. Three states:
+     - bound (default)   → emoji + friendly label + provider badge
+     - missing           → red warning border, "Tool not found"
+     - unbound           → muted gray, "No tool selected"  */
+.vb-el-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-panel-soft);
+  font-size: 10.5px;
+  line-height: 1.3;
+  max-width: 100%;
+  overflow: hidden;
+}
+.vb-el-tool-chip-label {
+  font-weight: 500;
+  color: var(--color-foreground-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-el-tool-chip-provider {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+  padding-left: 4px;
+  border-left: 1px solid var(--color-border);
+}
+.vb-el-tool-chip-missing {
+  border-color: var(--color-danger);
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--color-danger);
+  font-weight: 500;
+}
+.vb-el-tool-chip-unbound {
+  border-style: dashed;
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+/* Phantom lifecycle tool cards — pre/post-call tools rendered next to
+   start/end. These are NOT workflow nodes (not in workflow.nodes; never
+   sent to ElevenLabs); they're a visual reminder that something fires
+   outside the in-call graph. Dashed border + muted styling differentiates
+   them from the solid in-call node cards. */
+.vb-el-phantom {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 10px;
+  border: 1.25px dashed var(--color-border-strong);
+  border-radius: 10px;
+  background: var(--color-panel);
+  color: var(--color-foreground);
+  font-size: 12px;
+  opacity: 0.85;
+  pointer-events: auto;
+  z-index: 1;
+}
+.vb-el-phantom-tag {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+  line-height: 1;
+  margin-bottom: 3px;
+}
+.vb-el-phantom-body {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.vb-el-phantom-emoji {
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.vb-el-phantom-label {
+  font-weight: 500;
+  color: var(--color-foreground-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+}
+button.vb-el-phantom {
+  border: 1.25px dashed var(--color-border-strong);
+  background: var(--color-panel);
+  width: 100%;
+}
+button.vb-el-phantom:hover {
+  background: var(--color-panel-soft);
+  border-color: var(--color-accent);
+}
+
+/* "+ Add pre-call tool" / "+ Add post-call tool" button at the bottom of
+   each phantom column. Plain pill — same dashed treatment so it reads as
+   part of the lifecycle lane, not the in-call graph. */
+.vb-el-phantom-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1.25px dashed var(--color-border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+.vb-el-phantom-add:hover {
+  opacity: 1;
+  background: var(--color-panel-soft);
+  color: var(--color-foreground-strong);
+  border-color: var(--color-accent);
+}
+
+/* Popovers attached to phantom cards — inspector (click a card) and
+   picker (click + Add). Floated above the canvas with elevation. */
+.vb-el-phantom-popover {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  padding: 12px;
+  font-size: 12px;
+  color: var(--color-foreground);
+}
+.vb-el-phantom-popover-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.vb-el-phantom-popover-title {
+  flex: 1;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-foreground-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-el-phantom-popover-close {
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.vb-el-phantom-popover-close:hover { color: var(--color-foreground-strong); }
+.vb-el-phantom-popover-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.vb-el-phantom-popover-provider {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+}
+.vb-el-phantom-popover-desc {
+  margin: 0 0 10px;
+  color: var(--color-muted);
+  line-height: 1.4;
+  font-size: 11.5px;
+}
+.vb-el-phantom-popover-vars {
+  border-top: 1px solid var(--color-border);
+  padding-top: 8px;
+  margin-bottom: 8px;
+}
+.vb-el-phantom-popover-varhead {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-muted);
+  margin-bottom: 4px;
+}
+.vb-el-phantom-popover-varcode {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-foreground-strong);
+  background: var(--color-panel-soft);
+  padding: 4px 6px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-el-phantom-popover-remove {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-panel-soft);
+  color: var(--color-danger);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.vb-el-phantom-popover-remove:hover {
+  background: rgba(220, 38, 38, 0.08);
+  border-color: var(--color-danger);
+}
+.vb-el-phantom-popover-remove:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.vb-el-phantom-popover-error {
+  margin: 8px 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--color-danger);
+  font-size: 11px;
+}
+.vb-el-phantom-popover-empty {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.vb-el-phantom-popover-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.vb-el-phantom-popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-foreground);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.vb-el-phantom-popover-item:hover {
+  background: var(--color-panel-soft);
+}
+.vb-el-phantom-popover-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.vb-el-phantom-popover-item-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-el-phantom-popover-item-provider {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+}
+
 /* Wrapper that hosts the node card plus its hover-revealed actions.
    Each wrap is its own stacking context (position: absolute, set inline
    on the JSX). When the "+ add child" popup is open we bump this wrap
@@ -1617,12 +1918,6 @@ textarea, input, select {
     0 0 0 3px rgba(17, 24, 39, 0.08),
     var(--shadow-sm);
 }
-.vb-el-node.lit-now {
-  border-color: var(--color-violet-500);
-  box-shadow:
-    0 0 0 3px rgba(124, 58, 237, 0.2),
-    var(--shadow-sm);
-}
 .vb-el-icon {
   flex: 0 0 22px;
   width: 22px;
@@ -1779,17 +2074,19 @@ textarea, input, select {
   transform: scale(1);
 }
 
-/* Edges normalise their path to length=1 so we can drive a single
-   stroke-dashoffset CSS transition regardless of curve length. */
+/* Edges fade in instead of the older stroke-dashoffset reveal — that
+   one relied on `pathLength=1` + `stroke-dasharray: 1 1`, which on
+   diagonal cubic-bezier curves degenerated to literal 1-unit dashes
+   (visible as a "broken" line where the dashes didn't align with the
+   pixel grid). Opacity is uniform across the path regardless of shape. */
 .vb-edge .vb-edge-path {
-  stroke-dasharray: 1 1;
-  transition: stroke-dashoffset 260ms ease-out;
+  transition: opacity 260ms ease-out;
 }
 .vb-edge-pending .vb-edge-path {
-  stroke-dashoffset: 1;
+  opacity: 0;
 }
 .vb-edge-revealed .vb-edge-path {
-  stroke-dashoffset: 0;
+  opacity: 1;
 }
 .vb-edge .vb-edge-pill {
   transition: opacity 200ms ease-out 80ms;
@@ -1842,11 +2139,6 @@ textarea, input, select {
 .vb-node.selected {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15), var(--shadow-sm);
-}
-.vb-node.lit-now {
-  border-color: var(--color-violet-500);
-  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18), var(--shadow-sm);
-  z-index: 2;
 }
 .vb-node .kind {
   font-family: var(--font-mono);

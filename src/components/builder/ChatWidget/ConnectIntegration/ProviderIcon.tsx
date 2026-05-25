@@ -15,8 +15,22 @@ function HubspotMark() {
   );
 }
 
+function GoogleCalendarMark() {
+  // eslint-disable-next-line @next/next/no-img-element -- matches twilio/hubspot pattern (plain <img>)
+  return (
+    <img
+      src="/integrations/google-calendar.png"
+      alt=""
+      width={14}
+      height={14}
+      className="h-[14px] w-[14px] object-contain"
+    />
+  );
+}
+
 export function ProviderIcon({ provider }: { provider: string }) {
   if (provider === "hubspot") return <HubspotMark />;
+  if (provider === "google_calendar") return <GoogleCalendarMark />;
   return (
     <svg
       width="14"

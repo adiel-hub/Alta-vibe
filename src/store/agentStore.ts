@@ -42,6 +42,12 @@ export type WidgetEntry = {
    * ChatPanel uses this for an O(1) lookup; payload-equality is the legacy
    * fallback for widgets persisted before this field existed. */
   tool_use_id?: string;
+  /** For orphan widgets (no tool_use_id) only: id of the turn this widget
+   * was created right after. ChatPanel renders the widget immediately
+   * below that turn, so a subsequent user message lands BELOW the widget
+   * at the true bottom of the chat instead of getting visually shoved up
+   * by a still-pinned widget. */
+  after_turn_id?: string;
 };
 
 export type LiveTool = {
@@ -74,8 +80,6 @@ type State = {
   activeAssistantTurnId: string | null;
   lastSeq: number;
   widgets: Record<string, WidgetEntry>;
-  /** Workflow node currently active during a live test call. */
-  liveWorkflowNodeId: string | null;
   /** Single morphing tool-status pill rendered in the chat. */
   liveTool: LiveTool | null;
   /** Most-recent section a tool touched. Bumped each call so panel can auto-focus. */
@@ -129,7 +133,6 @@ type Actions = {
     status: "done" | "cancelled" | "failed",
     result: unknown,
   ) => void;
-  setLiveWorkflowNode: (nodeId: string | null) => void;
   setLiveTool: (live: LiveTool | null) => void;
   bumpActiveSection: (key: SectionKey) => void;
   markKbAnimationDone: (id: string) => void;
@@ -150,7 +153,6 @@ export const useAgentStore = create<State & Actions>((set) => ({
   activeAssistantTurnId: null,
   lastSeq: -1,
   widgets: {},
-  liveWorkflowNodeId: null,
   liveTool: null,
   lastActiveSection: null,
   kbPendingAnimationIds: new Set(),
@@ -171,7 +173,6 @@ export const useAgentStore = create<State & Actions>((set) => ({
       activeAssistantTurnId: null,
       lastSeq: -1,
       widgets: Object.fromEntries((widgets ?? []).map((w) => [w.action_id, w])),
-      liveWorkflowNodeId: null,
       liveTool: null,
       // Page load / agent switch: docs are already there, no animation.
       kbPendingAnimationIds: new Set(),
@@ -389,8 +390,6 @@ export const useAgentStore = create<State & Actions>((set) => ({
         },
       };
     }),
-
-  setLiveWorkflowNode: (nodeId) => set({ liveWorkflowNodeId: nodeId }),
 
   setLiveTool: (live) => set({ liveTool: live }),
 

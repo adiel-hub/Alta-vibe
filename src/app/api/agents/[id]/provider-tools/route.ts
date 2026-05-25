@@ -16,6 +16,7 @@ import { ObjectId } from "mongodb";
 import { z } from "zod";
 import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol } from "@/lib/mongodb";
+import { listConnectedWorkspaceProviders } from "@/lib/integrations/store";
 import { PROVIDERS, scopedToolName } from "@/lib/integrations/providers";
 import {
   installProviderTool,
@@ -47,11 +48,9 @@ export async function GET(
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const installedNames = new Set(agent.config_cache.tools.map((t) => t.name));
-  const connectedProviders = new Set(
-    agent.config_cache.integrations
-      .filter((i) => i.status === "connected")
-      .map((i) => i.provider),
-  );
+  // Connected state is workspace-shared now — any agent's connection
+  // turns the provider on for every other agent in the workspace.
+  const connectedProviders = await listConnectedWorkspaceProviders();
 
   const catalog = PROVIDERS.map((p) => ({
     id: p.id,

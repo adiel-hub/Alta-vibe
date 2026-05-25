@@ -132,7 +132,7 @@ const PhoneNumberSetupPayload = z.object({
  * `name` is the stable handle the agent will reference from tool code
  * (`secrets.get("<name>")`). `description` is the user-facing explainer.
  */
-const CollectSecretPayload = z.object({
+const CollectSecretEntry = z.object({
   /** snake_case handle the agent will reference from tool code. */
   name: z
     .string()
@@ -148,6 +148,20 @@ const CollectSecretPayload = z.object({
   /** Optional "where do I get this?" link. */
   docs_url: z.string().url().optional(),
 });
+
+// Two shapes are accepted:
+//   1. Single secret: { name, title, description, ... }
+//      → resolves with         { value: string }
+//   2. Batch of secrets:       { secrets: [{ name, title, description, ... }, ...] }
+//      → resolves with         { values: { [name]: string } }
+// When the agent needs more than one credential for the same system, it should
+// use the batch shape so the user sees a single card with all inputs.
+const CollectSecretPayload = z.union([
+  CollectSecretEntry,
+  z.object({
+    secrets: z.array(CollectSecretEntry).min(1).max(6),
+  }),
+]);
 
 export const widgetsCapability: Capability = {
   id: "widgets",
@@ -172,7 +186,7 @@ export const widgetsCapability: Capability = {
 
     tool(
       "request_user_action",
-      "Show an interactive widget in the chat and PAUSE waiting for the user's response. THIS IS THE ONLY WAY to ask the user a question — do NOT use any built-in 'AskUserQuestion' tool, it is not wired into this chat. `kind` selects the widget; `payload` is the widget-specific JSON OBJECT (never a string). Kinds: (a) 'connect_integration' — payload: { provider, reason } — OAuth/PAT for a known provider (HubSpot, Slack, etc.). (b) 'confirm' — payload: { question, confirm_label?, cancel_label? } — yes/no confirmation, typically before destructive actions. (c) 'pick_option' — payload (two shapes): SINGLE question → { question, options: [{ value, label, description? }], multi?: boolean }, returns { value: string } or { values: string[] } when multi=true. MULTI-QUESTION wizard → { questions: [{ question, options, multi? }, ...] } (1–6 questions), returns { answers: [{ value } | { values }, ...] } in the same order; the widget walks the user through them one at a time in a single card. Each option may have a one-line `description` for context. (d) 'collect_secret' — payload: { name, title, description, placeholder?, docs_url? } — collect an arbitrary credential (API key, signing secret, webhook URL) for a system that ISN'T in the providers list. Use this when building a custom runtime tool that needs auth for an unknown third-party service. `name` is a snake_case handle the generated tool will reference (e.g. 'closepush_api_key'). The value is encrypted at rest and NEVER returned to you — you only see that it was saved. (e) 'phone_number_setup' — payload: { reason, default_provider?: 'twilio' | 'sip_trunk', attach_after_import?: boolean } — render a two-tab form (Twilio / SIP trunk) so the user can import a phone number into ElevenLabs. The user types the phone number, label, and credentials themselves — DO NOT pass any credentials or numbers in the payload. If `attach_after_import` is omitted it defaults to true (number is attached to this agent after import). After calling, your turn ENDS — the platform will resume your loop with the user's response.",
+      "Show an interactive widget in the chat and PAUSE waiting for the user's response. THIS IS THE ONLY WAY to ask the user a question — do NOT use any built-in 'AskUserQuestion' tool, it is not wired into this chat. `kind` selects the widget; `payload` is the widget-specific JSON OBJECT (never a string). Kinds: (a) 'connect_integration' — payload: { provider, reason } — OAuth/PAT for a known provider (HubSpot, Slack, etc.). (b) 'confirm' — payload: { question, confirm_label?, cancel_label? } — yes/no confirmation, typically before destructive actions. (c) 'pick_option' — payload (two shapes): SINGLE question → { question, options: [{ value, label, description? }], multi?: boolean }, returns { value: string } or { values: string[] } when multi=true. MULTI-QUESTION wizard → { questions: [{ question, options, multi? }, ...] } (1–6 questions), returns { answers: [{ value } | { values }, ...] } in the same order; the widget walks the user through them one at a time in a single card. Each option may have a one-line `description` for context. (d) 'collect_secret' — payload (two shapes): SINGLE secret → { name, title, description, placeholder?, docs_url? } (returns { value: string }). BATCH → { secrets: [{ name, title, description, placeholder?, docs_url? }, ...] } (1–6 entries, returns { values: { [name]: string } }). Collect arbitrary credentials (API key, signing secret, webhook URL) for a system that ISN'T in the providers list. Use this when building a custom runtime tool that needs auth for an unknown third-party service. `name` is a snake_case handle the generated tool will reference (e.g. 'closepush_api_key'). ALWAYS use the batch shape when you need more than one credential for the same system — the user sees a single card with all inputs instead of separate widgets. Values are encrypted at rest and NEVER returned to you — you only see that they were saved. (e) 'phone_number_setup' — payload: { reason, default_provider?: 'twilio' | 'sip_trunk', attach_after_import?: boolean } — render a two-tab form (Twilio / SIP trunk) so the user can import a phone number into ElevenLabs. The user types the phone number, label, and credentials themselves — DO NOT pass any credentials or numbers in the payload. If `attach_after_import` is omitted it defaults to true (number is attached to this agent after import). After calling, your turn ENDS — the platform will resume your loop with the user's response.",
       {
         kind: z.enum([
           "connect_integration",
