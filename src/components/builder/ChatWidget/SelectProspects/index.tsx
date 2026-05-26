@@ -4,8 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { appFetch } from "@/lib/apiClient";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
 import { resolveWidget } from "../_shared/resolveWidget";
+import { ResolvedPill, WidgetFrame } from "../_shared/WidgetFrame";
 
 type ProspectRow = {
   pdl_id: string;
@@ -142,39 +142,52 @@ export function SelectProspectsWidget({
         ? audience.new_name
         : "—";
 
-  return (
-    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-white p-4 shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-(--color-foreground-strong)">
-            {payload?.title ?? "Add prospects to an audience"}
-          </p>
-          <p className="mt-0.5 text-[11px] text-(--color-muted)">
-            {payload?.total && payload.total > prospects.length ? (
-              <>
-                Previewing{" "}
-                <span className="font-semibold text-(--color-foreground-strong)">
-                  {prospects.length}
-                </span>{" "}
-                of{" "}
-                <span className="font-semibold text-(--color-foreground-strong)">
-                  {payload.total.toLocaleString()}
-                </span>{" "}
-                matches in PDL
-              </>
-            ) : (
-              <>
-                {prospects.length} prospect
-                {prospects.length === 1 ? "" : "s"} with a mobile phone
-              </>
-            )}
-          </p>
-        </div>
-        {widget.status !== "pending" && <StatusBadge status={widget.status} />}
-      </div>
+  const doneResult =
+    widget.status === "done"
+      ? ((widget.result ?? {}) as {
+          selected_prospect_ids?: string[];
+          audience?: { id?: string; new_name?: string };
+        })
+      : null;
+  const doneCount = Array.isArray(doneResult?.selected_prospect_ids)
+    ? doneResult.selected_prospect_ids.length
+    : 0;
+  const doneAudienceName =
+    doneResult?.audience?.new_name ?? doneResult?.audience?.id ?? "audience";
 
-      {widget.status === "pending" && (
-        <>
+  return (
+    <WidgetFrame
+      widget={widget}
+      title={payload?.title ?? "Add prospects to an audience"}
+      description={
+        payload?.total && payload.total > prospects.length ? (
+          <>
+            Previewing{" "}
+            <span className="font-semibold text-(--color-foreground-strong)">
+              {prospects.length}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-(--color-foreground-strong)">
+              {payload.total.toLocaleString()}
+            </span>{" "}
+            matches in PDL
+          </>
+        ) : (
+          <>
+            {prospects.length} prospect
+            {prospects.length === 1 ? "" : "s"} with a mobile phone
+          </>
+        )
+      }
+      resolvedSummary={
+        doneResult ? (
+          <ResolvedPill>
+            Added {doneCount} · {doneAudienceName}
+          </ResolvedPill>
+        ) : undefined
+      }
+    >
+      <>
           <div className="mt-3 flex items-center justify-between text-[11px]">
             <button
               type="button"
@@ -316,8 +329,7 @@ export function SelectProspectsWidget({
               Add {selected.size} to {audienceLabel}
             </Button>
           </div>
-        </>
-      )}
-    </div>
+      </>
+    </WidgetFrame>
   );
 }

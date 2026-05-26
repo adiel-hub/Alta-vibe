@@ -63,6 +63,7 @@ export default async function AgentBuilderPage({
     payload: w.payload,
     status: w.status,
     result: w.result,
+    tool_use_id: w.tool_use_id ?? undefined,
   }));
 
   const dto: AgentDTO = {

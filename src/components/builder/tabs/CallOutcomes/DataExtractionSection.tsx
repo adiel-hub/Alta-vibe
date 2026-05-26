@@ -19,6 +19,7 @@
 import { useCallback, useRef, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
+import { displayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/Button";
 import type { DataCollectionField } from "@/types/agent";
 import { useTypewriter } from "../_shared/useTypewriter";
@@ -235,11 +236,12 @@ function FieldRow({
   });
   const markDataAnimationDone = useAgentStore((s) => s.markDataAnimationDone);
 
-  // Type the name first (mono, snake_case — keep cps modest so individual
-  // underscores read), then the description, mirroring OutcomeRow's two-
-  // stage cadence so this section looks consistent with Call outcomes.
-  const typedName = useTypewriter(field.name, typewriter, 55);
-  const nameDone = typedName.length >= field.name.length;
+  // Type the headline (label if present, else prettified slug) first, then
+  // the description, mirroring OutcomeRow's two-stage cadence so this section
+  // looks consistent with Call outcomes.
+  const headline = displayName(field);
+  const typedName = useTypewriter(headline, typewriter, 55);
+  const nameDone = typedName.length >= headline.length;
   const onDescDone = useCallback(() => {
     markDataAnimationDone(field.id);
   }, [field.id, markDataAnimationDone]);
@@ -301,7 +303,7 @@ function FieldRow({
           <FieldIcon />
           <span
             dir="auto"
-            className="font-mono text-sm font-semibold text-(--color-foreground-strong)"
+            className="text-sm font-semibold text-(--color-foreground-strong)"
           >
             {typedName}
             {showNameCursor && (
@@ -317,6 +319,11 @@ function FieldRow({
             </span>
           )}
         </div>
+        {nameDone && field.label && (
+          <div className="mt-0.5 ml-6 font-mono text-[10px] text-(--color-muted)">
+            {field.name}
+          </div>
+        )}
         <p
           dir="auto"
           className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-(--color-muted)"

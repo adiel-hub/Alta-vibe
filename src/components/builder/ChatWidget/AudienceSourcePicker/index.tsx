@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
 import { resolveWidget } from "../_shared/resolveWidget";
+import { ResolvedPill, WidgetFrame } from "../_shared/WidgetFrame";
 
 type Payload = { title?: string };
 
@@ -12,26 +12,22 @@ type Source = "pdl" | "hubspot" | "csv";
 const SOURCES: Array<{
   id: Source;
   label: string;
-  description: string;
   icon: string;
 }> = [
   {
     id: "pdl",
-    label: "Search PDL",
-    description: "Find prospects by role, industry, location.",
-    icon: "🔎",
+    label: "Alta search",
+    icon: "/alta-stars.png",
   },
   {
     id: "hubspot",
-    label: "HubSpot CRM",
-    description: "Pull contacts with phone numbers from your CRM.",
-    icon: "🟠",
+    label: "HubSpot lists",
+    icon: "/integrations/hubspot.png",
   },
   {
     id: "csv",
-    label: "Upload CSV",
-    description: "Bring your own list — paste or upload a file.",
-    icon: "📄",
+    label: "CSV",
+    icon: "/csv.png",
   },
 ];
 
@@ -63,38 +59,54 @@ export function AudienceSourcePickerWidget({
     }
   };
 
-  return (
-    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-white p-4 shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-medium text-(--color-foreground-strong)">
-          {payload.title ?? "How do you want to build the audience?"}
-        </p>
-        {widget.status !== "pending" && <StatusBadge status={widget.status} />}
-      </div>
+  const chosen =
+    widget.status === "done"
+      ? SOURCES.find(
+          (s) =>
+            s.id ===
+            ((widget.result ?? {}) as { source?: Source }).source,
+        ) ?? null
+      : null;
 
-      {widget.status === "pending" && (
-        <>
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+  return (
+    <WidgetFrame
+      widget={widget}
+      title={payload.title ?? "How do you want to build the audience?"}
+      resolvedSummary={
+        chosen ? (
+          <ResolvedPill>
+            <img
+              src={chosen.icon}
+              alt=""
+              aria-hidden
+              className="h-3.5 w-3.5 object-contain"
+            />
+            {chosen.label}
+          </ResolvedPill>
+        ) : undefined
+      }
+    >
+      <div className="mt-3 flex flex-wrap justify-center gap-2">
             {SOURCES.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 disabled={busy !== null}
                 onClick={() => pick(s.id)}
-                className={`group flex flex-col items-start gap-1.5 rounded-xl border bg-white p-3 text-left transition ${
+                className={`group flex aspect-square w-24 flex-col items-center justify-center gap-1.5 rounded-xl border bg-white p-2 text-center transition ${
                   busy === s.id
                     ? "border-(--color-accent) bg-(--color-accent)/10"
                     : "border-(--color-border) hover:border-(--color-accent)/50 hover:bg-(--color-panel-soft)"
                 } disabled:cursor-not-allowed disabled:opacity-50`}
               >
-                <span className="text-xl" aria-hidden>
-                  {s.icon}
-                </span>
-                <span className="text-xs font-semibold text-(--color-foreground-strong)">
+                <img
+                  src={s.icon}
+                  alt=""
+                  aria-hidden
+                  className="h-6 w-6 object-contain"
+                />
+                <span className="text-[11px] font-semibold leading-tight text-(--color-foreground-strong)">
                   {s.label}
-                </span>
-                <span className="text-[11px] text-(--color-muted)">
-                  {s.description}
                 </span>
               </button>
             ))}
@@ -110,8 +122,6 @@ export function AudienceSourcePickerWidget({
               Cancel
             </button>
           </div>
-        </>
-      )}
-    </div>
+    </WidgetFrame>
   );
 }

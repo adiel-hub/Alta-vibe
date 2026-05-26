@@ -21,6 +21,11 @@ import { requireSharedSecret } from "@/lib/auth";
 import { agentsCol } from "@/lib/mongodb";
 import { createAgent, getAgent, ElevenLabsError } from "@/lib/elevenlabs/client";
 import { defaultAgentConfig } from "@/lib/capabilities";
+import {
+  STARTER_NAME,
+  STARTER_FIRST_MESSAGE,
+  STARTER_SYSTEM_PROMPT,
+} from "@/lib/capabilities/identity/constants";
 import { fromElevenWorkflow } from "@/lib/capabilities/experience/workflow";
 import { backfillProviderToolsForAgent } from "@/lib/integrations/registerProviderTools";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
@@ -32,11 +37,6 @@ export const maxDuration = 60;
 
 /** Hardcoded fallback voice (Rachel — ElevenLabs default) avoids a /voices roundtrip. */
 const DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
-
-const STARTER_NAME = "New voice agent";
-const STARTER_FIRST_MESSAGE = "Hi! How can I help today?";
-const STARTER_SYSTEM_PROMPT =
-  "You are a helpful voice agent. Be friendly, concise, and proactive.";
 
 const Body = z.object({
   description: z.string().min(10).max(4_000),

@@ -45,6 +45,10 @@ export type DataCollectionField = {
   name: string;
   type: DataCollectionFieldType;
   description: string;
+  /** Human-readable title for UI display (e.g. "Order number"). Local-only —
+   *  ElevenLabs has no label concept, so this is preserved across upstream
+   *  projection by id lookup against the existing config_cache. */
+  label?: string;
   /** When set, the extracted value must be exactly one of these. Treated as
    *  a JSON-schema-style enum constraint: sent on the wire to ElevenLabs and
    *  ALSO baked into the description ("Must be exactly one of: …") so the
@@ -63,6 +67,10 @@ export type EvaluationCriterion = {
   id: string;
   name: string;
   prompt: string;
+  /** Human-readable title for UI display (e.g. "Caller verified identity").
+   *  Local-only — stripped before upstream PATCH and re-merged from the
+   *  existing config on projection. */
+  label?: string;
   use_knowledge_base?: boolean;
   /** "conversation" uses the full transcript; "agent" only the active portion. */
   scope?: "conversation" | "agent";
@@ -354,6 +362,18 @@ export type SSEEvent =
       status: "done" | "cancelled" | "failed";
       result: unknown;
     }
+  | {
+      /** Streamed mid-tool-call: the LLM is in the middle of writing one of
+       *  the three persona-tab fields (`update_agent_name`,
+       *  `update_first_message`, `update_system_prompt`) and we've extracted
+       *  the in-progress value from the partial JSON. Lets the frontend show
+       *  Alta typing the field out live instead of waiting for the tool to
+       *  return a single state_patch with the finished string. */
+      type: "tool_input_partial";
+      tool_use_id: string;
+      field: "name" | "first_message" | "system_prompt";
+      value: string;
+    }
   | { type: "state_error"; section: string; message: string }
   | { type: "turn_aborted"; reason: string }
   | { type: "turn_done"; revision: number };
@@ -392,7 +412,8 @@ export type WidgetKind =
   | "phone_number_setup"
   | "select_prospects"
   | "audience_source_picker"
-  | "csv_upload";
+  | "csv_upload"
+  | "launch_campaign";
 
 export type WidgetActionDocument = {
   _id: ObjectId;
@@ -402,6 +423,12 @@ export type WidgetActionDocument = {
   payload: unknown;
   status: "pending" | "done" | "cancelled" | "failed";
   result: unknown | null;
+  /** tool_use_id of the assistant tool_use block that produced this widget.
+   * Stamped server-side during turn forwarding (user.ts) by parsing the
+   * widget tool's result text for `action_id=...`. Hydration reads this
+   * back so the ChatPanel renders the widget inline next to its tool_use
+   * block instead of as an orphan at the top of the chat. */
+  tool_use_id?: string | null;
   created_at: Date;
   resolved_at: Date | null;
 };

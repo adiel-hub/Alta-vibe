@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { appFetch } from "@/lib/apiClient";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
+import { ResolvedPill, WidgetFrame } from "../_shared/WidgetFrame";
 import { resolveWidget } from "../_shared/resolveWidget";
 import { parseCsv } from "@/lib/csv/parse";
 import {
@@ -201,25 +201,37 @@ export function CsvUploadWidget({
       ? audiences?.find((a) => a.id === pickedId)?.name ?? "—"
       : newName.trim() || "—";
 
-  return (
-    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-white p-4 shadow-md">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium text-(--color-foreground-strong)">
-            {payload.title ?? "Upload prospects CSV"}
-          </p>
-          {widget.status === "pending" && (
-            <p className="mt-0.5 text-[11px] text-(--color-muted)">
-              {step === "upload"
-                ? "Pick a CSV — any column names. You'll map them to fields in the next step."
-                : "Map each column to a field. Phone is required; everything else is optional or can be kept as a custom field."}
-            </p>
-          )}
-        </div>
-        {widget.status !== "pending" && <StatusBadge status={widget.status} />}
-      </div>
+  const doneResult =
+    widget.status === "done"
+      ? ((widget.result ?? {}) as {
+          prospects?: unknown[];
+          audience?: { id?: string; new_name?: string };
+        })
+      : null;
+  const doneCount = Array.isArray(doneResult?.prospects)
+    ? doneResult.prospects.length
+    : 0;
+  const doneAudienceName =
+    doneResult?.audience?.new_name ?? doneResult?.audience?.id ?? "audience";
 
-      {widget.status === "pending" && step === "upload" && (
+  return (
+    <WidgetFrame
+      widget={widget}
+      title={payload.title ?? "Upload prospects CSV"}
+      description={
+        step === "upload"
+          ? "Pick a CSV — any column names. You'll map them to fields in the next step."
+          : "Map each column to a field. Phone is required; everything else is optional or can be kept as a custom field."
+      }
+      resolvedSummary={
+        doneResult ? (
+          <ResolvedPill>
+            Imported {doneCount} · {doneAudienceName}
+          </ResolvedPill>
+        ) : undefined
+      }
+    >
+      {step === "upload" && (
         <UploadStep
           text={text}
           setText={setText}
@@ -230,7 +242,7 @@ export function CsvUploadWidget({
         />
       )}
 
-      {widget.status === "pending" && step === "map" && (
+      {step === "map" && (
         <MapStep
           headers={parsedCsv.headers}
           mapping={mapping}
@@ -253,7 +265,7 @@ export function CsvUploadWidget({
           onCancel={cancel}
         />
       )}
-    </div>
+    </WidgetFrame>
   );
 }
 

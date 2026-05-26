@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { appFetch } from "@/lib/apiClient";
+import { useAgentStore } from "@/store/agentStore";
+import { displayName } from "@/lib/displayName";
 import type { CallEvent, CallLogDetail, CallLogSummary } from "@/types/agent";
 
 type CallView = "detail" | "events";
@@ -272,7 +274,11 @@ function CallDetailView({
           </h4>
           <div className="flex flex-wrap gap-2">
             {dataChips.map((d) => (
-              <OutcomeChip key={d.name} name={d.name} value={d.value} />
+              <OutcomeChip
+                key={d.name}
+                name={d.name}
+                value={d.value}
+              />
             ))}
           </div>
         </section>
@@ -296,25 +302,12 @@ function CallDetailView({
           </h4>
           <ul className="space-y-2">
             {detail.analysis.evaluation.map((e) => (
-              <li key={e.name} className="flex items-start gap-2 text-xs">
-                <span
-                  className={`mt-[1px] inline-flex h-4 w-4 flex-none items-center justify-center rounded-full text-[10px] font-bold ${
-                    e.passed
-                      ? "bg-(--color-success)/15 text-(--color-success)"
-                      : "bg-(--color-danger)/15 text-(--color-danger)"
-                  }`}
-                >
-                  {e.passed ? "✓" : "✕"}
-                </span>
-                <div className="min-w-0">
-                  <span className="font-medium text-(--color-foreground)">
-                    {e.name}
-                  </span>
-                  {e.rationale && (
-                    <span className="text-(--color-muted)"> — {e.rationale}</span>
-                  )}
-                </div>
-              </li>
+              <EvaluationRow
+                key={e.name}
+                name={e.name}
+                passed={e.passed}
+                rationale={e.rationale}
+              />
             ))}
           </ul>
         </section>
@@ -536,8 +529,50 @@ function RecordingSection({
   );
 }
 
+function EvaluationRow({
+  name,
+  passed,
+  rationale,
+}: {
+  name: string;
+  passed: boolean;
+  rationale?: string;
+}) {
+  const criteria = useAgentStore((s) => s.config?.evaluation_criteria);
+  const label = useMemo(() => {
+    const c = criteria?.find((x) => x.name === name);
+    return c ? displayName(c) : name.replace(/_/g, " ");
+  }, [name, criteria]);
+  return (
+    <li className="flex items-start gap-2 text-xs">
+      <span
+        className={`mt-[1px] inline-flex h-4 w-4 flex-none items-center justify-center rounded-full text-[10px] font-bold ${
+          passed
+            ? "bg-(--color-success)/15 text-(--color-success)"
+            : "bg-(--color-danger)/15 text-(--color-danger)"
+        }`}
+      >
+        {passed ? "✓" : "✕"}
+      </span>
+      <div className="min-w-0">
+        <span className="font-medium text-(--color-foreground)">{label}</span>
+        {rationale && (
+          <span className="text-(--color-muted)"> — {rationale}</span>
+        )}
+      </div>
+    </li>
+  );
+}
+
 function OutcomeChip({ name, value }: { name: string; value: unknown }) {
-  const label = useMemo(() => name.replace(/_/g, " "), [name]);
+  // Resolve the human label from the agent's configured data_collection.
+  // Falls back to a humanised snake_case if the field doesn't have one set
+  // (or if the call was recorded before the field was renamed/relabeled).
+  const dataFields = useAgentStore((s) => s.config?.data_collection);
+  const label = useMemo(() => {
+    const field = dataFields?.find((f) => f.name === name);
+    return field ? displayName(field) : name.replace(/_/g, " ");
+  }, [name, dataFields]);
   const isBool = typeof value === "boolean";
   const isNullish = value === null || value === undefined || value === "";
   const display = isBool

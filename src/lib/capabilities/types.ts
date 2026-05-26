@@ -14,6 +14,7 @@
  * picks up its slice, and the panel renders the corresponding tab.
  */
 import type { SSEEvent, AgentConfigCache } from "@/types/agent";
+import type { AgentPatch } from "@/lib/elevenlabs/agents/types";
 import { createLogger } from "@/lib/logger";
 
 export type ToolContext = {
@@ -25,7 +26,49 @@ export type ToolContext = {
   turn_job_id: string;
   emit: (event: SSEEvent) => void;
   bumpRevision: () => number;
+  /**
+   * Accumulator for upstream PATCH fields across a single turn. Each tool
+   * merges its `upstreamPatch` (an `AgentPatch` slice — note this is a
+   * separate shape from the local `patch`, since e.g. tools live in the
+   * cache as `RuntimeTool[]` but go upstream as `tool_ids: string[]`)
+   * here via top-level Object.assign, and `runTurn`'s finally block flushes
+   * it in one PATCH so a turn that runs N modifying tools produces 1
+   * ElevenLabs version instead of N. Tools without an `upstreamPatch` (or
+   * with `skipUpstream`) leave this untouched.
+   */
+  deferredPatch: AgentPatch;
+  /**
+   * Per-turn abort signal (fires on hard timeout, and reserved for a future
+   * user-driven Stop). Used by `runToolStep` to short-circuit the post-tool
+   * "viewability" hold so a cancelled turn doesn't sit idle for 3-4 s.
+   */
+  abortSignal?: AbortSignal;
 };
+
+/**
+ * After certain tools succeed, hold the turn for a beat so the user can
+ * register the change on the canvas before the LLM emits the next tool
+ * (which auto-switches the panel via `sseClient`'s `bumpActiveSection`).
+ * Keep this map tiny — most tools should run back-to-back.
+ */
+const VIEW_HOLD_MS: Record<string, number> = {
+  set_workflow: 3500,
+};
+
+function sleepCancellable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type SdkTool = any;
@@ -51,7 +94,26 @@ export async function runToolStep<T>(
   ctx: ToolContext,
   section: string,
   op: string,
-  fn: () => Promise<{ patch: Partial<AgentConfigCache>; summary: string; data?: T }>,
+  fn: () => Promise<{
+    /** Local config_cache slice — applied to ctx.config + emitted as state_patch. */
+    patch: Partial<AgentConfigCache>;
+    /**
+     * Upstream PATCH slice — merged into `ctx.deferredPatch` and sent to
+     * ElevenLabs at end of turn. Must be supplied explicitly because many
+     * fields have different shapes between cache and upstream (e.g.
+     * `tools: RuntimeTool[]` locally vs `tool_ids: string[]` upstream).
+     * Omit for tools that only mutate local state.
+     */
+    upstreamPatch?: AgentPatch;
+    summary: string;
+    data?: T;
+    /**
+     * If true, suppresses the upstream merge even if `upstreamPatch` is set.
+     * Used by tools that conditionally skip the ElevenLabs round-trip
+     * (e.g. lifecycle-only write_tool branch).
+     */
+    skipUpstream?: boolean;
+  }>,
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const log = createLogger(`capability:${section}`, {
     agent_id: ctx.elevenlabs_agent_id,
@@ -61,15 +123,29 @@ export async function runToolStep<T>(
   const t0 = Date.now();
   log.debug("tool start");
   try {
-    const { patch, summary } = await fn();
+    const { patch, upstreamPatch, summary, skipUpstream } = await fn();
     Object.assign(ctx.config, patch);
+    if (upstreamPatch && !skipUpstream) {
+      Object.assign(ctx.deferredPatch, upstreamPatch);
+    }
     const revision = ctx.bumpRevision();
     ctx.emit({ type: "state_patch", revision, patch });
     log.info("tool ok", {
       ms: Date.now() - t0,
       revision,
       patched: Object.keys(patch),
+      upstream_keys: upstreamPatch ? Object.keys(upstreamPatch) : [],
+      skip_upstream: skipUpstream === true,
     });
+    // Hold the turn AFTER the canvas has rendered the new state but BEFORE
+    // returning the tool result. This is the only window where the user can
+    // register the change before the LLM emits the next tool (which auto-
+    // switches the panel away). Aborts immediately on turn cancel.
+    const holdMs = VIEW_HOLD_MS[op];
+    if (holdMs && holdMs > 0) {
+      log.debug("post-tool hold", { ms: holdMs });
+      await sleepCancellable(holdMs, ctx.abortSignal);
+    }
     return { content: [{ type: "text", text: summary }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

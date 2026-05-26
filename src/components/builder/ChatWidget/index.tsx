@@ -9,6 +9,7 @@ import { PhoneNumberSetupWidget } from "./PhoneNumberSetup";
 import { SelectProspectsWidget } from "./SelectProspects";
 import { AudienceSourcePickerWidget } from "./AudienceSourcePicker";
 import { CsvUploadWidget } from "./CsvUpload";
+import { LaunchCampaignWidget } from "./LaunchCampaign";
 
 export function ChatWidget({
   agentId,
@@ -40,6 +41,9 @@ export function ChatWidget({
   }
   if (widget.kind === "csv_upload") {
     return <CsvUploadWidget agentId={agentId} widget={widget} />;
+  }
+  if (widget.kind === "launch_campaign") {
+    return <LaunchCampaignWidget agentId={agentId} widget={widget} />;
   }
   return null;
 }

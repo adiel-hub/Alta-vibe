@@ -37,12 +37,21 @@ export function projectAgentConfig(
   const mcp: McpIntegration[] =
     p?.mcp_server_ids?.map((id) => ({ id, name: id, url: "" })) ??
     fallback.mcp_servers;
+  // Labels are local-only — ElevenLabs has no label field, so on every
+  // upstream read we re-merge them from the existing config_cache by id.
+  // Without this, every re-projection would erase any label the agent set.
+  const fallbackDataLabels = new Map(
+    fallback.data_collection.map((f) => [f.id, f.label]),
+  );
   const dataCollection: DataCollectionField[] = el.platform_settings?.data_collection
     ? Object.entries(el.platform_settings.data_collection).map(([name, v]) => ({
         id: name,
         name,
         type: v.type,
         description: v.description,
+        ...(fallbackDataLabels.get(name)
+          ? { label: fallbackDataLabels.get(name) }
+          : {}),
         ...(Array.isArray(v.enum) && v.enum.length > 0
           ? { enum: v.enum }
           : {}),
@@ -57,6 +66,11 @@ export function projectAgentConfig(
   // entries at read time means our in-memory state is always serialisable —
   // tools never see them, and we never echo them back upstream.
   const rawCriteria = el.platform_settings?.evaluation?.criteria ?? null;
+  // Re-merge local-only labels from the existing config by id (same reason
+  // as data_collection above — upstream has no label field).
+  const fallbackEvalLabels = new Map(
+    fallback.evaluation_criteria.map((c) => [c.id, c.label]),
+  );
   let evalCriteria: EvaluationCriterion[];
   if (rawCriteria === null) {
     evalCriteria = fallback.evaluation_criteria;
@@ -71,15 +85,12 @@ export function projectAgentConfig(
         );
         continue;
       }
-      // Coerce nullish flags to undefined so they never round-trip back into a
-      // PATCH payload as `null`. Upstream's PromptEvaluationCriteria types
-      // these as non-nullable, so leaking a `null` here turns the next PATCH
-      // — even an unrelated sibling change like remove_call_outcome — into a
-      // "Input should be a valid boolean" failure.
+      const preservedLabel = fallbackEvalLabels.get(c.id);
       accepted.push({
         id: c.id,
         name: c.name,
         prompt,
+        ...(preservedLabel ? { label: preservedLabel } : {}),
         use_knowledge_base: c.use_knowledge_base ?? undefined,
         scope: c.scope ?? undefined,
       });

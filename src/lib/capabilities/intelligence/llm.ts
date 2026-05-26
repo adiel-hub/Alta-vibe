@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
 import type { AgentConfigCache } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -23,11 +22,14 @@ export const llmCapability: Capability = {
       },
       async ({ llm, temperature }) =>
         runToolStep(ctx, "llm", "update_llm_settings", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { llm, temperature });
           const patch: Partial<AgentConfigCache> = {};
           if (llm !== undefined) patch.llm = llm;
           if (temperature !== undefined) patch.temperature = temperature;
-          return { patch, summary: "LLM settings updated." };
+          return {
+            patch,
+            upstreamPatch: { llm, temperature },
+            summary: "LLM settings updated.",
+          };
         }),
     ),
     tool(
@@ -35,13 +37,11 @@ export const llmCapability: Capability = {
       "Maximum duration (seconds) before the agent hangs up. Common: 300-1800.",
       { max_duration_seconds: z.number().int().min(30).max(7200) },
       async ({ max_duration_seconds }) =>
-        runToolStep(ctx, "limits", "update_max_call_duration", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { max_duration_seconds });
-          return {
-            patch: { max_duration_seconds },
-            summary: `Max call duration set to ${max_duration_seconds}s.`,
-          };
-        }),
+        runToolStep(ctx, "limits", "update_max_call_duration", async () => ({
+          patch: { max_duration_seconds },
+          upstreamPatch: { max_duration_seconds },
+          summary: `Max call duration set to ${max_duration_seconds}s.`,
+        })),
     ),
 
     tool(
@@ -49,16 +49,14 @@ export const llmCapability: Capability = {
       "Hard cap on the number of tokens the LLM may generate per turn. Use 0/unset for no cap. Lower values keep responses brief.",
       { max_tokens: z.number().int().min(0).max(8_000) },
       async ({ max_tokens }) =>
-        runToolStep(ctx, "llm", "set_max_tokens", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { max_tokens });
-          return {
-            patch: {},
-            summary:
-              max_tokens === 0
-                ? "Removed max-tokens cap."
-                : `Max tokens set to ${max_tokens}.`,
-          };
-        }),
+        runToolStep(ctx, "llm", "set_max_tokens", async () => ({
+          patch: {},
+          upstreamPatch: { max_tokens },
+          summary:
+            max_tokens === 0
+              ? "Removed max-tokens cap."
+              : `Max tokens set to ${max_tokens}.`,
+        })),
     ),
 
     tool(
@@ -66,10 +64,11 @@ export const llmCapability: Capability = {
       "For reasoning-capable models (e.g. Claude thinking models, o-series), how much effort to spend on reasoning. Only takes effect on models that support it.",
       { effort: z.enum(["low", "medium", "high"]) },
       async ({ effort }) =>
-        runToolStep(ctx, "llm", "set_reasoning_effort", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { reasoning_effort: effort });
-          return { patch: {}, summary: `Reasoning effort set to ${effort}.` };
-        }),
+        runToolStep(ctx, "llm", "set_reasoning_effort", async () => ({
+          patch: {},
+          upstreamPatch: { reasoning_effort: effort },
+          summary: `Reasoning effort set to ${effort}.`,
+        })),
     ),
   ],
 };

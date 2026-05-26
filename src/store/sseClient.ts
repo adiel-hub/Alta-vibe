@@ -173,6 +173,9 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
     case "assistant_delta":
       s.appendAssistantDelta(assistantTurnId, event.text);
       break;
+    case "tool_input_partial":
+      s.applyToolInputPartial(event.field, event.value);
+      break;
     case "tool_call_start": {
       log.debug("tool_call_start", { name: event.name });
       // SDK internals: ToolSearch fires every turn to load our MCP tool

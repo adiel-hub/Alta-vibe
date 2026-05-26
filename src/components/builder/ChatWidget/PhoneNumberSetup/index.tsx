@@ -4,7 +4,7 @@ import { useState } from "react";
 import Image from "next/image";
 import { Button } from "@/components/ui/Button";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
+import { ResolvedPill } from "../_shared/WidgetFrame";
 import { resolveWidget } from "../_shared/resolveWidget";
 import { TabButton, Field, SelectField, SecretField } from "./fields";
 import {
@@ -105,15 +105,33 @@ export function PhoneNumberSetupWidget({
     }
   };
 
+  if (!isPending) {
+    return (
+      <div className="animate-scale-in flex items-center justify-between gap-3 p-1">
+        <span className="truncate text-sm font-medium text-(--color-foreground-strong)">
+          Import a phone number
+        </span>
+        {widget.status === "done" && <ResolvedPill>Imported</ResolvedPill>}
+        {widget.status === "cancelled" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-muted)">
+            Cancelled
+          </span>
+        )}
+        {widget.status === "failed" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-danger)">
+            Failed
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="animate-scale-in overflow-hidden rounded-2xl border border-(--color-accent)/40 bg-(--color-panel-soft) shadow-md">
       <div className="flex items-center justify-between gap-3 border-b border-(--color-border) px-4 py-3">
         <span className="truncate text-sm font-semibold text-(--color-foreground-strong)">
           Import a phone number
         </span>
-        {widget.status !== "pending" && (
-          <StatusBadge status={widget.status} />
-        )}
       </div>
 
       {isPending && (
@@ -291,11 +309,6 @@ export function PhoneNumberSetupWidget({
         </>
       )}
 
-      {widget.status === "done" && (
-        <p className="bg-(--color-panel) px-4 py-3 text-xs text-(--color-success)">
-          Number imported.
-        </p>
-      )}
     </div>
   );
 }

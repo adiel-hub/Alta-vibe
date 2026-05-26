@@ -8,7 +8,7 @@
  */
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
+import type { AgentPatch } from "@/lib/elevenlabs/agents/types";
 import type {
   ElevenWorkflow,
   ElevenWorkflowEdge,
@@ -530,6 +530,27 @@ function validateWorkflow(
       );
     }
   }
+  // Upstream also rejects ANY two edges that share (source, target), even
+  // when their forward_condition differs (e.g. result:true vs result:false).
+  // The runtime branch-picker disambiguates by condition, but the validator
+  // does not — so we must collapse parallel edges into one before PATCH.
+  // NUL separator so node ids containing arrows or dashes can't collide.
+  const edgesByPair = new Map<string, string[]>();
+  for (const e of w.edges) {
+    const key = `${e.from} ${e.to}`;
+    const list = edgesByPair.get(key) ?? [];
+    list.push(e.id);
+    edgesByPair.set(key, list);
+  }
+  for (const [key, edgeIds] of edgesByPair) {
+    if (edgeIds.length < 2) continue;
+    const [fromId, toId] = key.split(" ");
+    const fromLabel = labelById.get(fromId) ?? "(unknown)";
+    const toLabel = labelById.get(toId) ?? "(unknown)";
+    throw new Error(
+      `Edges ${edgeIds.map((id) => `"${id}"`).join(", ")} all connect "${fromId}" ("${fromLabel}") → "${toId}" ("${toLabel}"). Upstream treats any two edges sharing the same source/target pair as duplicates — even when their conditions differ. If both branches really lead to the same node, keep one edge and make it unconditional. If success and failure should diverge (e.g. failure goes to a recovery speak node first), split into separate target nodes.`,
+    );
+  }
   // tool_call nodes can only reference IN-CALL tools. Pre/post-call tools
   // fire from the call's envelope (pre via enrichCallContext before dial,
   // post via the post-call webhook) and have `local_…` ids that ElevenLabs
@@ -611,14 +632,16 @@ export function normalizeStartNodeId(w: WorkflowState): WorkflowState {
 }
 
 /**
- * Push the workflow as structured data on conversation_config.workflow.
- * The agent runtime walks the graph itself — no prompt footer required.
- * Also scrubs any legacy footer from the system prompt in the same call.
+ * Build the upstream PATCH payload that pushes this workflow onto
+ * conversation_config.workflow (the agent runtime walks the graph itself —
+ * no prompt footer required). Also scrubs any legacy footer from the system
+ * prompt. The caller hands the returned `upstreamPatch` back to runToolStep
+ * so the actual ElevenLabs PATCH is deferred until end of turn.
  */
-async function persistWorkflow(
+function buildWorkflowPatch(
   ctx: Parameters<Capability["tools"]>[0],
   nextWorkflow: WorkflowState,
-): Promise<{ workflow: WorkflowState }> {
+): { workflow: WorkflowState; cleanPrompt: string; upstreamPatch: AgentPatch } {
   const tTotal = Date.now();
   nextWorkflow = normalizeStartNodeId(nextWorkflow);
   validateWorkflow(nextWorkflow, ctx.config.tools);
@@ -627,27 +650,24 @@ async function persistWorkflow(
   );
   const tTranslate = Date.now();
   const workflow = toElevenWorkflow(nextWorkflow);
-  const tPatchStart = Date.now();
-  await patchAgent(ctx.elevenlabs_agent_id, {
-    workflow,
-    ...(cleanPrompt !== ctx.config.system_prompt
-      ? { system_prompt: cleanPrompt }
-      : {}),
-  });
-  const tDone = Date.now();
-  ctx.config.system_prompt = cleanPrompt;
-  ctx.config.workflow = nextWorkflow;
-  log.info("persistWorkflow done", {
+  const promptChanged = cleanPrompt !== ctx.config.system_prompt;
+  log.info("buildWorkflowPatch done", {
     agent_id: ctx.elevenlabs_agent_id,
     turn_job_id: ctx.turn_job_id,
     nodes: nextWorkflow.nodes.length,
     edges: nextWorkflow.edges.length,
-    translate_ms: tPatchStart - tTranslate,
-    eleven_patch_ms: tDone - tPatchStart,
-    total_ms: tDone - tTotal,
-    prompt_trimmed: cleanPrompt !== ctx.config.system_prompt,
+    translate_ms: Date.now() - tTranslate,
+    total_ms: Date.now() - tTotal,
+    prompt_trimmed: promptChanged,
   });
-  return { workflow: nextWorkflow };
+  return {
+    workflow: nextWorkflow,
+    cleanPrompt,
+    upstreamPatch: {
+      workflow,
+      ...(promptChanged ? { system_prompt: cleanPrompt } : {}),
+    },
+  };
 }
 
 function newId(prefix: string): string {
@@ -826,7 +846,7 @@ export const workflowCapability: Capability = {
       // Big up-front graph definition. Use this when building a workflow
       // from scratch — one call, whole graph. Cheaper than 12 add_node +
       // edge calls and keeps the canvas from flickering as nodes pop in.
-      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run a runtime tool — data.tool_id), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR data.phone_number for an E.164 phone transfer + optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers), 'end' (hang up).\n\nOverride-agent (speak/collect/condition) extras: data.additional_tool_ids[], data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label? }\n  - { type: 'llm', condition: 'the caller confirmed', label? }\n  - { type: 'expression', expression: <AST>, label? }\n  - { type: 'result', successful: true|false, label? }  ← branch on a tool node's success/failure\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge).",
+      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run a runtime tool — data.tool_id), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR data.phone_number for an E.164 phone transfer + optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers), 'end' (hang up).\n\nOverride-agent (speak/collect/condition) extras: data.additional_tool_ids[], data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label? }\n  - { type: 'llm', condition: 'the caller confirmed', label? }\n  - { type: 'expression', expression: <AST>, label? }\n  - { type: 'result', successful: true|false, label? }  ← branch on a tool node's success/failure\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge). At most ONE edge per (from, to) pair — upstream rejects duplicates even when their conditions differ. If both branches go to the same node, collapse to a single unconditional edge; otherwise split the targets.",
       {
         nodes: z.array(NodeInput).min(1).max(40),
         edges: z.array(EdgeInput).max(80).default([]),
@@ -874,12 +894,13 @@ export const workflowCapability: Capability = {
             nodes: stampedNodes,
             edges: stampedEdges,
           };
-          const persistResult = await persistWorkflow(ctx, next);
+          const result = buildWorkflowPatch(ctx, next);
           return {
             patch: {
-              workflow: persistResult.workflow,
-              system_prompt: ctx.config.system_prompt,
+              workflow: result.workflow,
+              system_prompt: result.cleanPrompt,
             },
+            upstreamPatch: result.upstreamPatch,
             summary: `Workflow set: ${stampedNodes.length} nodes, ${stampedEdges.length} edges.`,
           };
         }),
@@ -904,12 +925,13 @@ export const workflowCapability: Capability = {
             current_edges: ctx.config.workflow.edges.length,
           });
           const next = applyOps(ctx.config.workflow, operations);
-          const persistResult = await persistWorkflow(ctx, next);
+          const result = buildWorkflowPatch(ctx, next);
           return {
             patch: {
-              workflow: persistResult.workflow,
-              system_prompt: ctx.config.system_prompt,
+              workflow: result.workflow,
+              system_prompt: result.cleanPrompt,
             },
+            upstreamPatch: result.upstreamPatch,
             summary: `Applied ${operations.length} edit${operations.length === 1 ? "" : "s"} to the workflow.`,
           };
         }),
@@ -927,12 +949,13 @@ export const workflowCapability: Capability = {
             current_edges: ctx.config.workflow.edges.length,
           });
           const next: WorkflowState = { ...DEFAULT_WORKFLOW };
-          const persistResult = await persistWorkflow(ctx, next);
+          const result = buildWorkflowPatch(ctx, next);
           return {
             patch: {
-              workflow: persistResult.workflow,
-              system_prompt: ctx.config.system_prompt,
+              workflow: result.workflow,
+              system_prompt: result.cleanPrompt,
             },
+            upstreamPatch: result.upstreamPatch,
             summary: "Workflow reset.",
           };
         }),

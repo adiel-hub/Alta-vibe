@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
 
@@ -25,12 +24,15 @@ export const turnDetectionCapability: Capability = {
       },
       async (input) =>
         runToolStep(ctx, "turn", "update_turn_detection", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, input);
           const summary = Object.entries(input)
             .filter(([, v]) => v !== undefined)
             .map(([k, v]) => `${k}=${v}`)
             .join(", ");
-          return { patch: {}, summary: `Turn detection updated (${summary}).` };
+          return {
+            patch: {},
+            upstreamPatch: input,
+            summary: `Turn detection updated (${summary}).`,
+          };
         }),
     ),
   ],

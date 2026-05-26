@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { appFetch } from "@/lib/apiClient";
 import { useAgentStore, type WidgetEntry } from "@/store/agentStore";
 import { attachToTurn } from "@/store/sseClient";
-import { StatusBadge } from "../_shared/StatusBadge";
 import { resolveWidget } from "../_shared/resolveWidget";
+import { ResolvedPill } from "../_shared/WidgetFrame";
 import { ExternalLinkIcon, EyeIcon, EyeOffIcon } from "../_shared/icons";
 import { prettify } from "../_shared/prettify";
 import { ProviderIcon } from "./ProviderIcon";
@@ -252,6 +252,34 @@ export function ConnectIntegrationWidget({
   // suppressed once the widget itself resolves (done/cancelled/failed).
   const showConnectedView = isPending && connected === true;
 
+  if (!isPending) {
+    return (
+      <div className="animate-scale-in flex items-center justify-between gap-3 p-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid h-5 w-5 flex-shrink-0 place-items-center rounded-md bg-(--color-panel-soft)">
+            <ProviderIcon provider={payload.provider} />
+          </span>
+          <span className="truncate text-sm font-medium text-(--color-foreground-strong)">
+            Connect {providerName}
+          </span>
+        </div>
+        {widget.status === "done" && (
+          <ResolvedPill>Connected · {providerName}</ResolvedPill>
+        )}
+        {widget.status === "cancelled" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-muted)">
+            Dismissed
+          </span>
+        )}
+        {widget.status === "failed" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-danger)">
+            Failed
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="animate-scale-in overflow-hidden rounded-xl border border-(--color-border) bg-(--color-panel-soft) shadow-sm">
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
@@ -264,7 +292,6 @@ export function ConnectIntegrationWidget({
           </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
-          {widget.status !== "pending" && <StatusBadge status={widget.status} />}
           {docs && (
             <a
               href={docs.docsUrl}

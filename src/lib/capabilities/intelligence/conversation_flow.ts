@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
 
@@ -22,15 +21,11 @@ export const conversationFlowCapability: Capability = {
         variables: z.record(z.string(), z.string()),
       },
       async ({ variables }) =>
-        runToolStep(ctx, "flow", "set_dynamic_variables", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            dynamic_variables: variables,
-          });
-          return {
-            patch: {},
-            summary: `Set ${Object.keys(variables).length} dynamic variable${Object.keys(variables).length === 1 ? "" : "s"}.`,
-          };
-        }),
+        runToolStep(ctx, "flow", "set_dynamic_variables", async () => ({
+          patch: {},
+          upstreamPatch: { dynamic_variables: variables },
+          summary: `Set ${Object.keys(variables).length} dynamic variable${Object.keys(variables).length === 1 ? "" : "s"}.`,
+        })),
     ),
 
     tool(
@@ -38,10 +33,11 @@ export const conversationFlowCapability: Capability = {
       "Set the timezone the agent uses when reasoning about the current time (e.g. 'America/New_York', 'Europe/London', 'UTC'). Required for accurate time-aware responses — without it the agent has no notion of the current date/time and may hallucinate.",
       { timezone: z.string().min(2).max(64) },
       async ({ timezone }) =>
-        runToolStep(ctx, "flow", "set_agent_timezone", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { timezone });
-          return { patch: {}, summary: `Timezone set to ${timezone}.` };
-        }),
+        runToolStep(ctx, "flow", "set_agent_timezone", async () => ({
+          patch: {},
+          upstreamPatch: { timezone },
+          summary: `Timezone set to ${timezone}.`,
+        })),
     ),
 
     tool(
@@ -49,12 +45,11 @@ export const conversationFlowCapability: Capability = {
       "The line the agent says when a call hits max_duration_seconds and is about to disconnect. Keep it short and warm.",
       { message: z.string().min(1).max(500) },
       async ({ message }) =>
-        runToolStep(ctx, "flow", "set_max_duration_message", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            max_conversation_duration_message: message,
-          });
-          return { patch: {}, summary: "Updated max-duration goodbye message." };
-        }),
+        runToolStep(ctx, "flow", "set_max_duration_message", async () => ({
+          patch: {},
+          upstreamPatch: { max_conversation_duration_message: message },
+          summary: "Updated max-duration goodbye message.",
+        })),
     ),
 
     tool(
@@ -62,17 +57,13 @@ export const conversationFlowCapability: Capability = {
       "When true, the user cannot interrupt the agent while the first message is being delivered. Useful for legal disclosures.",
       { lock: z.boolean() },
       async ({ lock }) =>
-        runToolStep(ctx, "flow", "set_interruption_lock", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            disable_first_message_interruptions: lock,
-          });
-          return {
-            patch: {},
-            summary: lock
-              ? "First-message interruptions locked."
-              : "First-message interruptions allowed.",
-          };
-        }),
+        runToolStep(ctx, "flow", "set_interruption_lock", async () => ({
+          patch: {},
+          upstreamPatch: { disable_first_message_interruptions: lock },
+          summary: lock
+            ? "First-message interruptions locked."
+            : "First-message interruptions allowed.",
+        })),
     ),
 
     tool(
@@ -80,13 +71,11 @@ export const conversationFlowCapability: Capability = {
       "When true, the agent uses text-only conversations (no audio). Avoids audio pricing for chat-style use cases (web widget, WhatsApp, etc.).",
       { text_only: z.boolean() },
       async ({ text_only }) =>
-        runToolStep(ctx, "flow", "set_text_only", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { text_only });
-          return {
-            patch: {},
-            summary: text_only ? "Text-only mode enabled." : "Voice mode enabled.",
-          };
-        }),
+        runToolStep(ctx, "flow", "set_text_only", async () => ({
+          patch: {},
+          upstreamPatch: { text_only },
+          summary: text_only ? "Text-only mode enabled." : "Voice mode enabled.",
+        })),
     ),
 
     tool(
@@ -94,15 +83,13 @@ export const conversationFlowCapability: Capability = {
       "When true, the agent reports which knowledge-base documents and chunks contributed to each response. Enables citations in transcripts.",
       { source_attribution: z.boolean() },
       async ({ source_attribution }) =>
-        runToolStep(ctx, "flow", "set_source_attribution", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { source_attribution });
-          return {
-            patch: {},
-            summary: source_attribution
-              ? "Source attribution enabled — agent will cite KB sources."
-              : "Source attribution disabled.",
-          };
-        }),
+        runToolStep(ctx, "flow", "set_source_attribution", async () => ({
+          patch: {},
+          upstreamPatch: { source_attribution },
+          summary: source_attribution
+            ? "Source attribution enabled — agent will cite KB sources."
+            : "Source attribution disabled.",
+        })),
     ),
   ],
 };

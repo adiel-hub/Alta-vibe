@@ -10,6 +10,7 @@ import { CallOutcomesTab } from "./tabs/CallOutcomes";
 import { ToolsTab } from "./tabs/Tools";
 import { PhoneTab } from "./tabs/Phone";
 import { CallLogsTab } from "./tabs/CallLogs";
+import { DashboardTab } from "./tabs/Dashboard";
 import { TestCallButton } from "./TestCallButton";
 
 const TABS = [
@@ -21,6 +22,7 @@ const TABS = [
   { id: "tools", label: "Tools" },
   { id: "phone", label: "Phone" },
   { id: "calls", label: "Call logs" },
+  { id: "dashboard", label: "Dashboard" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -96,16 +98,16 @@ export function VisualPanel({ agentId }: { agentId: string }) {
   if (showCreationAnim) {
     return (
       <div className="preparing-canvas grid h-full place-items-center animate-fade-in">
-        <div className="flex flex-col items-center gap-6">
+        <div className="flex flex-col items-center gap-4">
           {/* Plain <img> is intentional — next/image rewrites GIFs and can
               kill the animation. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/katie-pencil.gif"
             alt="Setting up your agent"
-            className="h-auto w-[28rem] max-w-[70vw] rounded-2xl"
+            className="h-auto w-[16rem] max-w-[55vw] rounded-2xl"
           />
-          <p className="text-xl font-semibold text-(--color-foreground-strong)">
+          <p className="text-sm font-normal text-(--color-muted)">
             Preparing your agent
             <span className="dot-flash ml-1" />
             <span className="dot-flash" style={{ animationDelay: "120ms" }} />
@@ -204,6 +206,7 @@ export function VisualPanel({ agentId }: { agentId: string }) {
         {tab === "tools" && <ToolsTab />}
         {tab === "phone" && <PhoneTab agentId={agentId} />}
         {tab === "calls" && <CallLogsTab agentId={agentId} />}
+        {tab === "dashboard" && <DashboardTab agentId={agentId} />}
       </div>
     </div>
   );

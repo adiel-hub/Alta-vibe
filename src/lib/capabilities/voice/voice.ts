@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { listTtsModels, listVoices, patchAgent } from "@/lib/elevenlabs/client";
+import { listTtsModels, listVoices } from "@/lib/elevenlabs/client";
 import { DEFAULT_VOICE_SETTINGS } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -64,13 +64,11 @@ export const voiceCapability: Capability = {
             isError: true,
           };
         }
-        return runToolStep(ctx, "voice", "update_voice", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { voice_id });
-          return {
-            patch: { voice_id },
-            summary: `Voice set to ${match.name}.`,
-          };
-        });
+        return runToolStep(ctx, "voice", "update_voice", async () => ({
+          patch: { voice_id },
+          upstreamPatch: { voice_id },
+          summary: `Voice set to ${match.name}.`,
+        }));
       },
     ),
 
@@ -86,12 +84,15 @@ export const voiceCapability: Capability = {
       },
       async (input) =>
         runToolStep(ctx, "voice", "update_voice_settings", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { voice_settings: input });
           const partial = Object.fromEntries(
             Object.entries(input).filter(([, v]) => v !== undefined),
           );
           const next = { ...ctx.config.voice_settings, ...partial };
-          return { patch: { voice_settings: next }, summary: "Voice settings updated." };
+          return {
+            patch: { voice_settings: next },
+            upstreamPatch: { voice_settings: input },
+            summary: "Voice settings updated.",
+          };
         }),
     ),
 
@@ -125,9 +126,9 @@ export const voiceCapability: Capability = {
       async () =>
         runToolStep(ctx, "voice", "update_tts_model", async () => {
           const tts_model = LOCKED_TTS_MODEL;
-          await patchAgent(ctx.elevenlabs_agent_id, { tts_model });
           return {
             patch: { tts_model },
+            upstreamPatch: { tts_model },
             summary: `TTS model is locked to ${tts_model} (v3). Any other value is ignored.`,
           };
         }),
@@ -138,20 +139,15 @@ export const voiceCapability: Capability = {
       "Set the conversation language using an ISO code (e.g. 'en', 'es', 'he'). Self-heals: also re-pins the TTS model to eleven_v3_conversational so legacy agents born on eleven_flash_v2 (which doesn't cover most languages) can switch language without 422-ing.",
       { language: z.string().min(2).max(8) },
       async ({ language }) =>
-        runToolStep(ctx, "voice", "update_language", async () => {
+        runToolStep(ctx, "voice", "update_language", async () => ({
+          patch: { language, tts_model: LOCKED_TTS_MODEL },
           // Send tts_model alongside language so legacy agents whose
           // ElevenLabs record still has eleven_flash_v2 don't get a 422
           // when the requested language isn't supported by v2. v3
           // covers every language we care about.
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            language,
-            tts_model: LOCKED_TTS_MODEL,
-          });
-          return {
-            patch: { language, tts_model: LOCKED_TTS_MODEL },
-            summary: `Language set to ${language}.`,
-          };
-        }),
+          upstreamPatch: { language, tts_model: LOCKED_TTS_MODEL },
+          summary: `Language set to ${language}.`,
+        })),
     ),
 
     // --- v3 expressive features ----------------------------------------
@@ -160,13 +156,11 @@ export const voiceCapability: Capability = {
       "Enable audio tags for eleven_v3_conversational — boosts emotional range using inline cues like [whispers], [excited], [pause].",
       { enabled: z.boolean() },
       async ({ enabled }) =>
-        runToolStep(ctx, "voice", "set_expressive_mode", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { expressive_mode: enabled });
-          return {
-            patch: {},
-            summary: enabled ? "Expressive mode enabled." : "Expressive mode disabled.",
-          };
-        }),
+        runToolStep(ctx, "voice", "set_expressive_mode", async () => ({
+          patch: {},
+          upstreamPatch: { expressive_mode: enabled },
+          summary: enabled ? "Expressive mode enabled." : "Expressive mode disabled.",
+        })),
     ),
 
     tool(
@@ -174,13 +168,11 @@ export const voiceCapability: Capability = {
       "List of audio tags (e.g. ['whispers', 'excited', 'sighs', 'laughs', 'pause']) the agent should consider using. Applies with eleven_v3_conversational. Agent can still use tags outside this list.",
       { tags: z.array(z.string()).max(20) },
       async ({ tags }) =>
-        runToolStep(ctx, "voice", "set_suggested_audio_tags", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, { suggested_audio_tags: tags });
-          return {
-            patch: {},
-            summary: `Suggested ${tags.length} audio tag${tags.length === 1 ? "" : "s"}.`,
-          };
-        }),
+        runToolStep(ctx, "voice", "set_suggested_audio_tags", async () => ({
+          patch: {},
+          upstreamPatch: { suggested_audio_tags: tags },
+          summary: `Suggested ${tags.length} audio tag${tags.length === 1 ? "" : "s"}.`,
+        })),
     ),
 
     tool(
@@ -188,12 +180,11 @@ export const voiceCapability: Capability = {
       "Audio format the agent produces. Common: 'pcm_16000' (default), 'pcm_22050', 'pcm_44100', 'mp3_22050_32', 'mp3_44100_64', 'ulaw_8000' (telephony).",
       { format: z.string() },
       async ({ format }) =>
-        runToolStep(ctx, "voice", "set_output_audio_format", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            agent_output_audio_format: format,
-          });
-          return { patch: {}, summary: `Output audio format set to ${format}.` };
-        }),
+        runToolStep(ctx, "voice", "set_output_audio_format", async () => ({
+          patch: {},
+          upstreamPatch: { agent_output_audio_format: format },
+          summary: `Output audio format set to ${format}.`,
+        })),
     ),
 
     tool(
@@ -201,15 +192,11 @@ export const voiceCapability: Capability = {
       "Latency optimisation level. 0 = best quality, 4 = lowest latency. Default 2.",
       { level: z.number().int().min(0).max(4) },
       async ({ level }) =>
-        runToolStep(ctx, "voice", "set_optimize_streaming_latency", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            optimize_streaming_latency: level,
-          });
-          return {
-            patch: {},
-            summary: `Latency optimisation set to level ${level}.`,
-          };
-        }),
+        runToolStep(ctx, "voice", "set_optimize_streaming_latency", async () => ({
+          patch: {},
+          upstreamPatch: { optimize_streaming_latency: level },
+          summary: `Latency optimisation set to level ${level}.`,
+        })),
     ),
 
     tool(
@@ -217,12 +204,11 @@ export const voiceCapability: Capability = {
       "How numbers/dates are turned into spoken words. 'system_prompt' = LLM does it (free, more flexible). 'elevenlabs' = post-process (small latency, deterministic). 'off' = no normalisation.",
       { mode: z.enum(["system_prompt", "elevenlabs", "off"]) },
       async ({ mode }) =>
-        runToolStep(ctx, "voice", "set_text_normalisation", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            text_normalisation_type: mode,
-          });
-          return { patch: {}, summary: `Text normalisation set to ${mode}.` };
-        }),
+        runToolStep(ctx, "voice", "set_text_normalisation", async () => ({
+          patch: {},
+          upstreamPatch: { text_normalisation_type: mode },
+          summary: `Text normalisation set to ${mode}.`,
+        })),
     ),
   ],
 };

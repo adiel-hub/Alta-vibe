@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { WidgetEntry } from "@/store/agentStore";
-import { StatusBadge } from "../_shared/StatusBadge";
 import { resolveWidget } from "../_shared/resolveWidget";
+import { ResolvedPill, WidgetFrame } from "../_shared/WidgetFrame";
 
 type PickOptionQuestion = {
   question: string;
@@ -103,10 +103,51 @@ export function PickOptionWidget({
   const totalSelections = selected.size + (otherText.trim() ? 1 : 0);
   const advanceLabel = isLast ? "Confirm" : "Next";
 
+  // Summarise the chosen value(s) for the resolved pill.
+  const resolvedSummary = (() => {
+    if (widget.status !== "done") return undefined;
+    const raw = widget.result ?? {};
+    type SingleAnswer = { value?: string };
+    type MultiAnswer = { values?: string[] };
+    type WizardAnswer = { answers?: Array<SingleAnswer | MultiAnswer> };
+    const labelFor = (v: string, q: PickOptionQuestion) =>
+      q.options.find((o) => o.value === v)?.label ?? v;
+    if (isWizard) {
+      const answers = (raw as WizardAnswer).answers ?? [];
+      const parts = answers.map((a, i) => {
+        const q = questions[i] ?? questions[0];
+        if ("values" in a && Array.isArray(a.values)) {
+          return a.values.map((v) => labelFor(v, q)).join(", ");
+        }
+        if ("value" in a && typeof a.value === "string") {
+          return labelFor(a.value, q);
+        }
+        return "—";
+      });
+      return parts.length > 0 ? (
+        <ResolvedPill>{parts.join(" · ")}</ResolvedPill>
+      ) : undefined;
+    }
+    const single = raw as SingleAnswer & MultiAnswer;
+    if (Array.isArray(single.values) && single.values.length > 0) {
+      return (
+        <ResolvedPill>
+          {single.values.map((v) => labelFor(v, current)).join(", ")}
+        </ResolvedPill>
+      );
+    }
+    if (typeof single.value === "string") {
+      return <ResolvedPill>{labelFor(single.value, current)}</ResolvedPill>;
+    }
+    return undefined;
+  })();
+
   return (
-    <div className="animate-scale-in rounded-2xl border border-(--color-accent)/40 bg-white p-4 shadow-md">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
+    <WidgetFrame
+      widget={widget}
+      borderless
+      title={
+        <>
           {isWizard && (
             <div className="mb-1 font-mono text-[10px] uppercase tracking-widest text-(--color-muted)">
               Question {step + 1} of {questions.length}
@@ -115,14 +156,12 @@ export function PickOptionWidget({
           <p dir="auto" className="text-sm">
             {current.question}
           </p>
-        </div>
-        {widget.status !== "pending" && (
-          <StatusBadge status={widget.status} />
-        )}
-      </div>
-      {widget.status === "pending" && (
-        <>
-          <div className="mt-3 space-y-1.5">
+        </>
+      }
+      resolvedSummary={resolvedSummary}
+    >
+      <>
+          <div className="mt-3 space-y-2">
             {visibleOptions.map((o) => {
               if (isMulti) {
                 const isSel = selected.has(o.value);
@@ -132,7 +171,8 @@ export function PickOptionWidget({
                     type="button"
                     disabled={busy}
                     onClick={() => toggle(o.value)}
-                    className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left text-xs transition ${
+                    title={o.description}
+                    className={`flex w-full items-center gap-2.5 rounded-md border px-4 py-3 text-left text-sm transition ${
                       isSel
                         ? "border-(--color-accent) bg-(--color-accent)/10"
                         : "border-(--color-border) bg-white hover:border-(--color-accent)/50 hover:bg-(--color-panel-soft)"
@@ -140,7 +180,7 @@ export function PickOptionWidget({
                   >
                     <span
                       aria-hidden
-                      className={`mt-[2px] grid h-4 w-4 flex-shrink-0 place-items-center rounded border ${
+                      className={`grid h-4 w-4 flex-shrink-0 place-items-center rounded border ${
                         isSel
                           ? "border-(--color-accent) bg-(--color-accent) text-white"
                           : "border-(--color-border)"
@@ -148,21 +188,11 @@ export function PickOptionWidget({
                     >
                       {isSel ? "✓" : ""}
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span
-                        dir="auto"
-                        className="block font-medium text-(--color-foreground-strong)"
-                      >
-                        {o.label}
-                      </span>
-                      {o.description && (
-                        <span
-                          dir="auto"
-                          className="mt-0.5 block text-(--color-muted)"
-                        >
-                          {o.description}
-                        </span>
-                      )}
+                    <span
+                      dir="auto"
+                      className="min-w-0 flex-1 font-medium text-(--color-foreground-strong)"
+                    >
+                      {o.label}
                     </span>
                   </button>
                 );
@@ -174,23 +204,13 @@ export function PickOptionWidget({
                   disabled={busy}
                   onClick={() => submitSingle(o.value)}
                   title={o.description}
-                  className="flex w-full items-start gap-2 rounded-lg border border-(--color-border) bg-white px-3 py-2 text-left text-xs transition hover:border-(--color-accent)/50 hover:bg-(--color-panel-soft)"
+                  className="flex w-full items-center gap-2.5 rounded-md border border-(--color-border) bg-white px-4 py-3 text-left text-sm transition hover:border-(--color-accent)/50 hover:bg-(--color-panel-soft)"
                 >
-                  <span className="min-w-0 flex-1">
-                    <span
-                      dir="auto"
-                      className="block font-medium text-(--color-foreground-strong)"
-                    >
-                      {o.label}
-                    </span>
-                    {o.description && (
-                      <span
-                        dir="auto"
-                        className="mt-0.5 block text-(--color-muted)"
-                      >
-                        {o.description}
-                      </span>
-                    )}
+                  <span
+                    dir="auto"
+                    className="min-w-0 flex-1 font-medium text-(--color-foreground-strong)"
+                  >
+                    {o.label}
                   </span>
                 </button>
               );
@@ -206,7 +226,7 @@ export function PickOptionWidget({
                 onChange={(e) => setOtherText(e.target.value)}
                 disabled={busy}
                 placeholder="Other..."
-                className="mt-2 w-full rounded-lg border border-(--color-border) bg-white px-3 py-2 text-xs outline-none placeholder:text-(--color-muted) focus:border-(--color-accent)/60"
+                className="mt-2 w-full rounded-md border border-(--color-border) bg-white px-3 py-2 text-xs outline-none placeholder:text-(--color-muted) focus:border-(--color-accent)/60"
               />
               <div className="mt-3 flex justify-end gap-2">
                 <button
@@ -239,7 +259,7 @@ export function PickOptionWidget({
                 }}
                 disabled={busy}
                 placeholder="Other..."
-                className="flex-1 rounded-lg border border-(--color-border) bg-white px-3 py-2 text-xs outline-none placeholder:text-(--color-muted) focus:border-(--color-accent)/60"
+                className="flex-1 rounded-md border border-(--color-border) bg-white px-3 py-2 text-xs outline-none placeholder:text-(--color-muted) focus:border-(--color-accent)/60"
               />
               <Button
                 disabled={busy || !otherText.trim()}
@@ -249,8 +269,7 @@ export function PickOptionWidget({
               </Button>
             </div>
           )}
-        </>
-      )}
-    </div>
+      </>
+    </WidgetFrame>
   );
 }

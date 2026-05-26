@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
+import { displayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/Button";
 import type { EvaluationCriterion } from "@/types/agent";
 import { useTypewriter } from "../_shared/useTypewriter";
@@ -229,11 +230,12 @@ function OutcomeRow({
   });
   const markEvalAnimationDone = useAgentStore((s) => s.markEvalAnimationDone);
 
-  // Type the name first, then the prompt — same one-field-at-a-time
-  // cadence the KB cards use, so the agent looks like it's authoring the
-  // outcome live.
-  const typedName = useTypewriter(outcome.name, typewriter, 55);
-  const nameDone = typedName.length >= outcome.name.length;
+  // Type the headline (label if present, else prettified slug) first, then
+  // the prompt — same one-field-at-a-time cadence the KB cards use, so the
+  // agent looks like it's authoring the outcome live.
+  const headline = displayName(outcome);
+  const typedName = useTypewriter(headline, typewriter, 55);
+  const nameDone = typedName.length >= headline.length;
   const onPromptDone = useCallback(() => {
     markEvalAnimationDone(outcome.id);
   }, [outcome.id, markEvalAnimationDone]);
@@ -314,6 +316,11 @@ function OutcomeRow({
             </span>
           )}
         </div>
+        {nameDone && outcome.label && (
+          <div className="mt-0.5 ml-6 font-mono text-[10px] text-(--color-muted)">
+            {outcome.name}
+          </div>
+        )}
         <p
           dir="auto"
           className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-(--color-muted)"

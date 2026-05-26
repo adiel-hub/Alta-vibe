@@ -16,6 +16,15 @@ export function EditableAgentName({
   value: string;
 }) {
   const applyConfigDirect = useAgentStore((s) => s.applyConfigDirect);
+  // While Alta is mid-build the stored name is still the bootstrap default
+  // ("New voice agent") — swap it for a skeleton until `update_agent_name`
+  // lands. Gated on the per-field `nameAuthored` flag so the header
+  // reveals as soon as the name is ready, independent of the greeting and
+  // system prompt skeletons on the Persona tab.
+  const activeJobId = useAgentStore((s) => s.activeJobId);
+  const nameAuthored = useAgentStore((s) => s.nameAuthored);
+  const nameInFlight = useAgentStore((s) => s.inFlight.has("name"));
+  const pending = activeJobId != null && !nameAuthored;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
@@ -48,6 +57,14 @@ export function EditableAgentName({
     if (prevValueRef.current === value) return;
     prevValueRef.current = value;
 
+    // LLM is mid-stream — value is already growing char-by-char via
+    // `tool_input_partial`. Snap to the live value instead of restarting
+    // the 22-cps ramp from empty on every partial update.
+    if (nameInFlight) {
+      setShown(value);
+      return;
+    }
+
     if (skipNextAnimRef.current || !value) {
       skipNextAnimRef.current = false;
       setShown(value);
@@ -63,7 +80,7 @@ export function EditableAgentName({
       if (i >= value.length) window.clearInterval(id);
     }, Math.round(1000 / cps));
     return () => window.clearInterval(id);
-  }, [value, editing]);
+  }, [value, editing, nameInFlight]);
 
   const cancel = () => {
     setDraft(value);
@@ -96,6 +113,16 @@ export function EditableAgentName({
       setSaving(false);
     }
   };
+
+  if (pending) {
+    return (
+      <div
+        className="ml-1 h-4 w-32 animate-pulse rounded bg-(--color-border)"
+        aria-busy="true"
+        aria-label="Alta is naming the agent"
+      />
+    );
+  }
 
   if (editing) {
     return (

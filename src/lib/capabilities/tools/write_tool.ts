@@ -39,7 +39,6 @@ import { listAgentSecrets } from "@/lib/integrations/agentSecrets";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
-  patchAgent,
 } from "@/lib/elevenlabs/client";
 import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import {
@@ -445,14 +444,13 @@ export const writeToolCapability: Capability = {
           };
           const nextTools = [...ctx.config.tools, entry];
 
-          if (!isLifecycle) {
-            await patchAgent(ctx.elevenlabs_agent_id, {
-              tool_ids: externalToolIds(nextTools),
-            });
-          }
-
           return {
             patch: { tools: nextTools },
+            // Lifecycle tools don't appear in upstream `tool_ids` — they're
+            // fired by our own lifecycle webhooks. `skipUpstream` keeps the
+            // turn's deferred PATCH unchanged for that case.
+            upstreamPatch: { tool_ids: externalToolIds(nextTools) },
+            skipUpstream: isLifecycle,
             summary: JSON.stringify({
               status: "published",
               tool_id: created.id,
@@ -486,9 +484,6 @@ export const writeToolCapability: Capability = {
             elevenlabs_tool_id: tool_id,
           });
           const next = ctx.config.tools.filter((t) => t.id !== tool_id);
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: externalToolIds(next),
-          });
           if (!isLocalToolId(tool_id)) {
             await deleteRuntimeTool(tool_id).catch(() => {});
           }
@@ -497,6 +492,10 @@ export const writeToolCapability: Capability = {
           }
           return {
             patch: { tools: next },
+            // Local-only ids never lived on ElevenLabs, so we skip the
+            // upstream tool_ids update for lifecycle removals.
+            upstreamPatch: { tool_ids: externalToolIds(next) },
+            skipUpstream: isLocalToolId(tool_id),
             summary: `Deleted custom tool "${entry.name}".`,
           };
         }),

@@ -256,6 +256,57 @@ export const pdlCapability: Capability = {
     ),
 
     tool(
+      "present_launch_campaign_widget",
+      "Open the launch-campaign widget so the user can pick one of their existing audiences (calling lists) and click Launch to start dialing. Use this when the user says they want to start calling / launch a campaign / run their list. Requires at least one phone number attached to this agent — if `ctx.config.phone_numbers` is empty, do NOT call this tool: tell the user they need to set up a phone number first (use setup_phone_number). Your turn ENDS after calling this tool; you will be resumed once the user launches or cancels.",
+      {
+        title: z.string().min(2).max(120).optional(),
+        /** Optional: preselect an audience id (e.g. one you just listed). */
+        audience_id: z.string().optional(),
+      },
+      async ({ title, audience_id }) => {
+        try {
+          if (!ctx.config.phone_numbers || ctx.config.phone_numbers.length === 0) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text:
+                    "Cannot present launch widget: no phone number is attached to this agent. Ask the user to attach a phone number first (call setup_phone_number).",
+                },
+              ],
+              isError: true,
+            };
+          }
+          const action_id = await createWidgetAction(ctx, "launch_campaign", {
+            title: title ?? "Pick a list to start calling",
+            agent_id: ctx.agentMongoId,
+            agent_phone_numbers: ctx.config.phone_numbers,
+            preselected_audience_id: audience_id ?? null,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Launch campaign widget presented (action_id=${action_id}). End your turn now; you will be resumed once the user launches or cancels.`,
+              },
+            ],
+          };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Unknown error";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `present_launch_campaign_widget failed: ${message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      },
+    ),
+
+    tool(
       "list_audiences",
       "List the workspace's outbound-calling audiences (name, description, prospect count). Call this BEFORE running pdl_search_and_present_prospects if the user mentions adding to an existing list — so you can pass the audience name through to the widget and the user doesn't have to type it.",
       {},

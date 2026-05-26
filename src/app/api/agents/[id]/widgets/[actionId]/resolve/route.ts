@@ -446,6 +446,52 @@ export async function POST(
         );
         return NextResponse.json({ status: "failed", error: message });
       }
+    } else if (action.kind === "launch_campaign") {
+      const result = (parsed.data.result ?? {}) as {
+        campaign_id?: unknown;
+        audience_id?: unknown;
+        audience_name?: unknown;
+        total?: unknown;
+      };
+      const campaignId =
+        typeof result.campaign_id === "string" ? result.campaign_id : null;
+      const audienceName =
+        typeof result.audience_name === "string"
+          ? result.audience_name
+          : "the selected audience";
+      const total = typeof result.total === "number" ? result.total : null;
+      if (!campaignId) {
+        log.warn("launch_campaign resolved without campaign_id");
+        await widgets.updateOne(
+          { _id: _actionId },
+          {
+            $set: {
+              status: "failed",
+              result: { error: "Missing campaign_id" },
+              resolved_at: new Date(),
+            },
+          },
+        );
+        return NextResponse.json({
+          status: "failed",
+          error: "Missing campaign_id",
+        });
+      }
+      log.info("campaign launched from widget", {
+        campaign_id: campaignId,
+        audience_name: audienceName,
+        total,
+      });
+      summary =
+        total !== null
+          ? `Launched campaign on "${audienceName}" (${total} call${total === 1 ? "" : "s"}).`
+          : `Launched campaign on "${audienceName}".`;
+      effectMessage =
+        `User launched a calling campaign on "${audienceName}"` +
+        (total !== null
+          ? ` with ${total} prospect${total === 1 ? "" : "s"}`
+          : "") +
+        ` (campaign_id=${campaignId}). In ONE short message: confirm the launch, name the audience, and tell them they can watch live progress on the Audiences page. Do NOT propose new actions unless they ask.`;
     } else if (action.kind === "collect_secret") {
       type SecretEntry = { name?: string; description?: string };
       const payload = action.payload as

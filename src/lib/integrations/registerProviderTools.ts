@@ -31,6 +31,7 @@ import {
   deleteRuntimeTool,
   patchAgent,
 } from "@/lib/elevenlabs/client";
+import type { AgentPatch } from "@/lib/elevenlabs/agents/types";
 import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import {
   getProvider,
@@ -405,11 +406,21 @@ export async function backfillProviderToolsForAgent(
  * Returns the new RuntimeTool entry, or throws if the provider isn't
  * connected, the tool key is unknown, or the tool is already installed.
  */
+/**
+ * Install a single provider tool. Returns the entry + the upstream PATCH
+ * payload (caller must apply it — either inline for REST flows, or via the
+ * turn-scoped `deferredPatch` accumulator when called from a capability).
+ */
+export type InstallProviderToolResult = {
+  entry: RuntimeTool;
+  upstreamPatch: AgentPatch;
+};
+
 export async function installProviderTool(
   agentMongoId: string,
   providerId: string,
   toolKey: string,
-): Promise<RuntimeTool> {
+): Promise<InstallProviderToolResult> {
   const provider = getProvider(providerId);
   if (!provider) throw new Error(`Unknown provider "${providerId}".`);
   const spec = findProviderTool(providerId, toolKey);
@@ -460,9 +471,6 @@ export async function installProviderTool(
   }
 
   const nextTools = [...agent.config_cache.tools, entry];
-  await patchAgent(agent.elevenlabs_agent_id, {
-    tool_ids: externalToolIds(nextTools),
-  });
   await agents.updateOne(
     { _id },
     {
@@ -473,17 +481,30 @@ export async function installProviderTool(
       },
     },
   );
-  return entry;
+  return {
+    entry,
+    upstreamPatch: { tool_ids: externalToolIds(nextTools) },
+  };
 }
 
 /**
  * Remove a provider-sourced tool from the agent by its installed name or
  * id. Deletes the ElevenLabs runtime-tool record too.
  */
+export type UninstallProviderToolResult = {
+  removed_id: string;
+  remaining: RuntimeTool[];
+  /**
+   * Upstream PATCH payload — `undefined` when the removed tool was a
+   * local-only lifecycle tool (no ElevenLabs `tool_ids` change needed).
+   */
+  upstreamPatch?: AgentPatch;
+};
+
 export async function uninstallProviderTool(
   agentMongoId: string,
   identifier: { id?: string; name?: string },
-): Promise<{ removed_id: string; remaining: RuntimeTool[] }> {
+): Promise<UninstallProviderToolResult> {
   const _id = new ObjectId(agentMongoId);
   const agents = await agentsCol();
   const agent = await agents.findOne({ _id });
@@ -502,10 +523,8 @@ export async function uninstallProviderTool(
   // Lifecycle tools live entirely on our side — there's nothing upstream
   // for ElevenLabs to update or delete. Skip both the patch (the tool_ids
   // list wasn't going to change anyway) and the DELETE round-trip.
-  if (!isLocalToolId(target.id)) {
-    await patchAgent(agent.elevenlabs_agent_id, {
-      tool_ids: externalToolIds(nextTools),
-    });
+  const isLocal = isLocalToolId(target.id);
+  if (!isLocal) {
     await deleteRuntimeTool(target.id).catch(() => {});
   }
   // Cascade: if this was a write_tool / create_custom_runtime_tool tool,
@@ -526,7 +545,13 @@ export async function uninstallProviderTool(
       },
     },
   );
-  return { removed_id: target.id, remaining: nextTools };
+  return {
+    removed_id: target.id,
+    remaining: nextTools,
+    ...(isLocal
+      ? {}
+      : { upstreamPatch: { tool_ids: externalToolIds(nextTools) } }),
+  };
 }
 
 /**
@@ -542,14 +567,17 @@ export async function uninstallProviderTool(
  * Returns the new state so the caller can return it to the client (HTTP
  * route) or fold it into a chat state_patch (capability).
  */
-export async function disconnectProviderForAgent(
-  agentMongoId: string,
-  providerId: string,
-): Promise<{
+export type DisconnectProviderResult = {
   revision: number;
   tools: RuntimeTool[];
   system_prompt?: string;
-}> {
+  upstreamPatch: AgentPatch;
+};
+
+export async function disconnectProviderForAgent(
+  agentMongoId: string,
+  providerId: string,
+): Promise<DisconnectProviderResult> {
   const _id = new ObjectId(agentMongoId);
   const agents = await agentsCol();
   const agent = await agents.findOne({ _id });
@@ -580,7 +608,7 @@ export async function disconnectProviderForAgent(
     ? stripCallerContextBlock(agent.config_cache.system_prompt)
     : agent.config_cache.system_prompt;
 
-  await patchAgent(agent.elevenlabs_agent_id, {
+  const upstreamPatch: AgentPatch = {
     tool_ids: externalToolIds(remainingTools),
     ...(isCrm
       ? {
@@ -588,7 +616,7 @@ export async function disconnectProviderForAgent(
           dynamic_variables: {},
         }
       : {}),
-  });
+  };
 
   const nextRevision = agent.revision + 1;
   await agents.updateOne(
@@ -607,5 +635,6 @@ export async function disconnectProviderForAgent(
     revision: nextRevision,
     tools: remainingTools,
     ...(isCrm ? { system_prompt: nextSystemPrompt } : {}),
+    upstreamPatch,
   };
 }

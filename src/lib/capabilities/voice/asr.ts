@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
 
@@ -23,17 +22,17 @@ export const asrCapability: Capability = {
       },
       async ({ quality, provider, keywords }) =>
         runToolStep(ctx, "asr", "update_transcription_settings", async () => {
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            asr_quality: quality,
-            asr_provider: provider,
-            asr_keywords: keywords,
-          });
           const parts: string[] = [];
           if (quality) parts.push(`quality=${quality}`);
           if (provider) parts.push(`provider=${provider}`);
           if (keywords) parts.push(`keywords=[${keywords.slice(0, 5).join(",")}…]`);
           return {
             patch: {},
+            upstreamPatch: {
+              asr_quality: quality,
+              asr_provider: provider,
+              asr_keywords: keywords,
+            },
             summary: `Transcription settings updated${parts.length ? ` (${parts.join(", ")})` : ""}.`,
           };
         }),

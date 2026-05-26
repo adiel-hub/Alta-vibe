@@ -22,7 +22,7 @@ import {
   installProviderTool,
   uninstallProviderTool,
 } from "@/lib/integrations/registerProviderTools";
-import { ElevenLabsError } from "@/lib/elevenlabs/client";
+import { ElevenLabsError, patchAgent } from "@/lib/elevenlabs/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,13 +93,16 @@ export async function POST(
   }
 
   try {
-    const entry = await installProviderTool(
+    const { entry, upstreamPatch } = await installProviderTool(
       id,
       parsed.data.provider,
       parsed.data.tool_key,
     );
     const agents = await agentsCol();
     const agent = await agents.findOne({ _id: new ObjectId(id) });
+    if (agent) {
+      await patchAgent(agent.elevenlabs_agent_id, upstreamPatch);
+    }
     return NextResponse.json({
       revision: agent?.revision ?? 0,
       tool: entry,
@@ -138,12 +141,16 @@ export async function DELETE(
   }
 
   try {
-    const { removed_id, remaining } = await uninstallProviderTool(id, {
-      id: tool_id ?? undefined,
-      name: tool_name ?? undefined,
-    });
+    const { removed_id, remaining, upstreamPatch } = await uninstallProviderTool(
+      id,
+      { id: tool_id ?? undefined, name: tool_name ?? undefined },
+    );
     const agents = await agentsCol();
     const agent = await agents.findOne({ _id: new ObjectId(id) });
+    // upstreamPatch is undefined for local-only lifecycle tools — nothing to send.
+    if (agent && upstreamPatch) {
+      await patchAgent(agent.elevenlabs_agent_id, upstreamPatch);
+    }
     return NextResponse.json({
       revision: agent?.revision ?? 0,
       removed_id,

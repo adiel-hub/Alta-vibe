@@ -180,7 +180,7 @@ export const integrationsCapability: Capability = {
       },
       async ({ provider, tool_key }) =>
         runToolStep(ctx, "integrations", "install_provider_tool", async () => {
-          const entry = await installProviderTool(
+          const { entry, upstreamPatch } = await installProviderTool(
             ctx.agentMongoId,
             provider,
             tool_key,
@@ -188,6 +188,7 @@ export const integrationsCapability: Capability = {
           const nextTools = [...ctx.config.tools, entry];
           return {
             patch: { tools: nextTools },
+            upstreamPatch,
             summary: `Installed ${entry.name} on this agent.`,
           };
         }),
@@ -205,12 +206,16 @@ export const integrationsCapability: Capability = {
           if (!tool_id && !tool_name) {
             throw new Error("Pass either tool_id or tool_name.");
           }
-          const { remaining } = await uninstallProviderTool(ctx.agentMongoId, {
-            id: tool_id,
-            name: tool_name,
-          });
+          const { remaining, upstreamPatch } = await uninstallProviderTool(
+            ctx.agentMongoId,
+            { id: tool_id, name: tool_name },
+          );
           return {
             patch: { tools: remaining },
+            // Local-only tools have no upstream tool_ids change; omitting
+            // `upstreamPatch` (and using skipUpstream) keeps the deferred
+            // turn buffer untouched in that case.
+            ...(upstreamPatch ? { upstreamPatch } : { skipUpstream: true }),
             summary: `Uninstalled ${tool_name ?? tool_id}.`,
           };
         }),
@@ -222,16 +227,15 @@ export const integrationsCapability: Capability = {
       { provider: z.string().min(1) },
       async ({ provider }) =>
         runToolStep(ctx, "integrations", "disconnect_integration", async () => {
-          const { tools, system_prompt } = await disconnectProviderForAgent(
-            ctx.agentMongoId,
-            provider,
-          );
+          const { tools, system_prompt, upstreamPatch } =
+            await disconnectProviderForAgent(ctx.agentMongoId, provider);
           const providerDef = getProvider(provider);
           return {
             patch: {
               tools,
               ...(system_prompt !== undefined ? { system_prompt } : {}),
             },
+            upstreamPatch,
             summary: `Disconnected ${providerDef?.name ?? provider}.`,
           };
         }),

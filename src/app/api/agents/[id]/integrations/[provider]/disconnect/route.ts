@@ -11,8 +11,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { requireSharedSecret } from "@/lib/auth";
+import { agentsCol } from "@/lib/mongodb";
 import { disconnectProviderForAgent } from "@/lib/integrations/registerProviderTools";
-import { ElevenLabsError } from "@/lib/elevenlabs/client";
+import { ElevenLabsError, patchAgent } from "@/lib/elevenlabs/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,7 +35,14 @@ export async function POST(
 
   try {
     const result = await disconnectProviderForAgent(id, provider);
-    return NextResponse.json(result);
+    const agents = await agentsCol();
+    const agent = await agents.findOne({ _id: new ObjectId(id) });
+    if (agent) {
+      await patchAgent(agent.elevenlabs_agent_id, result.upstreamPatch);
+    }
+    const { upstreamPatch: _upstreamPatch, ...response } = result;
+    void _upstreamPatch;
+    return NextResponse.json(response);
   } catch (err) {
     if (err instanceof ElevenLabsError) {
       return NextResponse.json(

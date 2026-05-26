@@ -7,6 +7,39 @@ import type {
   ContentBlock,
   WidgetKind,
 } from "@/types/agent";
+import {
+  STARTER_FIRST_MESSAGE,
+  STARTER_NAME,
+  STARTER_SYSTEM_PROMPT,
+} from "@/lib/capabilities/identity/constants";
+import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
+
+/**
+ * Each identity field (name, first_message, system_prompt) is "authored"
+ * once its value differs from the bootstrap default. While a builder turn
+ * is running and a field is still pristine, the Persona tab and chat
+ * header swap that field for a skeleton. The flags are sticky — once
+ * flipped true, they stay true for the session, so subsequent edits never
+ * re-skeleton.
+ *
+ * Caller-context blocks are auto-injected into the system prompt by
+ * integration tools before the builder agent writes the real prompt, so
+ * they're stripped before the comparison.
+ */
+function isSystemPromptAuthored(prompt: string | undefined): boolean {
+  if (!prompt) return false;
+  return stripCallerContextBlock(prompt).trim() !== STARTER_SYSTEM_PROMPT;
+}
+
+function isNameAuthored(name: string | undefined): boolean {
+  if (!name) return false;
+  return name.trim() !== STARTER_NAME;
+}
+
+function isFirstMessageAuthored(msg: string | undefined): boolean {
+  if (msg === undefined) return false;
+  return msg.trim() !== STARTER_FIRST_MESSAGE.trim();
+}
 
 export type SectionKey =
   | "name"
@@ -97,6 +130,35 @@ type State = {
    *  a previously-unseen data_collection field id (agent-created via the
    *  add_data_field tool). */
   dataPendingAnimationIds: Set<string>;
+  /** Bumped each time `applyPatch` lands a patch that touches any
+   *  voice-tab field (`voice_id`, `language`, `voice_settings`, `llm`,
+   *  `temperature`, `max_duration_seconds`). The Voice tab watches this
+   *  counter and replays its staged-skeleton reveal on every bump, so
+   *  every Alta voice update animates the whole tab the same way the
+   *  first-turn build does. NOT bumped by `applyConfigDirect` — user
+   *  slider drags shouldn't re-animate. */
+  voiceRevealToken: number;
+  /** True once the agent name has been authored — i.e. it differs from
+   *  the bootstrap default. The chat header shows a skeleton instead of
+   *  the name while this is false and a builder turn is active. */
+  nameAuthored: boolean;
+  /** True once the first_message (greeting) has been authored. The
+   *  Persona tab shows a skeleton while this is false and a builder
+   *  turn is active. */
+  firstMessageAuthored: boolean;
+  /** True once the system prompt has been authored — i.e. it differs from
+   *  the starter template (caller-context block ignored). The Persona tab
+   *  shows a skeleton instead of the textarea while this is false and a
+   *  builder turn is active, so the user doesn't see the bootstrap text
+   *  flicker before Alta writes the real prompt. */
+  systemPromptAuthored: boolean;
+  /** True for the lifetime of the very first builder turn. Sticky — doesn't
+   *  flip when intermediate patches land, only when the first assistant
+   *  turn finalizes. Drives the Voice tab's staged "build animation" so
+   *  every field reveals/animates even ones Alta doesn't actually touch
+   *  (sliders, llm, max duration). Seeded at hydrate by checking whether
+   *  the system prompt is still the bootstrap. */
+  isFirstBuild: boolean;
 };
 
 type Actions = {
@@ -107,6 +169,15 @@ type Actions = {
   ) => void;
   applyPatch: (revision: number, patch: Partial<AgentConfigCache>) => void;
   applyConfigDirect: (patch: Partial<AgentConfigCache>, revision: number) => void;
+  /** Apply a live-streamed partial value for one of the persona fields.
+   *  Updates config[field] and flips the matching authored flag so the
+   *  skeleton clears as soon as the first character lands. Does NOT bump
+   *  revision — the canonical state_patch arrives when the tool completes
+   *  and rebumps then. */
+  applyToolInputPartial: (
+    field: "name" | "first_message" | "system_prompt",
+    value: string,
+  ) => void;
   setCurrentVersionId: (versionId: string | null) => void;
   setInFlight: (section: SectionKey, busy: boolean) => void;
   setError: (section: string, message: string | null) => void;
@@ -158,6 +229,11 @@ export const useAgentStore = create<State & Actions>((set) => ({
   kbPendingAnimationIds: new Set(),
   evalPendingAnimationIds: new Set(),
   dataPendingAnimationIds: new Set(),
+  voiceRevealToken: 0,
+  nameAuthored: false,
+  firstMessageAuthored: false,
+  systemPromptAuthored: false,
+  isFirstBuild: false,
 
   hydrate: (agent, turns, widgets) =>
     set({
@@ -178,12 +254,38 @@ export const useAgentStore = create<State & Actions>((set) => ({
       kbPendingAnimationIds: new Set(),
       evalPendingAnimationIds: new Set(),
       dataPendingAnimationIds: new Set(),
+      voiceRevealToken: 0,
+      nameAuthored: isNameAuthored(agent.config_cache?.name),
+      firstMessageAuthored: isFirstMessageAuthored(
+        agent.config_cache?.first_message,
+      ),
+      systemPromptAuthored: isSystemPromptAuthored(
+        agent.config_cache?.system_prompt,
+      ),
+      isFirstBuild: !isSystemPromptAuthored(agent.config_cache?.system_prompt),
     }),
 
   applyPatch: (revision, patch) =>
     set((s) => {
       if (!s.config) return s;
       if (revision <= s.revision) return s;
+      const touchesVoiceTab =
+        patch.voice_id !== undefined ||
+        patch.language !== undefined ||
+        patch.voice_settings !== undefined ||
+        patch.llm !== undefined ||
+        patch.temperature !== undefined ||
+        patch.max_duration_seconds !== undefined;
+      const voiceRevealToken = touchesVoiceTab
+        ? s.voiceRevealToken + 1
+        : s.voiceRevealToken;
+      console.debug("[voice-anim] applyPatch", {
+        revision,
+        patchKeys: Object.keys(patch),
+        touchesVoiceTab,
+        prevToken: s.voiceRevealToken,
+        nextToken: voiceRevealToken,
+      });
       const merged: AgentConfigCache = { ...s.config, ...patch };
       const kbPendingAnimationIds = diffKbForAnimation(
         s.config.knowledge_base,
@@ -208,13 +310,28 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.name !== undefined && s.agent && s.agent.name !== patch.name
           ? { ...s.agent, name: patch.name }
           : s.agent;
+      const nameAuthored =
+        s.nameAuthored ||
+        (patch.name !== undefined && isNameAuthored(patch.name));
+      const firstMessageAuthored =
+        s.firstMessageAuthored ||
+        (patch.first_message !== undefined &&
+          isFirstMessageAuthored(patch.first_message));
+      const systemPromptAuthored =
+        s.systemPromptAuthored ||
+        (patch.system_prompt !== undefined &&
+          isSystemPromptAuthored(patch.system_prompt));
       return {
         config: merged,
         revision,
         kbPendingAnimationIds,
         evalPendingAnimationIds,
         dataPendingAnimationIds,
+        voiceRevealToken,
         agent: nextAgent,
+        nameAuthored,
+        firstMessageAuthored,
+        systemPromptAuthored,
       };
     }),
 
@@ -237,12 +354,39 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.data_collection,
         s.dataPendingAnimationIds,
       );
+      // User-driven saves always count as authored, even if the typed text
+      // happens to match the starter — the user explicitly chose it.
+      const nameAuthored = s.nameAuthored || patch.name !== undefined;
+      const firstMessageAuthored =
+        s.firstMessageAuthored || patch.first_message !== undefined;
+      const systemPromptAuthored =
+        s.systemPromptAuthored || patch.system_prompt !== undefined;
       return {
         config: merged,
         revision: Math.max(s.revision, revision),
         kbPendingAnimationIds,
         evalPendingAnimationIds,
         dataPendingAnimationIds,
+        nameAuthored,
+        firstMessageAuthored,
+        systemPromptAuthored,
+      };
+    }),
+
+  applyToolInputPartial: (field, value) =>
+    set((s) => {
+      if (!s.config) return s;
+      const merged: AgentConfigCache = { ...s.config, [field]: value };
+      const nextAgent =
+        field === "name" && s.agent && s.agent.name !== value
+          ? { ...s.agent, name: value }
+          : s.agent;
+      return {
+        config: merged,
+        agent: nextAgent,
+        ...(field === "name" ? { nameAuthored: true } : {}),
+        ...(field === "first_message" ? { firstMessageAuthored: true } : {}),
+        ...(field === "system_prompt" ? { systemPromptAuthored: true } : {}),
       };
     }),
 
@@ -368,11 +512,15 @@ export const useAgentStore = create<State & Actions>((set) => ({
     }),
 
   setActiveTurn: (jobId, assistantTurnId) =>
-    set({
+    set((s) => ({
       activeJobId: jobId,
       activeAssistantTurnId: assistantTurnId,
       lastSeq: jobId ? 0 : -1,
-    }),
+      // First builder turn just ended → drop the build-animation flag so
+      // any future turn (user edits) doesn't replay the staged Voice-tab
+      // reveal.
+      isFirstBuild: jobId === null ? false : s.isFirstBuild,
+    })),
 
   setLastSeq: (seq) => set({ lastSeq: seq }),
 
@@ -418,6 +566,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       next.delete(id);
       return { dataPendingAnimationIds: next };
     }),
+
 }));
 
 /**
@@ -487,3 +636,4 @@ function diffDataForAnimation(
   }
   return next ?? current;
 }
+

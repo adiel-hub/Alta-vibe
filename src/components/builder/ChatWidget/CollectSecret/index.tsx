@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { WidgetEntry } from "@/store/agentStore";
 import { resolveWidget } from "../_shared/resolveWidget";
+import { ResolvedPill } from "../_shared/WidgetFrame";
 
 type SecretEntry = {
   name: string;
@@ -82,6 +83,35 @@ export function CollectSecretWidget({
 
   const isPending = widget.status === "pending";
   const isDone = widget.status === "done";
+
+  if (!isPending) {
+    return (
+      <div className="animate-scale-in flex items-center justify-between gap-3 p-1">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-(--color-foreground-strong)">
+          <LockIcon />
+          {entries.length === 1
+            ? entries[0].title
+            : `${entries.length} secrets`}
+        </div>
+        {isDone && (
+          <ResolvedPill>
+            Saved
+            {entries.length === 1 ? ` · ${entries[0].name}` : ""}
+          </ResolvedPill>
+        )}
+        {widget.status === "cancelled" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-muted)">
+            Cancelled
+          </span>
+        )}
+        {widget.status === "failed" && (
+          <span className="shrink-0 text-[11px] uppercase tracking-wide text-(--color-danger)">
+            Failed
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="animate-scale-in rounded-xl border border-(--color-border) bg-(--color-panel-soft)/60 px-3.5 py-3">

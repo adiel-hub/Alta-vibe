@@ -2,11 +2,16 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { createLogger } from "@/lib/logger";
 import type { ContentBlock, SSEEvent } from "@/types/agent";
 import type { TurnStats } from "../types";
-import { handleStreamEvent } from "./streamEvent";
+import {
+  handleStreamEvent,
+  type PartialInputs,
+} from "./streamEvent";
 import { handleAssistantMessage } from "./assistant";
 import { handleUserMessage } from "./user";
 import { handleSystemMessage } from "./system";
 import { handleResultMessage } from "./result";
+
+export type { PartialInputs } from "./streamEvent";
 
 export function forwardMessage(
   message: SDKMessage,
@@ -14,12 +19,13 @@ export function forwardMessage(
   assistantContent: ContentBlock[],
   log: ReturnType<typeof createLogger>,
   stats: TurnStats,
+  partials: PartialInputs,
 ): void {
   stats.sdk_messages++;
 
   // ── stream_event: partial deltas (text + thinking + tool_input) ───────
   if (message.type === "stream_event") {
-    handleStreamEvent(message, emit, log, stats);
+    handleStreamEvent(message, emit, log, stats, partials);
     return;
   }
 

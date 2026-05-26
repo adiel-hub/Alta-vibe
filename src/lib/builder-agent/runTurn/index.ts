@@ -8,6 +8,8 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createBuilderTools } from "../tools";
 import { createLogger } from "@/lib/logger";
+import { patchAgent } from "@/lib/elevenlabs/client";
+import type { AgentPatch } from "@/lib/elevenlabs/agents/types";
 import type {
   AgentConfigCache,
   ContentBlock,
@@ -15,7 +17,7 @@ import type {
 } from "@/types/agent";
 import { HARD_TIMEOUT_MS } from "./constants";
 import { buildSystemPrompt } from "./prompt/buildSystemPrompt";
-import { forwardMessage } from "./forward";
+import { forwardMessage, type PartialInputs } from "./forward";
 import type { RunTurnInput, RunTurnResult, TurnStats } from "./types";
 
 export type { RunTurnInput, RunTurnResult } from "./types";
@@ -37,14 +39,18 @@ export async function runTurn(
   const config: AgentConfigCache = JSON.parse(JSON.stringify(input.currentConfig));
   const assistantContent: ContentBlock[] = [];
 
-  const { server: tools, allowedToolNames: allowedTools } = createBuilderTools({
-    agentMongoId: input.agentMongoId,
-    elevenlabs_agent_id: input.elevenlabsAgentId,
-    config,
-    turn_job_id: input.turnJobId,
-    emit,
-    bumpRevision: () => ++revision,
-  });
+  // Per-turn map of in-flight persona tool inputs (name / first_message /
+  // system_prompt). Populated from `content_block_start`, accumulated from
+  // `input_json_delta`, and drained on `content_block_stop`. Lets us emit
+  // `tool_input_partial` SSE events so the Persona tab fills in live as
+  // Claude writes each field, instead of snapping to the final value when
+  // the tool returns.
+  const partials: PartialInputs = new Map();
+
+  // Turn-scoped accumulator: every capability tool's upstream patch is
+  // merged here, and we send ONE PATCH at end of turn so the user sees one
+  // ElevenLabs version per builder-agent turn instead of one per tool call.
+  const deferredPatch: AgentPatch = {};
 
   const abortController = new AbortController();
   const timeoutHandle = setTimeout(() => {
@@ -52,6 +58,17 @@ export async function runTurn(
     emit({ type: "turn_aborted", reason: `hard timeout (${HARD_TIMEOUT_MS / 1000}s)` });
     abortController.abort();
   }, HARD_TIMEOUT_MS);
+
+  const { server: tools, allowedToolNames: allowedTools } = createBuilderTools({
+    agentMongoId: input.agentMongoId,
+    elevenlabs_agent_id: input.elevenlabsAgentId,
+    config,
+    turn_job_id: input.turnJobId,
+    emit,
+    bumpRevision: () => ++revision,
+    deferredPatch,
+    abortSignal: abortController.signal,
+  });
 
   // Running totals updated by forwardMessage so we can emit a single
   // line at session end summarising the whole turn.
@@ -118,10 +135,33 @@ export async function runTurn(
     });
 
     for await (const message of result) {
-      forwardMessage(message, emit, assistantContent, log, stats);
+      forwardMessage(message, emit, assistantContent, log, stats, partials);
     }
   } finally {
     clearTimeout(timeoutHandle);
+    // Flush accumulated tool patches in one upstream PATCH so the turn
+    // produces a single ElevenLabs version. Always flush — even on error
+    // paths — because successful tools earlier in the turn already updated
+    // local cache and the user expects that work to persist.
+    const patchedKeys = Object.keys(deferredPatch);
+    if (patchedKeys.length > 0) {
+      try {
+        await patchAgent(input.elevenlabsAgentId, deferredPatch);
+        log.info("turn patch flushed", { patched: patchedKeys });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        log.error("turn patch flush failed", {
+          message,
+          patched: patchedKeys,
+          stack: err instanceof Error ? err.stack : undefined,
+        });
+        emit({
+          type: "state_error",
+          section: "agent",
+          message: `Failed to save changes upstream: ${message}`,
+        });
+      }
+    }
   }
 
   log.info("session end", {

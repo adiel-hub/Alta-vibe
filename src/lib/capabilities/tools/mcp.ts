@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { patchAgent } from "@/lib/elevenlabs/client";
 import type { McpIntegration } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -26,11 +25,9 @@ export const mcpCapability: Capability = {
             url: url ?? "",
           };
           const next = [...ctx.config.mcp_servers, entry];
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            mcp_server_ids: next.map((m) => m.id),
-          });
           return {
             patch: { mcp_servers: next },
+            upstreamPatch: { mcp_server_ids: next.map((m) => m.id) },
             summary: `Connected MCP server "${entry.name}".`,
           };
         }),
@@ -42,11 +39,9 @@ export const mcpCapability: Capability = {
       async ({ server_id }) =>
         runToolStep(ctx, "mcp", "remove_mcp", async () => {
           const next = ctx.config.mcp_servers.filter((m) => m.id !== server_id);
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            mcp_server_ids: next.map((m) => m.id),
-          });
           return {
             patch: { mcp_servers: next },
+            upstreamPatch: { mcp_server_ids: next.map((m) => m.id) },
             summary: `Disconnected MCP server ${server_id}.`,
           };
         }),

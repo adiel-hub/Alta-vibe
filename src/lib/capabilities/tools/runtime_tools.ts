@@ -5,7 +5,6 @@ import { ObjectId } from "mongodb";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
-  patchAgent,
 } from "@/lib/elevenlabs/client";
 import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 import { customToolsCol } from "@/lib/mongodb";
@@ -77,13 +76,6 @@ export const runtimeToolsCapability: Capability = {
             url: api_schema?.url,
           };
           const next = [...ctx.config.tools, entry];
-          // Only push the patch when the in_call tool actually changed what
-          // ElevenLabs sees. Lifecycle tools don't appear in `tool_ids`.
-          if (!isLifecycle) {
-            await patchAgent(ctx.elevenlabs_agent_id, {
-              tool_ids: externalToolIds(next),
-            });
-          }
           // Surface any {{secret:<name>}} references the caller embedded in
           // the api_schema so the user sees which secrets this tool depends
           // on. We don't persist them (runtime_tools has no custom_tools
@@ -98,8 +90,13 @@ export const runtimeToolsCapability: Capability = {
             secretRefs.length > 0
               ? ` Secrets referenced: ${secretRefs.join(", ")}.`
               : "";
+          // Only push tool_ids when the in_call tool actually changed what
+          // ElevenLabs sees. Lifecycle tools don't appear in `tool_ids` —
+          // we use `skipUpstream` so the deferred buffer stays untouched.
           return {
             patch: { tools: next },
+            upstreamPatch: { tool_ids: externalToolIds(next) },
+            skipUpstream: isLifecycle,
             summary: `Created ${phase} tool "${name}".${refSuffix}`,
           };
         }),
@@ -115,9 +112,6 @@ export const runtimeToolsCapability: Capability = {
             throw new Error(`No tool with id "${tool_id}".`);
           }
           const next = ctx.config.tools.filter((t) => t.id !== tool_id);
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            tool_ids: externalToolIds(next),
-          });
           if (!isLocalToolId(tool_id)) {
             await deleteRuntimeTool(tool_id).catch(() => {});
           }
@@ -131,7 +125,11 @@ export const runtimeToolsCapability: Capability = {
               elevenlabs_tool_id: tool_id,
             })
             .catch(() => {});
-          return { patch: { tools: next }, summary: `Removed runtime tool.` };
+          return {
+            patch: { tools: next },
+            upstreamPatch: { tool_ids: externalToolIds(next) },
+            summary: `Removed runtime tool.`,
+          };
         }),
     ),
   ],

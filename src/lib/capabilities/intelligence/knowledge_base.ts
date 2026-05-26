@@ -5,7 +5,6 @@ import {
   createKbFromUrl,
   deleteKbDocument,
   getKbDependentAgents,
-  patchAgent,
   ragIndexKbDocument,
   refreshKbDocument,
   renameKbDocument,
@@ -15,6 +14,11 @@ import { crawlSite, scrapePage } from "@/lib/firecrawl/client";
 import type { KnowledgeBaseDocument } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
+
+/** Shape we attach knowledge-base docs in on the upstream PATCH (drops `source`). */
+function toUpstreamKb(docs: KnowledgeBaseDocument[]) {
+  return docs.map((d) => ({ id: d.id, name: d.name, type: d.type }));
+}
 
 export const knowledgeBaseCapability: Capability = {
   id: "knowledge_base",
@@ -54,11 +58,9 @@ export const knowledgeBaseCapability: Capability = {
             source: url,
           };
           const next = [...ctx.config.knowledge_base, entry];
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            knowledge_base: next.map((d) => ({ id: d.id, name: d.name, type: d.type })),
-          });
           return {
             patch: { knowledge_base: next },
+            upstreamPatch: { knowledge_base: toUpstreamKb(next) },
             summary: `Added "${doc.name}" to the knowledge base.`,
           };
         }),
@@ -78,11 +80,9 @@ export const knowledgeBaseCapability: Capability = {
             source: "text",
           };
           const next = [...ctx.config.knowledge_base, entry];
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            knowledge_base: next.map((d) => ({ id: d.id, name: d.name, type: d.type })),
-          });
           return {
             patch: { knowledge_base: next },
+            upstreamPatch: { knowledge_base: toUpstreamKb(next) },
             summary: `Added text snippet "${name}".`,
           };
         }),
@@ -121,11 +121,9 @@ export const knowledgeBaseCapability: Capability = {
             ctx.config.knowledge_base = incremental;
           }
           const next = ctx.config.knowledge_base;
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            knowledge_base: next.map((d) => ({ id: d.id, name: d.name, type: d.type })),
-          });
           return {
             patch: { knowledge_base: next },
+            upstreamPatch: { knowledge_base: toUpstreamKb(next) },
             summary: `Scraped ${created.length} page${created.length === 1 ? "" : "s"} into the knowledge base.`,
           };
         }),
@@ -150,11 +148,9 @@ export const knowledgeBaseCapability: Capability = {
             source: page.url,
           };
           const next = [...ctx.config.knowledge_base, entry];
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            knowledge_base: next.map((d) => ({ id: d.id, name: d.name, type: d.type })),
-          });
           return {
             patch: { knowledge_base: next },
+            upstreamPatch: { knowledge_base: toUpstreamKb(next) },
             summary: `Scraped "${doc.name}".`,
           };
         }),
@@ -172,12 +168,10 @@ export const knowledgeBaseCapability: Capability = {
             );
           }
           const next = ctx.config.knowledge_base.filter((d) => d.id !== document_id);
-          await patchAgent(ctx.elevenlabs_agent_id, {
-            knowledge_base: next.map((d) => ({ id: d.id, name: d.name, type: d.type })),
-          });
           await deleteKbDocument(document_id).catch(() => {});
           return {
             patch: { knowledge_base: next },
+            upstreamPatch: { knowledge_base: toUpstreamKb(next) },
             summary: "Knowledge base document removed.",
           };
         }),
@@ -196,6 +190,9 @@ export const knowledgeBaseCapability: Capability = {
           const next = ctx.config.knowledge_base.map((d) =>
             d.id === document_id ? { ...d, name } : d,
           );
+          // Renaming a KB doc is a doc-level op upstream; the agent's
+          // `knowledge_base` list still references the same id, so no agent
+          // PATCH is needed. We update local cache only.
           return {
             patch: { knowledge_base: next },
             summary: `Renamed document to "${name}".`,
