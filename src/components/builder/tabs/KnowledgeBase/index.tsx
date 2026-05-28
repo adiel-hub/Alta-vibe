@@ -345,6 +345,22 @@ function KbCard({
   const showContentCursor =
     contentReady && typedContent.length < contentText.length;
 
+  // Auto-scroll the content <pre> so the cursor stays visible as the
+  // typewriter reveals more characters. Runs on rAF only while the cursor
+  // is active so we don't fight a user who scrolled manually after typing.
+  const contentRef = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    if (!showContentCursor) return;
+    let raf = 0;
+    const loop = () => {
+      const el = contentRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [showContentCursor]);
+
   return (
     <div
       role="button"
@@ -399,7 +415,7 @@ function KbCard({
                 />
               )}
             </span>
-            {sourceText && (
+            {sourceText && (!typewriter || nameDone) && (
               <span className="mt-1 line-clamp-1 break-all font-mono text-[11px] text-(--color-muted)">
                 {typedSource}
                 {showSourceCursor && (
@@ -487,10 +503,13 @@ function KbCard({
           )}
           {content !== null && (
             <pre
+              ref={contentRef}
               dir="auto"
-              className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-panel) p-3 font-mono text-[11px] leading-relaxed text-(--color-foreground)"
+              className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-(--color-panel) p-3 font-mono text-[11px] leading-relaxed text-(--color-foreground) [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >
-              {contentReady ? typedContent : content || "(empty)"}
+              {!typewriter || contentReady
+                ? typedContent || (content === "" ? "(empty)" : "")
+                : ""}
               {showContentCursor && (
                 <span
                   aria-hidden

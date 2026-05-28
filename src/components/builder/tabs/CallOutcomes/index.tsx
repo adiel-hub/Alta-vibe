@@ -325,7 +325,7 @@ function OutcomeRow({
           dir="auto"
           className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed text-(--color-muted)"
         >
-          {typedPrompt}
+          {(!typewriter || nameDone) && typedPrompt}
           {showPromptCursor && (
             <span
               aria-hidden

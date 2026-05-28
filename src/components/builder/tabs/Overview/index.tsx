@@ -32,7 +32,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
   const systemPromptPending = activeJobId != null && !systemPromptAuthored;
 
   return (
-    <div className="mx-auto flex min-h-full max-w-[760px] flex-col gap-6">
+    <div className="mx-auto flex h-full max-w-[760px] flex-col gap-6">
       <Section title="Greeting" meta="first message" busy={inFlight.has("first_message")}>
         <PersonaField
           agentId={agentId}
@@ -172,6 +172,23 @@ function PersonaField({
   const [showTypewriter, setShowTypewriter] = useState(false);
   const lastValueRef = useRef(value);
   const typewriterTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Auto-scroll the read-only streaming/typewriter container so the cursor
+  // stays visible as the value grows, instead of leaving new text below the
+  // fold of the (now bounded) textarea slot. Run on rAF while typing is
+  // active because the Typewriter reveals characters internally — `value`
+  // alone isn't enough to drive per-frame scroll updates.
+  const streamRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!(busy || showTypewriter)) return;
+    let raf = 0;
+    const loop = () => {
+      const el = streamRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [busy, showTypewriter]);
 
   useEffect(() => {
     if (!dirty) setDraft(value);
@@ -275,10 +292,11 @@ function PersonaField({
           // speedup, no overlay. The text grows naturally as the store
           // updates from successive partials.
           <div
+            ref={streamRef}
             dir="auto"
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
-            } alta-typing-caret ${fill ? "min-h-0 flex-1 overflow-auto" : ""}`}
+            } alta-typing-caret ${fill ? "min-h-0 flex-1 overflow-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : ""}`}
             style={{
               minHeight:
                 !fill && multiline ? `${(rows ?? 4) * 1.5}em` : undefined,
@@ -292,10 +310,11 @@ function PersonaField({
           // Read-only overlay while we type the new value in. Once the
           // animation finishes, fall through to the regular editable input.
           <div
+            ref={streamRef}
             dir="auto"
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
-            } alta-typing-caret ${fill ? "min-h-0 flex-1 overflow-auto" : ""}`}
+            } alta-typing-caret ${fill ? "min-h-0 flex-1 overflow-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : ""}`}
             style={{
               minHeight:
                 !fill && multiline ? `${(rows ?? 4) * 1.5}em` : undefined,
@@ -319,7 +338,7 @@ function PersonaField({
             }}
             className={`vb-field-input vb-field-textarea ${
               mono ? "vb-field-prompt" : ""
-            } ${fill ? "min-h-0 flex-1 resize-none" : ""}`}
+            } ${fill ? "min-h-0 flex-1 resize-none [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" : ""}`}
           />
         ) : (
           <input
