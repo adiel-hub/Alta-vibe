@@ -424,9 +424,6 @@ export function ChatPanel({
                 </svg>
               )}
             </button>
-            <span className="ml-auto rounded border border-(--color-border) bg-(--color-panel-soft) px-1.5 py-0.5 font-mono text-[10px] text-(--color-muted-soft)">
-              ⏎
-            </span>
             {(() => {
               const running = sending || activeJobId !== null;
               return (
@@ -438,8 +435,8 @@ export function ChatPanel({
                   // for a spinner — that's a clearer signal than dimming it.
                   className={
                     running
-                      ? "grid h-7 w-7 place-items-center rounded-md bg-(--color-accent) text-white"
-                      : "grid h-7 w-7 place-items-center rounded-md bg-(--color-accent) text-white transition hover:brightness-110 disabled:bg-(--color-border) disabled:text-(--color-muted-soft) disabled:hover:brightness-100"
+                      ? "ml-auto grid h-7 w-7 place-items-center rounded-md bg-(--color-accent) text-white"
+                      : "ml-auto grid h-7 w-7 place-items-center rounded-md bg-(--color-accent) text-white transition hover:brightness-110 disabled:bg-(--color-border) disabled:text-(--color-muted-soft) disabled:hover:brightness-100"
                   }
                   aria-label={running ? "Agent is running" : "Send"}
                 >

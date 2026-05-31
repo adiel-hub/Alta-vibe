@@ -36,11 +36,7 @@ import { randomBytes } from "node:crypto";
 import { ObjectId } from "mongodb";
 import { customToolsCol } from "@/lib/mongodb";
 import { listAgentSecrets } from "@/lib/integrations/agentSecrets";
-import {
-  createRuntimeTool,
-  deleteRuntimeTool,
-} from "@/lib/elevenlabs/client";
-import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
+import { createRuntimeTool } from "@/lib/elevenlabs/client";
 import {
   extractSecretRefs,
   normalizeElevenlabsSchema,
@@ -49,7 +45,6 @@ import {
 import type {
   CustomToolDocument,
   RuntimePhase,
-  RuntimeTool,
 } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -90,7 +85,8 @@ You output EXACTLY ONE JSON object matching this shape (no markdown, no prose, n
   "method": "GET" | "POST" | "PUT" | "DELETE",
   "headers": { "Header-Name": "value or {{secret:secret_name}} template" },
   "body_schema": <JSON-Schema object — OMIT THIS FIELD ENTIRELY if no body>,
-  "query_schema": <JSON-Schema object — OMIT THIS FIELD ENTIRELY if no query params>
+  "query_schema": <JSON-Schema object — OMIT THIS FIELD ENTIRELY if no query params>,
+  "needs": ["variable_name", ...]  /* PRE-CALL ONLY — see rule 8 */
 }
 
 Rules:
@@ -126,6 +122,26 @@ Rules:
      hardcoded auth value. Auth is always a {{secret:...}} reference.
   7. If you cannot confidently produce a working spec from the intent, output:
      { "error": "<one-sentence explanation of what's missing>" }
+  8. PRE-CALL DEPENDENCIES — when phase is "pre_call" and the user's intent
+     references data produced by another pre-call tool (e.g. "using the
+     HubSpot contact_id" or "after looking up the contact"), declare those
+     dependencies via the "needs" array. Each entry is a variable name that
+     must be present in the merged context before this tool runs. The
+     pre-call dispatcher topologically orders tools by these needs, so
+     "needs: ['caller_hubspot_contact_id']" guarantees this tool runs AFTER
+     hubspot_lookup_contact has emitted that variable. Reference these vars
+     in the body_schema's example values via {{field:NAME}} templating —
+     the dispatcher substitutes them at call time. Omit "needs" (or use [])
+     when the tool only depends on baseline CallerContext fields (to_number,
+     caller_email, full_name, etc.). NEVER add "needs" for non-pre_call
+     phases.
+
+     Common pre-call variable names the user might reference:
+       - caller_email, to_number, full_name, first_name, last_name (always available)
+       - prospect_id, audience_id, campaign_id (available when called from a campaign)
+       - caller_hubspot_contact_id (after hubspot_lookup_contact runs)
+       - account_industry, account_headcount (after alta_prospect_facts runs)
+       - engagement_last_conversation_id (after alta_call_history runs)
 
 Output ONLY the JSON object. No preamble, no markdown code fences, no commentary.`;
 
@@ -137,6 +153,8 @@ type SynthSpec = {
   headers: Record<string, string>;
   body_schema?: unknown;
   query_schema?: unknown;
+  /** Pre-call only: variable names this tool needs before it can run. */
+  needs?: string[];
 };
 
 const SynthSpecSchema = z.object({
@@ -151,6 +169,7 @@ const SynthSpecSchema = z.object({
   headers: z.record(z.string(), z.string()),
   body_schema: z.unknown().optional(),
   query_schema: z.unknown().optional(),
+  needs: z.array(z.string()).optional(),
 });
 
 /**
@@ -249,7 +268,7 @@ export const writeToolCapability: Capability = {
   tools: (ctx) => [
     tool(
       "write_tool",
-      "Synthesize a NEW runtime tool from a plain-English intent. Use this — NOT create_custom_runtime_tool — whenever the user wants the agent to do something during/after a call that isn't covered by a built-in or a connected provider. The platform turns the intent into a webhook spec, registers it with the voice platform, and routes all traffic through our secret-substituting proxy so third-party API keys never reach the voice platform.\n\nArgs:\n  - intent: one-paragraph description of what the tool should do and when.\n  - phase: 'pre_call' (before greeting), 'in_call' (during conversation), or 'post_call' (after hangup).\n  - needs_secrets (optional): credentials the tool will need, each with { name (snake_case handle), title, description (where to get it), placeholder?, docs_url? }. If any are not already saved, the response will be { status: 'needs_secrets', missing: [...] } — fire a request_user_action(kind='collect_secret') widget for EACH missing one, then call write_tool again with the same args.\n  - hints (optional): { docs_url, base_url, example_request } — anything the user told you about the target API. The synthesizer uses these to ground the URL and request shape.\n\nReturns either { status: 'needs_secrets', missing } (you must collect each then re-call) or { status: 'published', tool_id, name, phase, summary, request_preview } (the tool is live on the agent).",
+      "Synthesize a NEW runtime tool from a plain-English intent and attach it to the workflow. Use this — NOT create_custom_runtime_tool — whenever the user wants the agent to do something during/after a call that isn't covered by a built-in or a connected provider. The platform turns the intent into a webhook spec, registers it with the voice platform, creates a `custom_tools` row + a binding on `workflow.bindings`, and routes all traffic through our secret-substituting proxy so third-party API keys never reach the voice platform. The new tool can be referenced from `tool_call` workflow nodes by its returned tool_id.\n\nArgs:\n  - intent: one-paragraph description of what the tool should do and when.\n  - phase: 'pre_call' (before greeting), 'in_call' (during conversation), or 'post_call' (after hangup).\n  - needs_secrets (optional): credentials the tool will need, each with { name (snake_case handle), title, description (where to get it), placeholder?, docs_url? }. If any are not already saved, the response will be { status: 'needs_secrets', missing: [...] } — fire a request_user_action(kind='collect_secret') widget for EACH missing one, then call write_tool again with the same args.\n  - hints (optional): { docs_url, base_url, example_request } — anything the user told you about the target API. The synthesizer uses these to ground the URL and request shape.\n\nReturns either { status: 'needs_secrets', missing } (you must collect each then re-call) or { status: 'published', tool_id, name, phase, summary, request_preview } (the tool is live on the agent).",
       {
         intent: z.string().min(10).max(2000),
         phase: z.enum(["pre_call", "in_call", "post_call"]),
@@ -361,6 +380,10 @@ export const writeToolCapability: Capability = {
               query_schema: synth.query_schema,
             },
             secret_refs: referencedSecrets,
+            // Persist pre-call dependencies declared by the synthesizer so
+            // the wave dispatcher can topologically order this tool against
+            // others. Honored only for phase: pre_call.
+            needs: phase === "pre_call" ? synth.needs ?? [] : undefined,
             created_at: now,
             updated_at: now,
           } as Omit<CustomToolDocument, "_id"> as never);
@@ -433,24 +456,27 @@ export const writeToolCapability: Capability = {
             { $set: { elevenlabs_tool_id: created.id, updated_at: new Date() } },
           );
 
-          const entry: RuntimeTool = {
-            id: created.id,
-            name: scopedName,
-            type: "webhook",
-            description: synth.description,
+          // Attach the binding — this derives the new config.tools and
+          // pushes the updated tool_ids upstream atomically.
+          const { attachCustomBinding } = await import("@/lib/tools/bindings");
+          await attachCustomBinding(
+            ctx.agentMongoId,
+            customToolId,
+            created.id,
             phase,
-            method: synth.method,
-            url: `${getAppBaseUrl()}/api/custom-tools/proxy/${ctx.agentMongoId}/${customToolId}`,
-          };
-          const nextTools = [...ctx.config.tools, entry];
+          );
 
+          const { agentsCol } = await import("@/lib/mongodb");
+          const fresh = await (await agentsCol()).findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
+          ctx.bumpRevision();
           return {
-            patch: { tools: nextTools },
-            // Lifecycle tools don't appear in upstream `tool_ids` — they're
-            // fired by our own lifecycle webhooks. `skipUpstream` keeps the
-            // turn's deferred PATCH unchanged for that case.
-            upstreamPatch: { tool_ids: externalToolIds(nextTools) },
-            skipUpstream: isLifecycle,
+            patch: {
+              tools: fresh?.config_cache.tools ?? ctx.config.tools,
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
             summary: JSON.stringify({
               status: "published",
               tool_id: created.id,
@@ -470,7 +496,7 @@ export const writeToolCapability: Capability = {
     ),
     tool(
       "delete_custom_tool",
-      "Delete a tool that was synthesized via write_tool. Removes the ElevenLabs runtime tool, the backing custom_tools row (proxy secret + upstream spec), and detaches it from the agent. Use this — not remove_runtime_tool — when you know the tool came from write_tool. Pass the tool_id returned in the write_tool published response (or the id you see in the agent's tool list).",
+      "Delete a tool that was synthesized via write_tool. Drops the binding from `workflow.bindings`, the ElevenLabs runtime tool, and the backing custom_tools row. Any `tool_call` workflow node referencing the removed tool will become stale — adjust afterward. Pass the tool_id returned in the write_tool published response (or the id you see in the agent's tool list).",
       { tool_id: z.string().min(1) },
       async ({ tool_id }) =>
         runToolStep(ctx, "tools", "delete_custom_tool", async () => {
@@ -478,24 +504,24 @@ export const writeToolCapability: Capability = {
           if (!entry) {
             throw new Error(`No tool with id "${tool_id}" on this agent.`);
           }
-          const customTools = await customToolsCol();
-          const row = await customTools.findOne({
-            agent_id: new ObjectId(ctx.agentMongoId),
-            elevenlabs_tool_id: tool_id,
+          const { uninstallBinding } = await import("@/lib/tools/bindings");
+          const { tools, removed } = await uninstallBinding(ctx.agentMongoId, {
+            id: tool_id,
           });
-          const next = ctx.config.tools.filter((t) => t.id !== tool_id);
-          if (!isLocalToolId(tool_id)) {
-            await deleteRuntimeTool(tool_id).catch(() => {});
+          if (!removed) {
+            throw new Error(`No tool with id "${tool_id}" on this agent.`);
           }
-          if (row) {
-            await customTools.deleteOne({ _id: row._id }).catch(() => {});
-          }
+          const { agentsCol } = await import("@/lib/mongodb");
+          const fresh = await (await agentsCol()).findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
+          ctx.bumpRevision();
           return {
-            patch: { tools: next },
-            // Local-only ids never lived on ElevenLabs, so we skip the
-            // upstream tool_ids update for lifecycle removals.
-            upstreamPatch: { tool_ids: externalToolIds(next) },
-            skipUpstream: isLocalToolId(tool_id),
+            patch: {
+              tools,
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
             summary: `Deleted custom tool "${entry.name}".`,
           };
         }),

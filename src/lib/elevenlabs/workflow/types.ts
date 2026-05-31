@@ -68,4 +68,9 @@ export type ElevenWorkflow = {
   nodes?: Record<string, ElevenWorkflowNode>;
   /** Map keyed by edge id. Same optionality as `nodes`. */
   edges?: Record<string, ElevenWorkflowEdge>;
+  /** Block sub-agent transfer cycles. When true, ElevenLabs' runtime
+   *  refuses a `standalone_agent` hop that would loop back to an agent
+   *  that's already on the call's transfer stack. Top-level setting on
+   *  the workflow object, not per-node. */
+  prevent_subagent_loops?: boolean;
 };

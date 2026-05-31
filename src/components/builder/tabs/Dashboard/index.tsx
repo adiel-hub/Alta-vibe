@@ -89,8 +89,6 @@ export function DashboardTab({ agentId }: { agentId: string }) {
 
       {loading && !metrics ? (
         <DashboardSkeleton />
-      ) : metrics && metrics.totals.calls === 0 ? (
-        <EmptyState />
       ) : metrics ? (
         <>
           <KpiRow metrics={metrics} />
@@ -306,7 +304,7 @@ function OutcomesPanel({
   if (outcomes.length === 0) {
     return (
       <p className="text-xs text-(--color-muted)">
-        No call outcomes configured yet. Add some on the Post-call analysis tab.
+        No call outcomes configured yet. Add some on the Outcomes tab.
       </p>
     );
   }
@@ -363,7 +361,7 @@ function ExtractionPanel({
   if (extraction.length === 0) {
     return (
       <p className="text-xs text-(--color-muted)">
-        No data-collection fields configured yet. Add some on the Post-call analysis tab.
+        No data-collection fields configured yet. Add some on the Outcomes tab.
       </p>
     );
   }
@@ -499,20 +497,6 @@ function DashboardSkeleton() {
       </div>
       <div className="h-56 animate-pulse rounded-2xl border border-(--color-border) bg-(--color-panel)" />
       <div className="h-56 animate-pulse rounded-2xl border border-(--color-border) bg-(--color-panel)" />
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="rounded-2xl border border-dashed border-(--color-border) bg-(--color-panel-soft) px-4 py-12 text-center">
-      <div className="text-2xl">📊</div>
-      <p className="mt-2 text-sm font-medium text-(--color-foreground-strong)">
-        No calls yet
-      </p>
-      <p className="mt-1 text-xs text-(--color-muted)">
-        Once the agent handles a few conversations, metrics will appear here.
-      </p>
     </div>
   );
 }

@@ -19,7 +19,6 @@ export const SLACK_PROVIDER: IntegrationProvider = {
       phase: "post_call",
       method: "POST",
       path: "/chat.postMessage",
-      default_install: true,
       category: "Messaging",
     },
     {
@@ -29,7 +28,6 @@ export const SLACK_PROVIDER: IntegrationProvider = {
       phase: "in_call",
       method: "POST",
       path: "/chat.postMessage",
-      default_install: true,
       category: "Messaging",
     },
   ],

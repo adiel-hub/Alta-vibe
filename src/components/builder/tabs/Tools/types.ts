@@ -7,7 +7,6 @@ export type CatalogTool = {
   phase: RuntimePhase;
   method: string;
   category: string;
-  default_install: boolean;
   installed: boolean;
 };
 
@@ -17,6 +16,10 @@ export type CatalogProvider = {
   description: string;
   icon: string;
   connected: boolean;
+  /** True for providers whose tools read internal platform data (e.g.
+   *  Alta itself). No OAuth, no Connect step — the UI swaps the
+   *  Connect/connected pill for a "built-in" badge. */
+  built_in?: boolean;
   tools: CatalogTool[];
 };
 

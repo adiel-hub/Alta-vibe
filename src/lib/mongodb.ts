@@ -9,6 +9,7 @@ import type {
   ChatMessageDocument,
   CustomToolDocument,
   IntegrationDocument,
+  PreCallExecutionDoc,
   ProspectDocument,
   TurnJobDocument,
   WidgetActionDocument,
@@ -113,6 +114,12 @@ export async function getDb(): Promise<Db> {
       db
         .collection<CallCampaignDocument>("call_campaigns")
         .createIndex({ status: 1, last_event_at: 1 }),
+      db
+        .collection<PreCallExecutionDoc>("pre_call_executions")
+        .createIndex({ agent_id: 1, started_at: -1 }),
+      db
+        .collection<PreCallExecutionDoc>("pre_call_executions")
+        .createIndex({ prospect_id: 1, started_at: -1 }),
     ]);
     log.info("indexes ensured");
     globalThis.__altaVibeIndexesEnsured = true;
@@ -168,6 +175,12 @@ export async function callCampaignsCol(): Promise<
   Collection<CallCampaignDocument>
 > {
   return (await getDb()).collection<CallCampaignDocument>("call_campaigns");
+}
+
+export async function preCallExecutionsCol(): Promise<
+  Collection<PreCallExecutionDoc>
+> {
+  return (await getDb()).collection<PreCallExecutionDoc>("pre_call_executions");
 }
 
 export async function audienceChatSessionsCol(): Promise<

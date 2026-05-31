@@ -5,6 +5,7 @@ import type {
   AgentConfigCache,
   AgentDTO,
   ContentBlock,
+  RuntimePhase,
   WidgetKind,
 } from "@/types/agent";
 import {
@@ -12,8 +13,6 @@ import {
   STARTER_NAME,
   STARTER_SYSTEM_PROMPT,
 } from "@/lib/capabilities/identity/constants";
-import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
-
 /**
  * Each identity field (name, first_message, system_prompt) is "authored"
  * once its value differs from the bootstrap default. While a builder turn
@@ -22,13 +21,22 @@ import { stripCallerContextBlock } from "@/lib/integrations/promptContext";
  * flipped true, they stay true for the session, so subsequent edits never
  * re-skeleton.
  *
- * Caller-context blocks are auto-injected into the system prompt by
- * integration tools before the builder agent writes the real prompt, so
- * they're stripped before the comparison.
+ * Legacy: pre-refactor HubSpot connects auto-injected a caller-context
+ * block bounded by HTML-comment markers. The block is no longer injected,
+ * but agents created before the refactor may still carry it in their
+ * stored prompt — strip it before comparing so we don't false-positive
+ * "authored" on otherwise-pristine starters.
  */
+const LEGACY_CALLER_CTX_BLOCK =
+  /\n*<!-- alta:caller_context:start -->[\s\S]*?<!-- alta:caller_context:end -->\n*/g;
+
+function stripLegacyCallerContextBlock(prompt: string): string {
+  return prompt.replace(LEGACY_CALLER_CTX_BLOCK, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
 function isSystemPromptAuthored(prompt: string | undefined): boolean {
   if (!prompt) return false;
-  return stripCallerContextBlock(prompt).trim() !== STARTER_SYSTEM_PROMPT;
+  return stripLegacyCallerContextBlock(prompt).trim() !== STARTER_SYSTEM_PROMPT;
 }
 
 function isNameAuthored(name: string | undefined): boolean {
@@ -130,6 +138,12 @@ type State = {
    *  a previously-unseen data_collection field id (agent-created via the
    *  add_data_field tool). */
   dataPendingAnimationIds: Set<string>;
+  /** Stamped each time `applyPatch` lands a `tools` patch that contains a
+   *  previously-unseen tool id. The Tools tab watches this and switches its
+   *  phase sub-tab to match, so when Alta creates a post-call webhook the
+   *  user lands on Post-Call instead of whatever phase was open before.
+   *  Renames/deletes don't bump it; only new ids do. */
+  pendingToolFocus: { phase: RuntimePhase; at: number } | null;
   /** Bumped each time `applyPatch` lands a patch that touches any
    *  voice-tab field (`voice_id`, `language`, `voice_settings`, `llm`,
    *  `temperature`, `max_duration_seconds`). The Voice tab watches this
@@ -229,6 +243,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   kbPendingAnimationIds: new Set(),
   evalPendingAnimationIds: new Set(),
   dataPendingAnimationIds: new Set(),
+  pendingToolFocus: null,
   voiceRevealToken: 0,
   nameAuthored: false,
   firstMessageAuthored: false,
@@ -254,6 +269,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       kbPendingAnimationIds: new Set(),
       evalPendingAnimationIds: new Set(),
       dataPendingAnimationIds: new Set(),
+      pendingToolFocus: null,
       voiceRevealToken: 0,
       nameAuthored: isNameAuthored(agent.config_cache?.name),
       firstMessageAuthored: isFirstMessageAuthored(
@@ -302,6 +318,10 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.data_collection,
         s.dataPendingAnimationIds,
       );
+      const newToolPhase = newestToolPhase(s.config.tools, patch.tools);
+      const pendingToolFocus = newToolPhase
+        ? { phase: newToolPhase, at: Date.now() }
+        : s.pendingToolFocus;
       // Keep the AgentDTO mirror in sync — agent.name is the top-level
       // name shown in the agent picker, but the source of truth for
       // edits flows through config_cache.name. Without this, renaming
@@ -327,6 +347,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
         kbPendingAnimationIds,
         evalPendingAnimationIds,
         dataPendingAnimationIds,
+        pendingToolFocus,
         voiceRevealToken,
         agent: nextAgent,
         nameAuthored,
@@ -613,6 +634,32 @@ function diffEvalForAnimation(
     next.add(c.id);
   }
   return next ?? current;
+}
+
+/**
+ * Identify the phase of the newest tool in a `tools` patch — the one whose
+ * id wasn't in the previous list. Returns null when the patch doesn't touch
+ * tools or only renames/deletes existing ones.
+ *
+ * Why: when Alta creates a post-call webhook the user should land on the
+ *      Post-Call sub-tab; without this the Tools tab opens on whatever
+ *      phase was last selected.
+ * When multiple new ids appear in one patch the last one wins — the model
+ * emits tool_use blocks sequentially and the last is the most-recently-
+ * authored, which is the one the user is reading about.
+ */
+function newestToolPhase(
+  prev: AgentConfigCache["tools"] | undefined,
+  patchTools: AgentConfigCache["tools"] | undefined,
+): RuntimePhase | null {
+  if (!patchTools) return null;
+  const prevIds = new Set((prev ?? []).map((t) => t.id));
+  let phase: RuntimePhase | null = null;
+  for (const t of patchTools) {
+    if (prevIds.has(t.id)) continue;
+    phase = t.phase;
+  }
+  return phase;
 }
 
 /**

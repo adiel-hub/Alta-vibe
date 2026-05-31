@@ -18,7 +18,6 @@ export function ProviderToolList({
   installedNames,
   busyKey,
   onInstall,
-  onUninstall,
   mode = "manage",
   onPick,
 }: {
@@ -29,9 +28,10 @@ export function ProviderToolList({
   installedNames: Set<string>;
   busyKey: string | null;
   // Async so pick mode can await install before reading the freshly-
-  // attached RuntimeTool out of the store.
+  // attached RuntimeTool out of the store. Removal happens in
+  // ToolboxSection, so the catalog drawer no longer needs an
+  // onUninstall callback.
   onInstall: (providerId: string, toolKey: string) => Promise<void>;
-  onUninstall: (toolName: string) => Promise<void>;
   mode?: ToolsTabMode;
   onPick?: (tool: RuntimeTool) => void;
 }) {
@@ -126,7 +126,6 @@ export function ProviderToolList({
               {byCategory.get(effectiveCategory)!.map((t) => {
                 const installed = installedNames.has(t.name);
                 const installBusy = busyKey === `${provider.id}:${t.key}`;
-                const uninstallBusy = busyKey === `uninstall:${t.name}`;
                 const friendly = friendlyToolName(t.name, provider.id, phase);
                 const isSelected = selectedKey === t.key;
                 if (isSelected) {
@@ -170,14 +169,12 @@ export function ProviderToolList({
                                   : `Connect ${provider.name} first`}
                           </button>
                         ) : installed ? (
-                          <button
-                            type="button"
-                            disabled={uninstallBusy}
-                            onClick={() => onUninstall(t.name)}
-                            className="mt-2 w-full rounded-md border border-(--color-border) bg-(--color-panel-soft) px-2 py-1 text-xs hover:bg-red-500/10 hover:text-red-600 disabled:opacity-50"
-                          >
-                            {uninstallBusy ? "Removing…" : "Remove"}
-                          </button>
+                          // Already in the toolbox — remove there, not here.
+                          // Keeping the Remove button in two places was the
+                          // confusing surface that hid the orphan bug.
+                          <span className="mt-2 inline-flex w-full items-center justify-center gap-1 rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700">
+                            ✓ Added to toolbox
+                          </span>
                         ) : provider.connected ? (
                           <button
                             type="button"

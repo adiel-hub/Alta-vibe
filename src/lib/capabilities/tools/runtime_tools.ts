@@ -2,17 +2,14 @@ import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { ObjectId } from "mongodb";
-import {
-  createRuntimeTool,
-  deleteRuntimeTool,
-} from "@/lib/elevenlabs/client";
-import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
+import { createRuntimeTool } from "@/lib/elevenlabs/client";
 import { customToolsCol } from "@/lib/mongodb";
 import {
   extractSecretRefs,
   scopeToolName,
 } from "@/lib/integrations/schemaUtils";
-import type { RuntimePhase, RuntimeTool } from "@/types/agent";
+import { attachCustomBinding, uninstallBinding } from "@/lib/tools/bindings";
+import type { CustomToolDocument, RuntimePhase } from "@/types/agent";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
 
@@ -23,7 +20,7 @@ export const runtimeToolsCapability: Capability = {
   tools: (ctx) => [
     tool(
       "create_custom_runtime_tool",
-      "Create ANY tool the deployed agent can call during a conversation. Use this when the user wants behaviour not covered by built-ins. Phase: 'pre_call' runs before greeting, 'in_call' during conversation, 'post_call' after hangup. Provide api_schema for webhook tools.",
+      "Attach a fresh runtime tool to this agent's workflow. Creates a `custom_tools` row + adds a binding to `workflow.bindings` — the tool becomes available to the agent during the call and can be referenced by `tool_call` workflow nodes. Use this when the user wants behaviour not covered by built-ins. Phase: 'pre_call' runs before greeting, 'in_call' during conversation, 'post_call' after hangup. Provide api_schema for webhook tools.",
       {
         name: z
           .string()
@@ -53,81 +50,118 @@ export const runtimeToolsCapability: Capability = {
           }
           const scopedName = scopeToolName(name, phase as RuntimePhase);
           const runtimePhase = phase as RuntimePhase;
-          // Pre/post-call tools are fired by our lifecycle webhooks, not by
-          // ElevenLabs — skip the upstream registration and mint a local id.
-          // See src/lib/elevenlabs/lifecycle/dispatch.ts.
           const isLifecycle = runtimePhase !== "in_call";
-          const created = isLifecycle
-            ? { id: `local_${randomBytes(8).toString("hex")}` }
-            : await createRuntimeTool({
-                name: scopedName,
-                description,
-                type,
-                phase: runtimePhase,
-                api_schema,
-              });
-          const entry: RuntimeTool = {
-            id: created.id,
+
+          // Persist a custom_tools row so bindings can resolve back to a
+          // shape with description/url/method. The proxy_secret is a
+          // placeholder for this path — `create_custom_runtime_tool`
+          // doesn't synthesize an upstream service through our proxy
+          // (the agent passes api_schema verbatim), so the row exists
+          // mainly to give the binding a stable handle for cleanup.
+          const customTools = await customToolsCol();
+          const customDoc: CustomToolDocument = {
+            _id: new ObjectId(),
+            agent_id: new ObjectId(ctx.agentMongoId),
             name: scopedName,
-            type,
             description,
             phase: runtimePhase,
-            method: api_schema?.method,
-            url: api_schema?.url,
+            proxy_secret: randomBytes(32).toString("hex"),
+            elevenlabs_tool_id: "",
+            upstream: {
+              url: api_schema?.url ?? "",
+              method: (api_schema?.method ?? "POST") as
+                | "GET"
+                | "POST"
+                | "PUT"
+                | "DELETE",
+              headers: api_schema?.request_headers ?? {},
+            },
+            secret_refs: api_schema
+              ? extractSecretRefs([
+                  api_schema.url,
+                  ...Object.values(api_schema.request_headers ?? {}),
+                ])
+              : [],
+            created_at: new Date(),
+            updated_at: new Date(),
           };
-          const next = [...ctx.config.tools, entry];
-          // Surface any {{secret:<name>}} references the caller embedded in
-          // the api_schema so the user sees which secrets this tool depends
-          // on. We don't persist them (runtime_tools has no custom_tools
-          // row); the refs are informational only.
-          const secretRefs = api_schema
-            ? extractSecretRefs([
-                api_schema.url,
-                ...Object.values(api_schema.request_headers ?? {}),
-              ])
-            : [];
+
+          const elevenlabs_tool_id = isLifecycle
+            ? `local_${randomBytes(8).toString("hex")}`
+            : (
+                await createRuntimeTool({
+                  name: scopedName,
+                  description,
+                  type,
+                  phase: runtimePhase,
+                  api_schema,
+                })
+              ).id;
+          customDoc.elevenlabs_tool_id = elevenlabs_tool_id;
+          await customTools.insertOne(customDoc);
+
+          const { tool: derived, revision } = await attachCustomBinding(
+            ctx.agentMongoId,
+            customDoc._id.toHexString(),
+            elevenlabs_tool_id,
+            runtimePhase,
+          );
+
           const refSuffix =
-            secretRefs.length > 0
-              ? ` Secrets referenced: ${secretRefs.join(", ")}.`
+            customDoc.secret_refs.length > 0
+              ? ` Secrets referenced: ${customDoc.secret_refs.join(", ")}.`
               : "";
-          // Only push tool_ids when the in_call tool actually changed what
-          // ElevenLabs sees. Lifecycle tools don't appear in `tool_ids` —
-          // we use `skipUpstream` so the deferred buffer stays untouched.
+
+          // `attachCustomBinding` already persisted config.tools and
+          // patched ElevenLabs. We surface the new tools list as the
+          // state_patch so the panel reflects it, and skip the upstream
+          // merge.
+          const agents = await import("@/lib/mongodb").then((m) =>
+            m.agentsCol(),
+          );
+          const fresh = await agents.findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
+          ctx.bumpRevision(); // align local revision tracker with persisted one
           return {
-            patch: { tools: next },
-            upstreamPatch: { tool_ids: externalToolIds(next) },
-            skipUpstream: isLifecycle,
-            summary: `Created ${phase} tool "${name}".${refSuffix}`,
+            patch: {
+              tools: fresh?.config_cache.tools ?? [],
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
+            summary: `Created ${phase} tool "${name}" (revision ${revision}, tool ${derived.id}).${refSuffix}`,
           };
         }),
     ),
 
     tool(
       "remove_runtime_tool",
-      "Remove a runtime tool by id.",
+      "Remove a runtime tool binding from the workflow by id. Drops the binding, deletes the upstream ElevenLabs record, and removes the `custom_tools` row if it was a custom tool. Any `tool_call` workflow node referencing the removed id becomes stale — adjust the workflow afterward.",
       { tool_id: z.string().min(1) },
       async ({ tool_id }) =>
         runToolStep(ctx, "tools", "remove_runtime_tool", async () => {
-          if (!ctx.config.tools.some((t) => t.id === tool_id)) {
+          // Delegate to the bindings module — it handles the cascade
+          // (binding drop, upstream DELETE, custom_tools cleanup, fresh
+          // tool_ids patch) atomically.
+          const { tools, removed } = await uninstallBinding(ctx.agentMongoId, {
+            id: tool_id,
+          });
+          if (!removed) {
             throw new Error(`No tool with id "${tool_id}".`);
           }
-          const next = ctx.config.tools.filter((t) => t.id !== tool_id);
-          if (!isLocalToolId(tool_id)) {
-            await deleteRuntimeTool(tool_id).catch(() => {});
-          }
-          // Cascade: if this tool was synthesized via write_tool, drop the
-          // backing custom_tools row so its proxy_secret + upstream spec
-          // don't become an orphan.
-          const customTools = await customToolsCol();
-          await customTools
-            .deleteOne({
-              agent_id: new ObjectId(ctx.agentMongoId),
-              elevenlabs_tool_id: tool_id,
-            })
-            .catch(() => {});
+          const agents = await import("@/lib/mongodb").then((m) =>
+            m.agentsCol(),
+          );
+          const fresh = await agents.findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
+          ctx.bumpRevision();
           return {
-            patch: { tools: next },
-            upstreamPatch: { tool_ids: externalToolIds(next) },
+            patch: {
+              tools,
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
             summary: `Removed runtime tool.`,
           };
         }),

@@ -58,6 +58,10 @@ export async function GET(
     description: p.description,
     icon: p.icon,
     connected: connectedProviders.has(p.id),
+    // Built-in providers (e.g. Alta itself) — the UI uses this to show a
+    // "built-in" badge instead of a Connect / connected affordance, since
+    // "connecting the platform to itself" makes no sense to the user.
+    built_in: p.always_connected === true,
     tools: p.runtime_tools.map((t) => ({
       key: t.key,
       name: scopedToolName(t),
@@ -65,7 +69,6 @@ export async function GET(
       phase: t.phase,
       method: t.method,
       category: t.category ?? "Other",
-      default_install: !!t.default_install,
       installed: installedNames.has(scopedToolName(t)),
     })),
   }));

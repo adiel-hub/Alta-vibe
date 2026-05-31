@@ -27,7 +27,6 @@ import {
   STARTER_SYSTEM_PROMPT,
 } from "@/lib/capabilities/identity/constants";
 import { fromElevenWorkflow } from "@/lib/capabilities/experience/workflow";
-import { backfillProviderToolsForAgent } from "@/lib/integrations/registerProviderTools";
 import { enqueueTurnJob, processTurnJob } from "@/lib/turn-jobs/runner";
 import { createLogger, newRequestId } from "@/lib/logger";
 import type { AgentDocument } from "@/types/agent";
@@ -176,20 +175,6 @@ export async function POST(req: NextRequest) {
       updated_at: now,
     } as unknown as AgentDocument);
 
-    // Auto-inherit workspace-connected provider tools. If HubSpot /
-    // Google Calendar / etc. are already connected for the workspace,
-    // their default tools land on this new agent immediately so the
-    // first builder turn can reference them. Best-effort: a failure
-    // here just defers the install to the agent's first GET (which
-    // also runs backfill).
-    await backfillProviderToolsForAgent(insert.insertedId.toHexString()).catch(
-      (err) => {
-        log.warn("backfill provider tools failed on create", {
-          mongo_id: insert.insertedId.toHexString(),
-          message: err instanceof Error ? err.message : "unknown",
-        });
-      },
-    );
 
     // Kick off the first builder turn so Alta starts shaping the agent
     // immediately. The user's landing-page description becomes the

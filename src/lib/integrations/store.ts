@@ -41,6 +41,11 @@ export async function findWorkspaceIntegration(
  * The set of providers currently connected in the workspace. Used by the
  * Tools-tab catalog and the workflow tab's phantom column picker to render
  * "Connected" badges and gate one-click install.
+ *
+ * Built-in providers marked `always_connected: true` (e.g. Alta itself —
+ * its tools read our own DB, no OAuth needed) are added to the set
+ * unconditionally so the UI never asks the user to "Connect" the
+ * platform to itself.
  */
 export async function listConnectedWorkspaceProviders(): Promise<Set<string>> {
   const ints = await integrationsCol();
@@ -48,7 +53,12 @@ export async function listConnectedWorkspaceProviders(): Promise<Set<string>> {
     .find({ status: "connected" })
     .project({ provider: 1 })
     .toArray();
-  return new Set(rows.map((r) => (r as { provider: string }).provider));
+  const set = new Set(rows.map((r) => (r as { provider: string }).provider));
+  const { PROVIDERS } = await import("./providers");
+  for (const p of PROVIDERS) {
+    if (p.always_connected) set.add(p.id);
+  }
+  return set;
 }
 
 /**

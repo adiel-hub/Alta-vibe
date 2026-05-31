@@ -21,6 +21,8 @@ export function IntegrationsSection({
   phase,
   fieldsMatch,
   hasQuery,
+  catalog,
+  catalogError,
   mode = "manage",
   onPick,
 }: {
@@ -28,6 +30,10 @@ export function IntegrationsSection({
   phase: RuntimePhase;
   fieldsMatch: FieldsMatcher;
   hasQuery: boolean;
+  /** Catalog is owned by ToolsTab (so ToolboxSection can share it for
+   *  provenance display). Pass null while loading. */
+  catalog: CatalogProvider[] | null;
+  catalogError: string | null;
   mode?: ToolsTabMode;
   onPick?: (tool: RuntimeTool) => void;
 }) {
@@ -38,25 +44,9 @@ export function IntegrationsSection({
     [tools],
   );
 
-  const [catalog, setCatalog] = useState<CatalogProvider[] | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    appFetch(`/api/agents/${agentId}/provider-tools`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(r)))
-      .then((data: { catalog: CatalogProvider[] }) => {
-        if (!cancelled) setCatalog(data.catalog);
-      })
-      .catch(() => {
-        if (!cancelled) setError("Couldn't load integrations catalog.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentId]);
+  const [error, setError] = useState<string | null>(catalogError);
 
   async function install(provider: string, toolKey: string) {
     setBusyKey(`${provider}:${toolKey}`);
@@ -88,30 +78,8 @@ export function IntegrationsSection({
     }
   }
 
-  async function uninstall(toolName: string) {
-    setBusyKey(`uninstall:${toolName}`);
-    setError(null);
-    try {
-      const res = await appFetch(
-        `/api/agents/${agentId}/provider-tools?name=${encodeURIComponent(toolName)}`,
-        { method: "DELETE" },
-      );
-      const data = (await res.json()) as {
-        revision?: number;
-        tools?: RuntimeTool[];
-        error?: string;
-      };
-      if (!res.ok || !data.tools) {
-        setError(data.error ?? `Uninstall failed (${res.status})`);
-        return;
-      }
-      applyConfigDirect({ tools: data.tools }, data.revision ?? 0);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Uninstall failed");
-    } finally {
-      setBusyKey(null);
-    }
-  }
+  // Uninstall lives in ToolboxSection now — one place, one Remove. The
+  // catalog drawer's job is purely "browse and add".
 
   // Only show providers that have at least one tool in the active phase
   // (and match the search), so the integration grid stays aligned with
@@ -189,9 +157,19 @@ export function IntegrationsSection({
                   >
                     <span
                       className={`absolute right-2 top-2 h-1.5 w-1.5 rounded-full ${
-                        p.connected ? "bg-emerald-400" : "bg-amber-400"
+                        p.built_in
+                          ? "bg-indigo-400"
+                          : p.connected
+                            ? "bg-emerald-400"
+                            : "bg-amber-400"
                       }`}
-                      title={p.connected ? "Connected" : "Not connected"}
+                      title={
+                        p.built_in
+                          ? "Built-in"
+                          : p.connected
+                            ? "Connected"
+                            : "Not connected"
+                      }
                     />
                     <ProviderIcon icon={p.icon} name={p.name} size="lg" />
                     <span className="line-clamp-2 text-sm font-medium leading-tight">
@@ -217,13 +195,20 @@ export function IntegrationsSection({
                       <span className="truncate text-sm font-medium">
                         {p.name}
                       </span>
-                      {p.connected && (
+                      {p.built_in ? (
+                        <span className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] text-indigo-600">
+                          built-in
+                        </span>
+                      ) : p.connected ? (
                         <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] text-emerald-300">
                           connected
                         </span>
-                      )}
+                      ) : null}
                     </div>
-                    {!p.connected && (
+                    {/* Built-in providers (Alta) don't need OAuth — hide
+                        the Connect button entirely so the user isn't
+                        prompted to "connect the platform to itself". */}
+                    {!p.connected && !p.built_in && (
                       <ConnectProviderButton
                         agentId={agentId}
                         providerName={p.name}
@@ -238,7 +223,6 @@ export function IntegrationsSection({
                     installedNames={installedNames}
                     busyKey={busyKey}
                     onInstall={install}
-                    onUninstall={uninstall}
                     mode={mode}
                     onPick={onPick}
                   />

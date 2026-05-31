@@ -8,6 +8,7 @@ import {
   ElevenLabsError,
 } from "@/lib/elevenlabs/client";
 import { enrichCallContext } from "@/lib/integrations/enrichment";
+import { isPreCallAbortError } from "@/lib/calls/preCallAbortError";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -17,6 +18,10 @@ const Body = z.object({
   to_number: z.string().regex(/^\+?[0-9 \-()]{6,20}$/),
   agent_phone_number_id: z.string().min(1),
   caller_email: z.string().email().optional(),
+  /** Optional: when calling a known prospect (e.g. from the audience UI),
+   * pass the prospect_id so pre-call tools see full_name, job_title,
+   * custom_fields, etc. via CallerContext. */
+  prospect_id: z.string().optional(),
 });
 
 export async function POST(
@@ -42,11 +47,30 @@ export async function POST(
   const agent = await (await agentsCol()).findOne({ _id: new ObjectId(id) });
   if (!agent) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const dynamicVariables = await enrichCallContext({
-    agentMongoId: id,
-    to_number: parsed.data.to_number,
-    caller_email: parsed.data.caller_email,
-  });
+  let dynamicVariables: Record<string, string>;
+  try {
+    dynamicVariables = await enrichCallContext({
+      agentMongoId: id,
+      to_number: parsed.data.to_number,
+      caller_email: parsed.data.caller_email,
+      prospect_id: parsed.data.prospect_id,
+    });
+  } catch (err) {
+    if (isPreCallAbortError(err)) {
+      log.warn("pre-call aborted", { tool: err.tool_name, reason: err.reason });
+      return NextResponse.json(
+        {
+          error: err.message,
+          abort_reason: err.reason,
+          tool_name: err.tool_name,
+        },
+        { status: 412 },
+      );
+    }
+    const message = err instanceof Error ? err.message : "enrichment failed";
+    log.error("enrichment threw", { message });
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
   log.info("enrichment", {
     keys: Object.keys(dynamicVariables),
     has_name: Boolean(dynamicVariables.caller_name),

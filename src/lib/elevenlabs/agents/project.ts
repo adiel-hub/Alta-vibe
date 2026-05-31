@@ -11,6 +11,7 @@ import type {
 } from "@/types/agent";
 import type { ElevenAgentRaw } from "./types";
 import type { ElevenWorkflow, ElevenWorkflowNode } from "../workflow/types";
+import { isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
 
 export function projectAgentConfig(
   el: ElevenAgentRaw,
@@ -26,14 +27,21 @@ export function projectAgentConfig(
       type: d.type,
       source: d.name,
     })) ?? fallback.knowledge_base;
-  const tools: RuntimeTool[] =
-    p?.tools?.map((tool) => ({
-      id: tool.id ?? tool.name,
-      name: tool.name,
-      type: tool.type,
-      description: tool.description ?? "",
-      phase: phaseFor(tool.name, tool.type),
-    })) ?? fallback.tools;
+  // EL is canonical for in-call tools (it owns their ids and schemas).
+  // Lifecycle tools (pre/post-call) live ONLY in config_cache — EL never
+  // sees them (see lifecycle/toolIds.ts) — so we always re-merge them
+  // from fallback or they vanish on every projection.
+  const inCallTools: RuntimeTool[] = p?.tools
+    ? p.tools.map((tool) => ({
+        id: tool.id ?? tool.name,
+        name: tool.name,
+        type: tool.type,
+        description: tool.description ?? "",
+        phase: phaseFor(tool.name, tool.type),
+      }))
+    : fallback.tools.filter((t) => !isLocalToolId(t.id));
+  const lifecycleTools = fallback.tools.filter((t) => isLocalToolId(t.id));
+  const tools: RuntimeTool[] = [...inCallTools, ...lifecycleTools];
   const mcp: McpIntegration[] =
     p?.mcp_server_ids?.map((id) => ({ id, name: id, url: "" })) ??
     fallback.mcp_servers;
@@ -285,7 +293,14 @@ function projectWorkflow(
       backward_condition: bc ?? undefined,
     };
   });
-  return { nodes, edges };
+  // `bindings` is a local-only field — ElevenLabs has no concept of it,
+  // so re-projection would strip it unless we explicitly carry it across
+  // from the fallback (our cached state).
+  return {
+    nodes,
+    edges,
+    ...(fallback.bindings !== undefined ? { bindings: fallback.bindings } : {}),
+  };
 }
 
 function phaseFor(name: string, type: string): RuntimePhase {

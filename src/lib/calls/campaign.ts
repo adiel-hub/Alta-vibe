@@ -19,6 +19,7 @@ import { ObjectId } from "mongodb";
 import { agentsCol, callCampaignsCol } from "@/lib/mongodb";
 import { initiateOutboundCall, ElevenLabsError } from "@/lib/elevenlabs/client";
 import { enrichCallContext } from "@/lib/integrations/enrichment";
+import { isPreCallAbortError } from "@/lib/calls/preCallAbortError";
 import { createLogger } from "@/lib/logger";
 import type { CampaignEvent } from "@/types/agent";
 
@@ -148,6 +149,9 @@ export async function runCampaign(campaignId: ObjectId): Promise<void> {
       const dynamicVariables = await enrichCallContext({
         agentMongoId: agent._id.toHexString(),
         to_number: item.to_number,
+        prospect_id: item.prospect_id.toHexString(),
+        audience_id: campaign.audience_id.toHexString(),
+        campaign_id: campaignId.toHexString(),
       });
       const result = await initiateOutboundCall({
         agentId: agent.elevenlabs_agent_id,
@@ -176,32 +180,62 @@ export async function runCampaign(campaignId: ObjectId): Promise<void> {
         conversation_id: result.conversation_id,
       });
     } catch (err) {
-      const message =
-        err instanceof ElevenLabsError
-          ? `${err.section}: ${err.message}`
-          : err instanceof Error
-            ? err.message
-            : "call failed";
-      await campaigns.updateOne(
-        { _id: campaignId, "items.prospect_id": item.prospect_id },
-        {
-          $set: {
-            "items.$.status": "failed",
-            "items.$.error": message,
-            "items.$.ended_at": new Date(),
-            last_event_at: new Date(),
+      // A pre-call tool with `abort_on_failure: true` blocked this dial.
+      // Mark the item `skipped` (NOT failed) with the structured reason,
+      // and surface a dedicated event so the timeline distinguishes
+      // compliance/DNC skips from real failures.
+      if (isPreCallAbortError(err)) {
+        const reason = `aborted by ${err.tool_name}: ${err.reason}`;
+        await campaigns.updateOne(
+          { _id: campaignId, "items.prospect_id": item.prospect_id },
+          {
+            $set: {
+              "items.$.status": "skipped",
+              "items.$.error": reason,
+              "items.$.ended_at": new Date(),
+              last_event_at: new Date(),
+            },
           },
-        },
-      );
-      await appendEvent(campaignId, {
-        type: "item_failed",
-        prospect_id: item.prospect_id.toHexString(),
-        error: message,
-      });
-      clog.warn("call failed", {
-        prospect_id: item.prospect_id.toHexString(),
-        message,
-      });
+        );
+        await appendEvent(campaignId, {
+          type: "pre_call_aborted",
+          prospect_id: item.prospect_id.toHexString(),
+          tool: err.tool_name,
+          reason: err.reason,
+        });
+        clog.info("pre-call aborted", {
+          prospect_id: item.prospect_id.toHexString(),
+          tool: err.tool_name,
+          reason: err.reason,
+        });
+      } else {
+        const message =
+          err instanceof ElevenLabsError
+            ? `${err.section}: ${err.message}`
+            : err instanceof Error
+              ? err.message
+              : "call failed";
+        await campaigns.updateOne(
+          { _id: campaignId, "items.prospect_id": item.prospect_id },
+          {
+            $set: {
+              "items.$.status": "failed",
+              "items.$.error": message,
+              "items.$.ended_at": new Date(),
+              last_event_at: new Date(),
+            },
+          },
+        );
+        await appendEvent(campaignId, {
+          type: "item_failed",
+          prospect_id: item.prospect_id.toHexString(),
+          error: message,
+        });
+        clog.warn("call failed", {
+          prospect_id: item.prospect_id.toHexString(),
+          message,
+        });
+      }
     }
 
     // Inter-call delay (skip after the last item). Don't burn the whole

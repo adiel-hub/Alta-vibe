@@ -14,7 +14,7 @@ import {
   projectAgentConfig,
   ElevenLabsError,
 } from "@/lib/elevenlabs/client";
-import { backfillProviderToolsForAgent } from "@/lib/integrations/registerProviderTools";
+import { ensureBindingsMigrated } from "@/lib/tools/bindings";
 import type { AgentDocument, AgentDTO } from "@/types/agent";
 
 export const runtime = "nodejs";
@@ -32,14 +32,6 @@ export async function GET(
     return NextResponse.json({ error: "Invalid id" }, { status: 400 });
   }
   const col = await agentsCol();
-
-  // Workspace cascade backfill: ensure this agent has every default tool
-  // from every workspace-connected integration before we serve its
-  // config. Heals agents that pre-date the cascade or missed it on
-  // connect (transient ElevenLabs failure on that agent). Idempotent and
-  // cheap when there's nothing to install. A failure here must not block
-  // the page — backfill will retry on the next load.
-  await backfillProviderToolsForAgent(id).catch(() => {});
 
   const doc = await col.findOne({ _id: new ObjectId(id) });
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -71,6 +63,32 @@ export async function GET(
   } catch (err) {
     // Keep serving cached config — ElevenLabs unreachable shouldn't kill the page.
     if (!(err instanceof ElevenLabsError)) throw err;
+  }
+
+  // Lazy migration: lift legacy `config_cache.tools` into
+  // `workflow.bindings` on first read. After this runs, the workflow is
+  // the single source of truth for tools — config_cache.tools is derived.
+  // Any tool that can't be reverse-mapped to a binding (orphan from the
+  // pre-bindings era) is dropped here.
+  try {
+    const migrated = await ensureBindingsMigrated(freshened);
+    if (migrated) {
+      freshened = {
+        ...freshened,
+        config_cache: {
+          ...freshened.config_cache,
+          tools: migrated.tools,
+          workflow: {
+            ...freshened.config_cache.workflow,
+            bindings: migrated.bindings,
+          },
+        },
+      };
+    }
+  } catch (err) {
+    // Migration is best-effort: serving stale-but-cached state beats
+    // failing the page. The next read will retry.
+    console.error("[agent-get] bindings migration failed", err);
   }
 
   // Lazy backfill of `main_branch_id` for agents predating the versioning

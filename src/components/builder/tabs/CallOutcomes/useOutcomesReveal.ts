@@ -77,12 +77,19 @@ export function useOutcomesReveal(outcomes: EvaluationCriterion[]) {
       }, i * STAGGER_MS);
       timersRef.current.push(t);
     });
+  }, [outcomes, pendingIds]);
 
+  // Unmount-only cleanup. We intentionally do NOT cancel timers on rerun:
+  // doing so would orphan any id whose timer was cancelled mid-stagger
+  // (it stays in `scheduledRef` and is never re-scheduled), permanently
+  // dropping that row. Letting timers fire across reruns is safe because
+  // `scheduledRef` dedupes scheduling and the callbacks are idempotent.
+  useEffect(() => {
     return () => {
       for (const t of timersRef.current) clearTimeout(t);
       timersRef.current = [];
     };
-  }, [outcomes, pendingIds]);
+  }, []);
 
   return {
     isRevealed: (id: string) => revealedIds.has(id),

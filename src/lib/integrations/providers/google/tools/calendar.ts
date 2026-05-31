@@ -27,7 +27,6 @@ export const GOOGLE_CALENDAR_TOOLS: ProviderRuntimeToolSpec[] = [
     phase: "in_call",
     method: "POST",
     path: "/calendar/v3/freeBusy",
-    default_install: true,
     category: "Calendar",
     body_schema: {
       type: "object",
@@ -80,7 +79,6 @@ export const GOOGLE_CALENDAR_TOOLS: ProviderRuntimeToolSpec[] = [
     phase: "in_call",
     method: "POST",
     path: "/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all",
-    default_install: true,
     category: "Calendar",
     body_schema: {
       type: "object",

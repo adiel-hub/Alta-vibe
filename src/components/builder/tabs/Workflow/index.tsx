@@ -7,6 +7,7 @@ import type {
   AgentConfigCache,
   RuntimePhase,
   RuntimeTool,
+  WorkflowEdgeCondition,
   WorkflowNodeType,
 } from "@/types/agent";
 import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
@@ -14,7 +15,6 @@ import { useWorkflowReveal } from "./useWorkflowReveal";
 import {
   ADD_NODE_MENU,
   COL_GAP,
-  EDGE_LABEL_W,
   ICON,
   NODE_H,
   NODE_W,
@@ -31,6 +31,7 @@ import {
 import { layout } from "./layout";
 import { NodeInspector } from "./NodeInspector";
 import { ToolPickerModal } from "./ToolPickerModal";
+import { AttachModeModal } from "./AttachModeModal";
 
 export function WorkflowTab({ agentId }: { agentId: string }) {
   // Subscribe to the workflow slice directly, not the whole `config`.
@@ -120,6 +121,12 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // to zoom further.
   const [zoom, setZoom] = useState(0.75);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // When the user clicks an edge pill, we open the target node's inspector
+  // AND remember which edge they actually wanted to edit — so the inspector
+  // surfaces that edge's condition editor (the same UI tool_call nodes have
+  // for their single incoming edge), regardless of the target's node type.
+  // Cleared whenever a node is selected directly or the inspector closes.
+  const [focusedEdgeId, setFocusedEdgeId] = useState<string | null>(null);
   /** Which node currently has its "+ add child" popup open. */
   const [addMenuFor, setAddMenuFor] = useState<string | null>(null);
   // Parent node id that's waiting for the tool picker modal to resolve.
@@ -127,8 +134,20 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // centered modal that renders <ToolsTab mode="pick" />, so the picker
   // looks identical to the standalone Tools tab. null = modal closed.
   const [toolPickerFor, setToolPickerFor] = useState<string | null>(null);
+  // After a tool is picked, but before we commit, ask how it should be
+  // wired relative to the parent: a new tool_call child (deterministic),
+  // or attached to the parent's `additional_tool_ids` (LLM-decided).
+  // Only override_agent parents (speak / collect / condition) trigger
+  // this prompt — other parent types fall through to "new child node"
+  // since they can't carry additional_tool_ids.
+  const [attachChoice, setAttachChoice] = useState<{
+    parentId: string;
+    tool: RuntimeTool;
+  } | null>(null);
   /** Per-node pending state (so we can grey out actions during PATCH). */
   const [pendingNodeId, setPendingNodeId] = useState<string | null>(null);
+  /** Toolbar `prevent_subagent_loops` toggle is in-flight. */
+  const [preventLoopsBusy, setPreventLoopsBusy] = useState(false);
 
   // Per-node position overrides set by the user dragging nodes around.
   // Local-only — Alta's next workflow patch (or a refresh) re-runs the
@@ -276,9 +295,21 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
 
   if (!workflow || !baseLayout) return null;
 
-  // Effective positions = baseLayout positions overridden by drag state.
+  // Effective positions, in priority order:
+  //   1. Active drag override (this session's in-flight drag).
+  //   2. Persisted `node.position` (round-trips through the serializer,
+  //      so EL-dashboard placements + earlier drags survive reload).
+  //   3. Auto-layout fallback (greenfield workflow with no positions).
+  const persistedPosById = new Map(
+    workflow.nodes
+      .filter((n) => n.position)
+      .map((n) => [n.id, n.position as { x: number; y: number }] as const),
+  );
   const getPos = (id: string) =>
-    overrides[id] ?? baseLayout.positions.get(id) ?? { x: 0, y: 0 };
+    overrides[id] ??
+    persistedPosById.get(id) ??
+    baseLayout.positions.get(id) ??
+    { x: 0, y: 0 };
 
   const laid = {
     width: baseLayout.width,
@@ -299,7 +330,7 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     // buttons (the captured canvas swallows the subsequent click).
     if (
       (e.target as HTMLElement).closest(
-        ".vb-el-node-wrap, .vb-el-phantom, .vb-el-phantom-add, .vb-el-phantom-popover",
+        ".vb-el-node-wrap, .vb-el-phantom, .vb-el-phantom-add, .vb-el-phantom-popover, .vb-edge-pill",
       )
     )
       return;
@@ -355,7 +386,43 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       // the original target.
       if (!dragState.current.moved) {
         setSelectedId(dragState.current.nodeId);
+        setFocusedEdgeId(null);
         setAddMenuFor(null);
+      } else {
+        // The pointer actually moved — persist the final position to
+        // the backend so it survives reload + Alta re-saves. Local
+        // `overrides` state is the source of truth during the drag;
+        // the PATCH writes that into `node.position` (which the
+        // serializer round-trips to ElevenLabs).
+        const id = dragState.current.nodeId;
+        const finalPos = overrides[id];
+        if (finalPos) {
+          void appFetch(`/api/agents/${agentId}/workflow/${id}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              position: { x: finalPos.x, y: finalPos.y },
+            }),
+          })
+            .then(async (res) => {
+              if (!res.ok) {
+                const body = (await res
+                  .json()
+                  .catch(() => null)) as { error?: string } | null;
+                throw new Error(
+                  body?.error ?? `Save position failed (${res.status})`,
+                );
+              }
+              const json = (await res.json()) as {
+                revision: number;
+                patch: Partial<AgentConfigCache>;
+              };
+              applyConfigDirect(json.patch, json.revision);
+            })
+            .catch((err) => {
+              console.error("persist node position failed", err);
+            });
+        }
       }
       dragState.current = null;
       if (el) el.style.cursor = "grab";
@@ -386,6 +453,9 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       return;
     }
     setSelectedId(nodeId);
+    // A direct node click is a "show me this node" intent — drop any edge
+    // focus so the inspector reverts to default node UI.
+    setFocusedEdgeId(null);
   };
 
   const applyConfigDirect = useAgentStore.getState().applyConfigDirect;
@@ -395,6 +465,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     type: WorkflowNodeType,
     label: string,
     data?: Record<string, unknown>,
+    /** When provided, the new edge (parent → new node) ships with this
+     *  structured forward_condition instead of an unconditional default.
+     *  Used by the AttachModeModal's "Run after" path so a tool_call
+     *  always lands with a transition the LLM can route on. */
+    edgeForwardCondition?: WorkflowEdgeCondition,
   ) => {
     setPendingNodeId(parentId);
     setAddMenuFor(null);
@@ -407,6 +482,9 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
           label,
           after_node_id: parentId,
           ...(data ? { data } : {}),
+          ...(edgeForwardCondition
+            ? { edge_forward_condition: edgeForwardCondition }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -424,6 +502,54 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
       // Quiet failure: surface via console for now; the panel inspector has
       // a proper error UI but the inline action does not yet.
       console.error("add node failed", err);
+    } finally {
+      setPendingNodeId(null);
+    }
+  };
+
+  /**
+   * Attach a tool to an existing node by appending its id to the node's
+   * `additional_tool_ids`. The LLM will get access to the tool while the
+   * node is active and decide on its own whether to call it.
+   * Idempotent — re-attaching the same tool is a no-op.
+   */
+  const attachToolToNode = async (parentId: string, tool: RuntimeTool) => {
+    setPendingNodeId(parentId);
+    try {
+      // Read current additional_tool_ids off the latest store snapshot
+      // (not a stale closure value), so concurrent edits compose.
+      const current = useAgentStore.getState().config?.workflow.nodes.find(
+        (n) => n.id === parentId,
+      );
+      const existing = Array.isArray(current?.data?.additional_tool_ids)
+        ? (current!.data.additional_tool_ids as string[])
+        : [];
+      if (existing.includes(tool.id)) {
+        // Already attached — nothing to do.
+        return;
+      }
+      const nextIds = [...existing, tool.id];
+      const res = await appFetch(
+        `/api/agents/${agentId}/workflow/${parentId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ data: { additional_tool_ids: nextIds } }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error ?? `Attach failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        revision: number;
+        patch: Partial<AgentConfigCache>;
+      };
+      applyConfigDirect(json.patch, json.revision);
+    } catch (err) {
+      console.error("attach tool failed", err);
     } finally {
       setPendingNodeId(null);
     }
@@ -511,6 +637,54 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
         >
           <IconCopy />
         </button>
+        <span className="vb-el-sep" />
+        {/* Workflow-level setting: block sub-agent transfer loops. Maps
+            to `workflow.prevent_subagent_loops` on the wire — when on,
+            ElevenLabs' runtime refuses a standalone_agent hop back into
+            an agent already on the call's transfer stack. */}
+        <label
+          className="ml-1 flex items-center gap-1.5 px-2 text-[11px] font-medium text-(--color-foreground-strong) select-none"
+          title="Block the runtime from transferring back into an agent already on the call's transfer stack. Top-level workflow flag."
+        >
+          <input
+            type="checkbox"
+            checked={workflow?.prevent_subagent_loops === true}
+            disabled={preventLoopsBusy}
+            onChange={async (ev) => {
+              const next = ev.target.checked;
+              setPreventLoopsBusy(true);
+              try {
+                const res = await appFetch(
+                  `/api/agents/${agentId}/workflow`,
+                  {
+                    method: "PATCH",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ prevent_subagent_loops: next }),
+                  },
+                );
+                if (!res.ok) {
+                  const body = (await res.json().catch(() => null)) as
+                    | { error?: string }
+                    | null;
+                  throw new Error(
+                    body?.error ?? `Toggle failed (${res.status})`,
+                  );
+                }
+                const json = (await res.json()) as {
+                  revision: number;
+                  patch: Partial<AgentConfigCache>;
+                };
+                applyConfigDirect(json.patch, json.revision);
+              } catch (err) {
+                console.error("prevent_subagent_loops toggle failed", err);
+              } finally {
+                setPreventLoopsBusy(false);
+              }
+            }}
+            className="size-3.5"
+          />
+          <span>Prevent sub-agent loops</span>
+        </label>
         {(inFlight.has("workflow") || isBuilding) && (
           <span className="ml-3 font-mono text-[10px] tracking-widest text-(--color-violet-600)">
             BUILDING…
@@ -640,27 +814,92 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                       strokeWidth={isLit ? 2 : 1.5}
                       markerEnd={`url(#${isLit ? "vb-arrow-lit" : "vb-arrow"})`}
                     />
-                    {e.label && (
-                      <foreignObject
-                        x={midX - EDGE_LABEL_W / 2}
-                        y={(y1 + y2) / 2 - 12}
-                        width={EDGE_LABEL_W}
-                        height={24}
-                        style={{ overflow: "visible" }}
-                      >
-                        <div
-                          className="vb-edge-pill"
-                          style={{ maxWidth: EDGE_LABEL_W }}
-                        >
-                          <span aria-hidden>↳</span>
-                          {e.label}
-                        </div>
-                      </foreignObject>
-                    )}
                   </g>
                 );
               })}
             </svg>
+
+            {/* Edge condition pills — rendered as regular HTML buttons
+                OUTSIDE the SVG so they receive clicks reliably (the SVG
+                above sets pointer-events:none for canvas pan, which
+                cascades into foreignObject in some browsers no matter
+                what its child overrides). Positioned in the same
+                coordinate space as the nodes via absolute layout. */}
+            {workflow.edges.map((e) => {
+              const a = laid.positions.get(e.from);
+              const b = laid.positions.get(e.to);
+              if (!a || !b) return null;
+              const fromNode = workflow.nodes.find((n) => n.id === e.from);
+              const toNode = workflow.nodes.find((n) => n.id === e.to);
+              const fromTerminal =
+                fromNode?.type === "start" || fromNode?.type === "end";
+              const toTerminal =
+                toNode?.type === "start" || toNode?.type === "end";
+              const TERM_W = 120;
+              const termOffsetX = (NODE_W - TERM_W) / 2;
+              const x1 = a.x + (fromTerminal ? termOffsetX + TERM_W : NODE_W);
+              const y1 = a.y + (fromTerminal ? TERMINAL_H / 2 : NODE_H / 2);
+              const x2 = b.x + (toTerminal ? termOffsetX : 0);
+              const y2 = b.y + (toTerminal ? TERMINAL_H / 2 : NODE_H / 2);
+              const midX = (x1 + x2) / 2;
+              const midY = (y1 + y2) / 2;
+              const fc = e.forward_condition;
+              const explicitLabel = e.label ?? fc?.label ?? null;
+              const derivedLabel = (() => {
+                if (!fc && e.condition && e.condition.trim().length > 0)
+                  return e.condition;
+                if (!fc) return null;
+                if (fc.type === "llm") return fc.condition;
+                if (fc.type === "result")
+                  return fc.successful ? "on success" : "on failure";
+                if (fc.type === "expression") return "expression";
+                return null;
+              })();
+              const pillText = explicitLabel ?? derivedLabel;
+              if (!pillText) return null;
+              // Hard cap the visible label at 50 chars (with an ellipsis).
+              // The full text stays in the tooltip so users can still see
+              // long LLM conditions on hover without the pill spanning the
+              // whole canvas.
+              const PILL_MAX_CHARS = 50;
+              const displayText =
+                pillText.length > PILL_MAX_CHARS
+                  ? `${pillText.slice(0, PILL_MAX_CHARS - 1).trimEnd()}…`
+                  : pillText;
+              const prefix = explicitLabel
+                ? "↳"
+                : fc?.type === "result"
+                  ? fc.successful
+                    ? "✓"
+                    : "✗"
+                  : fc?.type === "expression"
+                    ? "ƒ"
+                    : "⤷";
+              const revealed = visibleEdgeIds.has(e.id);
+              return (
+                <button
+                  key={`pill-${e.id}`}
+                  type="button"
+                  className={`vb-edge-pill vb-edge-pill-btn ${revealed ? "vb-edge-pill-revealed" : "vb-edge-pill-pending"}`}
+                  style={{
+                    position: "absolute",
+                    left: midX,
+                    top: midY,
+                  }}
+                  title={`${pillText} — click to edit`}
+                  onPointerDown={(ev) => ev.stopPropagation()}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setSelectedId(e.to);
+                    setFocusedEdgeId(e.id);
+                    setAddMenuFor(null);
+                  }}
+                >
+                  <span aria-hidden>{prefix}</span>
+                  <span className="vb-edge-pill-text">{displayText}</span>
+                </button>
+              );
+            })}
 
             {workflow.nodes.map((n) => {
               const p = laid.positions.get(n.id);
@@ -814,8 +1053,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                       onPointerDown={(e) => e.stopPropagation()}
                     >
                       {ADD_NODE_MENU.map((opt) => (
+                        // `label` is the unique key: two "transfer" entries
+                        // share `opt.type` (one seeds agent_id, one seeds
+                        // phone_number) so `opt.type` alone would collide.
                         <button
-                          key={opt.type}
+                          key={opt.label}
                           type="button"
                           role="menuitem"
                           className="vb-el-add-menu-item"
@@ -826,7 +1068,12 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                               setToolPickerFor(n.id);
                               return;
                             }
-                            void addChildNode(n.id, opt.type, opt.defaultLabel);
+                            void addChildNode(
+                              n.id,
+                              opt.type,
+                              opt.defaultLabel,
+                              opt.data,
+                            );
                           }}
                         >
                           <span
@@ -902,11 +1149,16 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
           agentId={agentId}
           node={workflow.nodes.find((n) => n.id === selectedId) ?? null}
           outgoingEdges={workflow.edges.filter((e) => e.from === selectedId)}
+          incomingEdges={workflow.edges.filter((e) => e.to === selectedId)}
+          focusedEdgeId={focusedEdgeId}
           allNodes={workflow.nodes}
           onDelete={async () => {
             await deleteNode(selectedId);
           }}
-          onClose={() => setSelectedId(null)}
+          onClose={() => {
+            setSelectedId(null);
+            setFocusedEdgeId(null);
+          }}
         />
       )}
 
@@ -916,12 +1168,55 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
           onPick={(tool) => {
             const parentId = toolPickerFor;
             setToolPickerFor(null);
+            const parent = workflow.nodes.find((n) => n.id === parentId);
+            // Only override_agent parents (speak / collect / condition)
+            // support `additional_tool_ids`; for any other parent type
+            // the "attach to node" choice is meaningless, so fall through
+            // to creating a new tool_call child.
+            const canAttach =
+              parent?.type === "speak" ||
+              parent?.type === "collect" ||
+              parent?.type === "condition";
+            if (canAttach && parent) {
+              setAttachChoice({ parentId, tool });
+              return;
+            }
             void addChildNode(parentId, "tool_call", tool.name, {
               tool_id: tool.id,
             });
           }}
         />
       )}
+
+      {attachChoice &&
+        (() => {
+          const parent = workflow.nodes.find(
+            (n) => n.id === attachChoice.parentId,
+          );
+          if (!parent) return null;
+          return (
+            <AttachModeModal
+              parent={parent}
+              tool={attachChoice.tool}
+              onClose={() => setAttachChoice(null)}
+              onChoose={({ mode, forwardCondition }) => {
+                const { parentId, tool } = attachChoice;
+                setAttachChoice(null);
+                if (mode === "as_node") {
+                  void addChildNode(
+                    parentId,
+                    "tool_call",
+                    tool.name,
+                    { tool_id: tool.id },
+                    forwardCondition,
+                  );
+                } else {
+                  void attachToolToNode(parentId, tool);
+                }
+              }}
+            />
+          );
+        })()}
     </div>
   );
 }

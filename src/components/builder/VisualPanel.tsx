@@ -16,9 +16,9 @@ import { TestCallButton } from "./TestCallButton";
 const TABS = [
   { id: "persona", label: "Persona" },
   { id: "workflow", label: "Workflow" },
-  { id: "voice", label: "Voice & Language" },
+  { id: "voice", label: "Configurations" },
   { id: "kb", label: "Knowledge" },
-  { id: "outcomes", label: "Post-call analysis" },
+  { id: "outcomes", label: "Outcomes" },
   { id: "tools", label: "Tools" },
   { id: "phone", label: "Phone" },
   { id: "calls", label: "Call logs" },

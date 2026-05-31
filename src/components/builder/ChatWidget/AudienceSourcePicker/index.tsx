@@ -21,7 +21,7 @@ const SOURCES: Array<{
   },
   {
     id: "hubspot",
-    label: "HubSpot lists",
+    label: "HubSpot",
     icon: "/integrations/hubspot.png",
   },
   {

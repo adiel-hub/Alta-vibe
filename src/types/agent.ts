@@ -145,9 +145,51 @@ export type WorkflowEdge = {
   backward_condition?: WorkflowEdgeCondition;
 };
 
+/**
+ * Tool binding. The workflow is the single source of truth for which tools
+ * are attached to an agent — `config_cache.tools` is derived from these.
+ *
+ *   - provider: catalog tool from PROVIDERS (HubSpot, Slack, etc.)
+ *   - custom:   tool synthesized by the builder (write_tool /
+ *               create_custom_runtime_tool); persisted in `custom_tools`
+ *
+ * `elevenlabs_tool_id` is a registration receipt — cached so we don't
+ * re-register on every save. Lifecycle bindings (pre/post-call) get a
+ * `local_…` id since ElevenLabs never sees those tools.
+ */
+export type ToolBinding =
+  | {
+      kind: "provider";
+      provider: string;
+      /** Stable spec key on the provider (NOT the scoped wire name). */
+      tool_key: string;
+      phase: RuntimePhase;
+      elevenlabs_tool_id: string;
+    }
+  | {
+      kind: "custom";
+      custom_tool_id: string;
+      phase: RuntimePhase;
+      elevenlabs_tool_id: string;
+    };
+
 export type WorkflowState = {
   nodes: WorkflowNode[];
   edges: WorkflowEdge[];
+  /**
+   * Tool bindings — the workflow's tool inventory. When set, this drives
+   * `config_cache.tools` (derived). Undefined on legacy agents that
+   * haven't been migrated yet; the agent GET route backfills on first
+   * read by reverse-mapping the existing `config_cache.tools`.
+   */
+  bindings?: ToolBinding[];
+  /**
+   * Block sub-agent transfer cycles. Mirrors ElevenLabs'
+   * `workflow.prevent_subagent_loops` top-level boolean — when true, a
+   * `standalone_agent` transfer that would re-enter an agent already on
+   * the transfer stack is rejected by the runtime.
+   */
+  prevent_subagent_loops?: boolean;
 };
 
 // --- Aggregate config ------------------------------------------------------
@@ -491,6 +533,12 @@ export type CustomToolDocument = {
   };
   /** Names of secrets referenced in the headers (for fast pre-flight checks). */
   secret_refs: string[];
+  /**
+   * Pre-call only: variable names this tool requires in the merged context
+   * before it can run. Drives the wave dispatcher's topological ordering.
+   * Undefined / empty array = wave 1 (depends only on baseline CallerContext).
+   */
+  needs?: string[];
   created_at: Date;
   updated_at: Date;
 };
@@ -634,6 +682,13 @@ export type CampaignItem = {
   error: string | null;
   started_at: Date | null;
   ended_at: Date | null;
+  /**
+   * Flattened `data_collection` from ElevenLabs' post-call webhook. Stored
+   * here so future pre-call enrichment (e.g. `alta_last_call_summary`) can
+   * query the previous interaction with one Mongo round-trip.
+   */
+  data_collection?: Record<string, string | number | boolean | null>;
+  completed_at?: Date | null;
 };
 
 export type CampaignEvent = {
@@ -646,7 +701,32 @@ export type CampaignEvent = {
     | { type: "item_done"; prospect_id: string; conversation_id: string }
     | { type: "item_failed"; prospect_id: string; error: string }
     | { type: "item_skipped"; prospect_id: string; reason: string }
+    | { type: "pre_call_aborted"; prospect_id: string; tool: string; reason: string }
+    | { type: "pre_call_tool_failed"; prospect_id: string; tool: string; error: string }
     | { type: "campaign_done"; status: CallCampaignStatus };
+};
+
+/**
+ * Audit trail for one pre-call dispatch. Records which tools ran, which
+ * were skipped (and why), how long it took, and whether the call was
+ * aborted before dial. Used for debugging enrichment regressions without
+ * digging through log lines.
+ */
+export type PreCallExecutionDoc = {
+  _id: ObjectId;
+  agent_id: ObjectId;
+  campaign_id: ObjectId | null;
+  prospect_id: ObjectId | null;
+  to_number: string;
+  conversation_id: string | null;
+  status: "ok" | "aborted";
+  abort_reason: string | null;
+  executed: string[];
+  skipped: Array<{ tool: string; reason: string }>;
+  variables_count: number;
+  duration_ms: number;
+  started_at: Date;
+  ended_at: Date;
 };
 
 export type CallCampaignDocument = {

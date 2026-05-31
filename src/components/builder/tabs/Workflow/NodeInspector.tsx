@@ -31,6 +31,8 @@ export function NodeInspector({
   agentId,
   node,
   outgoingEdges,
+  incomingEdges,
+  focusedEdgeId,
   allNodes,
   onDelete,
   onClose,
@@ -38,6 +40,16 @@ export function NodeInspector({
   agentId: string;
   node: WorkflowNode | null;
   outgoingEdges: WorkflowEdge[];
+  /** Edges that point AT this node. For tool_call nodes we auto-surface the
+   *  single incoming edge's `forward_condition` as the tool's "entry
+   *  condition" — the user thinks of it as "when does this tool fire?",
+   *  which is more natural than hunting for the edge to edit it on. */
+  incomingEdges: WorkflowEdge[];
+  /** When set, the inspector renders the condition editor for THIS edge
+   *  (an entry to the current node) regardless of node type. Wired up by
+   *  the canvas when the user clicks an edge pill — same UI as the
+   *  tool_call entry-condition editor, but available for any target. */
+  focusedEdgeId?: string | null;
   allNodes: WorkflowNode[];
   onDelete: () => Promise<void>;
   onClose: () => void;
@@ -63,6 +75,37 @@ export function NodeInspector({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [voices, setVoices] = useState<InspectorVoice[]>([]);
 
+  // Edge-condition editor only renders when the user reached this panel
+  // by clicking an edge pill on the canvas. Direct node clicks never
+  // surface edge controls — edges are edited from the dedicated edge
+  // mode (see early return below). Storage stays on the edge; saves
+  // PATCH /workflow/edges/[edgeId].
+  const incomingEdge = focusedEdgeId
+    ? incomingEdges.find((e) => e.id === focusedEdgeId) ?? null
+    : null;
+  const initialEntryFc = incomingEdge?.forward_condition;
+  const initialEntryType: "unconditional" | "llm" | "result" =
+    initialEntryFc?.type === "llm"
+      ? "llm"
+      : initialEntryFc?.type === "result"
+        ? "result"
+        : "unconditional";
+  const initialEntryCondition =
+    initialEntryFc?.type === "llm" ? initialEntryFc.condition : "";
+  const initialEntrySuccessful =
+    initialEntryFc?.type === "result" ? initialEntryFc.successful : true;
+  // Edge pill text. Priority on read matches the canvas: explicit
+  // condition.label first, then the edge's legacy root label.
+  const initialEntryLabel =
+    initialEntryFc?.label ?? incomingEdge?.label ?? "";
+  const [entryType, setEntryType] = useState<
+    "unconditional" | "llm" | "result"
+  >(initialEntryType);
+  const [entryCondition, setEntryCondition] = useState(initialEntryCondition);
+  const [entrySuccessful, setEntrySuccessful] = useState(initialEntrySuccessful);
+  const [entryLabel, setEntryLabel] = useState(initialEntryLabel);
+  const PILL_MAX_CHARS = 50;
+
   const canDelete = node?.id !== "start";
 
   const handleDelete = async () => {
@@ -87,6 +130,18 @@ export function NodeInspector({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
 
+  // Reset entry-condition state when the FOCUSED edge changes — covers
+  // clicking a different pill while staying on the same target node, and
+  // also re-initializes when the node itself changes (since incomingEdge
+  // becomes a different object).
+  useEffect(() => {
+    setEntryType(initialEntryType);
+    setEntryCondition(initialEntryCondition);
+    setEntrySuccessful(initialEntrySuccessful);
+    setEntryLabel(initialEntryLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingEdge?.id]);
+
   // Lazy-load voice list once per session for the override dropdown.
   useEffect(() => {
     let cancelled = false;
@@ -104,8 +159,18 @@ export function NodeInspector({
 
   if (!node) return null;
 
+  const entryDirty =
+    !!incomingEdge &&
+    (entryType !== initialEntryType ||
+      (entryType === "llm" && entryCondition !== initialEntryCondition) ||
+      (entryType === "result" && entrySuccessful !== initialEntrySuccessful) ||
+      entryLabel.trim() !== initialEntryLabel.trim());
   const dirty =
-    label !== initialLabel || JSON.stringify(data) !== initialData;
+    label !== initialLabel ||
+    JSON.stringify(data) !== initialData ||
+    entryDirty;
+  const entryConditionInvalid =
+    entryType === "llm" && entryCondition.trim().length === 0;
 
   const setField = (key: string, value: unknown) =>
     setData((d) => {
@@ -120,31 +185,86 @@ export function NodeInspector({
       onClose();
       return;
     }
+    if (entryConditionInvalid) {
+      setError("Entry condition cannot be empty.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      const body: { label?: string; data?: Record<string, unknown> } = {};
-      if (label !== initialLabel) body.label = label;
-      if (JSON.stringify(data) !== initialData) body.data = data;
-      const res = await appFetch(
-        `/api/agents/${agentId}/workflow/${node.id}`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        },
-      );
-      if (!res.ok) {
-        const errBody = (await res.json().catch(() => null)) as
-          | { error?: string }
-          | null;
-        throw new Error(errBody?.error ?? `Save failed (${res.status})`);
+      // Save the node first (label / data). For tool_call nodes whose
+      // entry condition was edited, follow up with the edge PATCH —
+      // we do these sequentially so the second call sees the latest
+      // revision and the panel ends with one applied state_patch.
+      const nodeBody: { label?: string; data?: Record<string, unknown> } = {};
+      if (label !== initialLabel) nodeBody.label = label;
+      if (JSON.stringify(data) !== initialData) nodeBody.data = data;
+      if (nodeBody.label !== undefined || nodeBody.data !== undefined) {
+        const res = await appFetch(
+          `/api/agents/${agentId}/workflow/${node.id}`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(nodeBody),
+          },
+        );
+        if (!res.ok) {
+          const errBody = (await res.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(errBody?.error ?? `Save failed (${res.status})`);
+        }
+        const json = (await res.json()) as {
+          revision: number;
+          patch: Partial<AgentConfigCache>;
+        };
+        applyConfigDirect(json.patch, json.revision);
       }
-      const json = (await res.json()) as {
-        revision: number;
-        patch: Partial<AgentConfigCache>;
-      };
-      applyConfigDirect(json.patch, json.revision);
+      if (entryDirty && incomingEdge) {
+        const trimmedLabel = entryLabel.trim();
+        const labelField = trimmedLabel.length > 0 ? trimmedLabel : undefined;
+        const forwardCondition =
+          entryType === "unconditional"
+            ? {
+                type: "unconditional" as const,
+                ...(labelField ? { label: labelField } : {}),
+              }
+            : entryType === "llm"
+              ? {
+                  type: "llm" as const,
+                  condition: entryCondition.trim(),
+                  ...(labelField ? { label: labelField } : {}),
+                }
+              : {
+                  type: "result" as const,
+                  successful: entrySuccessful,
+                  ...(labelField ? { label: labelField } : {}),
+                };
+        const res = await appFetch(
+          `/api/agents/${agentId}/workflow/edges/${incomingEdge.id}`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              forward_condition: forwardCondition,
+              // Also clear the legacy edge-root label so the pill only
+              // reads from the structured condition's label going forward.
+              label: labelField ?? null,
+            }),
+          },
+        );
+        if (!res.ok) {
+          const errBody = (await res.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(errBody?.error ?? `Save failed (${res.status})`);
+        }
+        const json = (await res.json()) as {
+          revision: number;
+          patch: Partial<AgentConfigCache>;
+        };
+        applyConfigDirect(json.patch, json.revision);
+      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
@@ -238,27 +358,134 @@ export function NodeInspector({
           </>
         );
 
-      case "tool_call":
+      case "tool_call": {
+        // Build the canonical set of selected ids from BOTH legacy
+        // single-tool (`tool_id`) and parallel-tools (`tool_ids[]`).
+        // Saves always write back to `tool_ids` (the array form); the
+        // serializer accepts either shape, so this keeps cached agents
+        // authored before parallel-tools support reading correctly.
+        const rawIds = Array.isArray(data.tool_ids)
+          ? (data.tool_ids as unknown[]).filter(
+              (x): x is string => typeof x === "string",
+            )
+          : [];
+        const legacySingle =
+          typeof data.tool_id === "string" ? (data.tool_id as string) : "";
+        const selectedIds: string[] = [];
+        for (const id of [...rawIds, legacySingle]) {
+          if (id && !selectedIds.includes(id)) selectedIds.push(id);
+        }
+        const inCallTools = availableTools.filter((t) => t.phase === "in_call");
+        const knownIds = new Set(inCallTools.map((t) => t.id));
+        const staleIds = selectedIds.filter((id) => !knownIds.has(id));
+        const writeBack = (next: string[]) => {
+          setField("tool_ids", next.length > 0 ? next : undefined);
+          // Keep the legacy singular slot in sync with the first entry so
+          // any reader that still looks at `tool_id` (the workflow panel
+          // node card, older serializers) keeps working.
+          setField("tool_id", next[0] ?? undefined);
+        };
+        const toggleId = (id: string) => {
+          const next = selectedIds.includes(id)
+            ? selectedIds.filter((x) => x !== id)
+            : [...selectedIds, id];
+          writeBack(next);
+        };
         return (
-          <Field
-            label="Tool"
-            hint="Which runtime tool this node dispatches. Serialized as tools: [{ tool_id }] on the ElevenLabs tool node."
-          >
-            <select
-              value={(data.tool_id as string) ?? ""}
-              onChange={(e) => setField("tool_id", e.target.value)}
-              className="vb-field-input"
+          <>
+            <Field
+              label={selectedIds.length > 1 ? "Tools (parallel)" : "Tool"}
+              hint={
+                "Tools this node dispatches. Pick one for a single dispatch, or check several to fire them in parallel — the node succeeds only if ALL selected tools succeed."
+              }
             >
-              <option value="">— pick a tool —</option>
-              {availableTools.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                  {t.provider ? ` · ${t.provider}` : ""}
-                </option>
-              ))}
-            </select>
-          </Field>
+              {inCallTools.length === 0 && staleIds.length === 0 ? (
+                <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
+                  No in-call tools attached to this agent yet. Install one
+                  from the Tools tab.
+                </p>
+              ) : (
+                <ul className="flex max-h-56 flex-col gap-1 overflow-auto rounded-md border border-(--color-border) bg-white p-2">
+                  {inCallTools.map((t) => {
+                    const isOn = selectedIds.includes(t.id);
+                    return (
+                      <li key={t.id}>
+                        <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-(--color-panel-soft)">
+                          <input
+                            type="checkbox"
+                            checked={isOn}
+                            onChange={() => toggleId(t.id)}
+                            className="mt-0.5"
+                          />
+                          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <span className="flex items-center gap-1.5">
+                              <span className="font-medium text-(--color-foreground-strong)">
+                                {t.name}
+                              </span>
+                              {t.provider && (
+                                <span className="rounded bg-(--color-accent)/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-(--color-accent)">
+                                  {t.provider}
+                                </span>
+                              )}
+                            </span>
+                            {t.description && (
+                              <span className="line-clamp-2 text-[11px] text-(--color-muted)">
+                                {t.description}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                  {staleIds.map((id) => (
+                    <li key={id}>
+                      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-red-400/30 bg-red-500/5 px-2 py-1.5 text-xs">
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() => toggleId(id)}
+                          className="mt-0.5"
+                        />
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="font-mono text-[11px] text-red-600">
+                            {id}
+                          </span>
+                          <span className="text-[10px] text-red-500">
+                            Unbound — uncheck to remove the dead reference.
+                          </span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {selectedIds.length > 1 && (
+                <p className="mt-1 text-[11px] text-(--color-muted)">
+                  Parallel: {selectedIds.length} tools fire together; the
+                  node only succeeds if all of them do.
+                </p>
+              )}
+            </Field>
+
+            {/* Wiring hint when the tool isn't connected yet. Edge
+                conditions are edited from the canvas — click an edge
+                label to open its dedicated editor. */}
+            {incomingEdges.length === 0 && (
+              <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
+                No incoming edges yet — connect a parent node so the
+                workflow can reach this tool.
+              </p>
+            )}
+            {incomingEdges.length >= 1 && (
+              <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-[11px] text-(--color-muted)">
+                Click an edge label on the canvas to edit when this tool
+                fires.
+              </p>
+            )}
+          </>
         );
+      }
 
       case "transfer": {
         // Read both keys for back-compat with agents whose cache still
@@ -267,56 +494,77 @@ export function NodeInspector({
           (data.agent_id as string | undefined) ??
           (data.target_agent_id as string | undefined) ??
           "";
-        const mode: "number" | "agent" =
-          (data.phone_number as string | undefined)?.length
-            ? "number"
+        const sipValue = (data.sip_uri as string | undefined) ?? "";
+        const phoneValue = (data.phone_number as string | undefined) ?? "";
+        // Three mutually-exclusive destinations: phone, SIP URI, agent.
+        // sip_uri wins when both phone+sip are present (the serializer
+        // does too, so the UI agrees with what actually ships).
+        const mode: "phone" | "sip" | "agent" = sipValue.length
+          ? "sip"
+          : phoneValue.length
+            ? "phone"
             : agentIdValue.length
               ? "agent"
-              : "number";
+              : "phone";
+        const pickPhone = () => {
+          setField("sip_uri", undefined);
+          setField("agent_id", undefined);
+          setField("target_agent_id", undefined);
+          setField("phone_number", phoneValue);
+        };
+        const pickSip = () => {
+          setField("phone_number", undefined);
+          setField("agent_id", undefined);
+          setField("target_agent_id", undefined);
+          setField("sip_uri", sipValue);
+        };
+        const pickAgent = () => {
+          setField("phone_number", undefined);
+          setField("sip_uri", undefined);
+          setField("target_agent_id", undefined);
+          setField("agent_id", agentIdValue);
+        };
+        const modeBtnClass = (active: boolean) =>
+          `flex-1 rounded-md border px-2 py-1.5 text-xs ${
+            active
+              ? "border-(--color-accent) bg-(--color-accent)/10 text-(--color-accent)"
+              : "border-(--color-border) text-(--color-muted)"
+          }`;
         return (
           <>
             <Field label="Transfer to">
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setField("agent_id", undefined);
-                    setField("target_agent_id", undefined);
-                    setField("phone_number", data.phone_number ?? "");
-                  }}
-                  className={`flex-1 rounded-md border px-3 py-1.5 text-xs ${
-                    mode === "number"
-                      ? "border-(--color-accent) bg-(--color-accent)/10 text-(--color-accent)"
-                      : "border-(--color-border) text-(--color-muted)"
-                  }`}
+                  onClick={pickPhone}
+                  className={modeBtnClass(mode === "phone")}
                 >
-                  Phone number
+                  Phone
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setField("phone_number", undefined);
-                    setField("target_agent_id", undefined);
-                    setField("agent_id", agentIdValue);
-                  }}
-                  className={`flex-1 rounded-md border px-3 py-1.5 text-xs ${
-                    mode === "agent"
-                      ? "border-(--color-accent) bg-(--color-accent)/10 text-(--color-accent)"
-                      : "border-(--color-border) text-(--color-muted)"
-                  }`}
+                  onClick={pickSip}
+                  className={modeBtnClass(mode === "sip")}
                 >
-                  Another agent
+                  SIP URI
+                </button>
+                <button
+                  type="button"
+                  onClick={pickAgent}
+                  className={modeBtnClass(mode === "agent")}
+                >
+                  Agent
                 </button>
               </div>
             </Field>
-            {mode === "number" ? (
+            {mode === "phone" ? (
               <>
                 <Field
                   label="Phone number"
                   hint="E.164 number, or a dynamic variable like {{caller_number}}. Wrapped server-side into transfer_destination (phone | phone_dynamic_variable)."
                 >
                   <input
-                    value={(data.phone_number as string) ?? ""}
+                    value={phoneValue}
                     onChange={(e) => setField("phone_number", e.target.value)}
                     className="vb-field-input"
                     placeholder="+1555… or {{caller_number}}"
@@ -339,6 +587,47 @@ export function NodeInspector({
                 <Field
                   label="Post-dial digits"
                   hint="DTMF digits to send after connect. Use 'w' for a 0.5s pause (e.g. 'ww1234'). Twilio transfers only. Wrap in {{var}} to use a dynamic value."
+                >
+                  <input
+                    value={(data.post_dial_digits as string) ?? ""}
+                    onChange={(e) =>
+                      setField("post_dial_digits", e.target.value)
+                    }
+                    className="vb-field-input font-mono"
+                    placeholder="ww1234"
+                  />
+                </Field>
+              </>
+            ) : mode === "sip" ? (
+              <>
+                <Field
+                  label="SIP URI"
+                  hint="Full SIP URI (e.g. sip:alice@example.com). Wrap in {{var}} to resolve from a dynamic variable. Serialized as transfer_destination.sip_uri (or sip_uri_dynamic_variable)."
+                >
+                  <input
+                    value={sipValue}
+                    onChange={(e) => setField("sip_uri", e.target.value)}
+                    className="vb-field-input font-mono"
+                    placeholder="sip:alice@example.com or {{caller_sip}}"
+                  />
+                </Field>
+                <Field
+                  label="Transfer type"
+                  hint="conference = stay on the line; blind = drop after dial; sip_refer = SIP REFER handoff."
+                >
+                  <select
+                    value={(data.transfer_type as string) ?? "conference"}
+                    onChange={(e) => setField("transfer_type", e.target.value)}
+                    className="vb-field-input"
+                  >
+                    <option value="conference">conference (default)</option>
+                    <option value="blind">blind</option>
+                    <option value="sip_refer">sip_refer</option>
+                  </select>
+                </Field>
+                <Field
+                  label="Post-dial digits"
+                  hint="DTMF digits to send after connect. Use 'w' for a 0.5s pause. Wrap in {{var}} for a dynamic value."
                 >
                   <input
                     value={(data.post_dial_digits as string) ?? ""}
@@ -443,6 +732,147 @@ export function NodeInspector({
     node.type === "speak" ||
     node.type === "collect" ||
     node.type === "condition";
+
+  // Edge-only mode: the user clicked an edge pill on the canvas. We render
+  // a focused panel that ONLY shows the condition editor for that edge,
+  // not the full node inspector. The auto-pick for tool_call (no
+  // focusedEdgeId, single incoming edge) keeps the inline editor inside
+  // the full inspector — only an explicit pill click flips into edge mode.
+  const isEdgeMode = !!focusedEdgeId && !!incomingEdge;
+
+  if (isEdgeMode && incomingEdge) {
+    const parentNode = allNodes.find((n) => n.id === incomingEdge.from);
+    const parentLabel = parentNode?.label ?? incomingEdge.from;
+    const targetLabel = node.label || node.id;
+    return (
+      <aside className="vb-el-inspector">
+        <header className="vb-el-inspector-head">
+          <span className="vb-el-icon" aria-hidden>
+            ⤷
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-mono uppercase tracking-widest text-(--color-muted-soft)">
+              edge · {incomingEdge.id}
+            </div>
+            <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
+              {parentLabel} → {targetLabel}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close inspector"
+            className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
+          >
+            ✕
+          </button>
+        </header>
+
+        <div className="vb-el-inspector-body">
+          <Field
+            label="Label (pill text)"
+            hint={`Short text that renders on the dark pill in the canvas — keep ≤${PILL_MAX_CHARS} chars. Leave empty to fall back to the condition body.`}
+          >
+            <input
+              dir="auto"
+              value={entryLabel}
+              maxLength={PILL_MAX_CHARS}
+              onChange={(e) => setEntryLabel(e.target.value)}
+              className="vb-field-input"
+              placeholder="e.g. wants billing"
+            />
+            <p className="mt-1 text-[10px] text-(--color-muted-soft)">
+              {entryLabel.length}/{PILL_MAX_CHARS}
+            </p>
+          </Field>
+          <Field
+            label="Condition"
+            hint={`Decides when the flow routes from “${parentLabel}” into “${targetLabel}”.`}
+          >
+            <select
+              value={entryType}
+              onChange={(e) =>
+                setEntryType(
+                  e.target.value as "unconditional" | "llm" | "result",
+                )
+              }
+              className="vb-field-input"
+            >
+              <option value="llm">LLM Condition</option>
+              <option value="unconditional">Unconditional</option>
+              <option value="result">Tool result branch</option>
+            </select>
+            {entryType === "llm" && (
+              <>
+                <textarea
+                  dir="auto"
+                  value={entryCondition}
+                  onChange={(e) => setEntryCondition(e.target.value)}
+                  placeholder="e.g. the caller confirmed they want to open a support ticket"
+                  rows={4}
+                  className={`vb-field-input vb-field-textarea mt-2 ${
+                    entryConditionInvalid
+                      ? "border-red-400/60 ring-1 ring-red-400/40"
+                      : ""
+                  }`}
+                />
+                {entryConditionInvalid && (
+                  <p className="mt-1 text-xs text-red-500">
+                    Condition cannot be empty.
+                  </p>
+                )}
+              </>
+            )}
+            {entryType === "result" && (
+              <select
+                value={entrySuccessful ? "successful" : "failed"}
+                onChange={(e) =>
+                  setEntrySuccessful(e.target.value === "successful")
+                }
+                className="vb-field-input mt-2"
+              >
+                <option value="successful">Parent tool succeeded</option>
+                <option value="failed">Parent tool failed</option>
+              </select>
+            )}
+            {entryType === "unconditional" && (
+              <p className="mt-1 text-xs text-(--color-muted)">
+                The flow always routes here next.
+              </p>
+            )}
+          </Field>
+
+          {error && (
+            <p
+              className="vb-field-hint"
+              style={{ color: "var(--color-danger)" }}
+            >
+              {error}
+            </p>
+          )}
+        </div>
+
+        <footer className="vb-el-inspector-foot">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-md px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground-strong)"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!entryDirty || saving}
+            className="rounded-md bg-(--color-foreground-strong) px-3 py-1.5 text-xs font-semibold text-white disabled:bg-(--color-border-strong) disabled:text-(--color-muted-soft)"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </footer>
+      </aside>
+    );
+  }
 
   return (
     <aside className="vb-el-inspector">
@@ -569,28 +999,101 @@ export function NodeInspector({
                 />
               </Field>
               <Field
-                label="Additional tool ids"
-                hint="Comma-separated tool ids that become available to the agent only while this node is active. Maps to additional_tool_ids[]."
+                label="Tools available at this node"
+                hint="Tools the LLM can choose to call while this node is active (in addition to the global toolbox). Maps to additional_tool_ids[]."
               >
-                <input
-                  value={
+                {(() => {
+                  const selected = new Set(
                     Array.isArray(data.additional_tool_ids)
-                      ? (data.additional_tool_ids as string[]).join(", ")
-                      : ""
-                  }
-                  onChange={(e) => {
-                    const ids = e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean);
+                      ? (data.additional_tool_ids as string[])
+                      : [],
+                  );
+                  const inCall = availableTools.filter(
+                    (t) => t.phase === "in_call",
+                  );
+                  // Stale ids: selected entries that don't match any current
+                  // binding. Show them with a "(unbound)" label so the user
+                  // can uncheck them — invisible stale entries would silently
+                  // fail workflow validation on save.
+                  const knownIds = new Set(inCall.map((t) => t.id));
+                  const staleIds = [...selected].filter(
+                    (id) => !knownIds.has(id),
+                  );
+                  const toggle = (id: string) => {
+                    const next = new Set(selected);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    const arr = [...next];
                     setField(
                       "additional_tool_ids",
-                      ids.length > 0 ? ids : undefined,
+                      arr.length > 0 ? arr : undefined,
                     );
-                  }}
-                  className="vb-field-input font-mono"
-                  placeholder="tool_abc, tool_def"
-                />
+                  };
+                  if (inCall.length === 0 && staleIds.length === 0) {
+                    return (
+                      <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
+                        No in-call tools attached to this agent yet. Install
+                        one from the Tools tab to make it available here.
+                      </p>
+                    );
+                  }
+                  return (
+                    <ul className="flex flex-col gap-1 rounded-md border border-(--color-border) bg-white p-2">
+                      {inCall.map((t) => {
+                        const isOn = selected.has(t.id);
+                        return (
+                          <li key={t.id}>
+                            <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-(--color-panel-soft)">
+                              <input
+                                type="checkbox"
+                                checked={isOn}
+                                onChange={() => toggle(t.id)}
+                                className="mt-0.5"
+                              />
+                              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                <span className="flex items-center gap-1.5">
+                                  <span className="font-medium text-(--color-foreground-strong)">
+                                    {t.name}
+                                  </span>
+                                  {t.provider && (
+                                    <span className="rounded bg-(--color-accent)/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-(--color-accent)">
+                                      {t.provider}
+                                    </span>
+                                  )}
+                                </span>
+                                {t.description && (
+                                  <span className="line-clamp-2 text-[11px] text-(--color-muted)">
+                                    {t.description}
+                                  </span>
+                                )}
+                              </span>
+                            </label>
+                          </li>
+                        );
+                      })}
+                      {staleIds.map((id) => (
+                        <li key={id}>
+                          <label className="flex cursor-pointer items-start gap-2 rounded-md border border-red-400/30 bg-red-500/5 px-2 py-1.5 text-xs">
+                            <input
+                              type="checkbox"
+                              checked
+                              onChange={() => toggle(id)}
+                              className="mt-0.5"
+                            />
+                            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                              <span className="font-mono text-[11px] text-red-600">
+                                {id}
+                              </span>
+                              <span className="text-[10px] text-red-500">
+                                Unbound — uncheck to remove the dead reference.
+                              </span>
+                            </span>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  );
+                })()}
               </Field>
             </div>
           </details>

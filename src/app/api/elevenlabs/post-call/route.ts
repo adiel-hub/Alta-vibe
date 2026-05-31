@@ -18,7 +18,7 @@
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { agentsCol } from "@/lib/mongodb";
+import { agentsCol, callCampaignsCol } from "@/lib/mongodb";
 import { dispatchLifecycle, type DispatchContext } from "@/lib/elevenlabs/lifecycle/dispatch";
 import { createLogger, newRequestId } from "@/lib/logger";
 
@@ -119,10 +119,11 @@ export async function POST(req: NextRequest) {
     data_field_count: Object.keys(payload.data_collection ?? {}).length,
   });
 
+  const flatDataCollection = flattenDataCollection(payload.data_collection);
   const ctx: DispatchContext = {
     conversation_id: payload.conversation_id ?? "",
     ...(payload.dynamic_variables ?? {}),
-    ...flattenDataCollection(payload.data_collection),
+    ...flatDataCollection,
   };
 
   const results = await dispatchLifecycle(agent._id, "post_call", ctx);
@@ -131,6 +132,31 @@ export async function POST(req: NextRequest) {
     fired: results.length,
     failed: results.filter((r) => !r.ok).length,
   });
+
+  // Persist flattened data_collection back onto the matching CampaignItem
+  // so future pre-call enrichment (e.g. alta_last_call_summary) can read
+  // the prior interaction in one Mongo round-trip. Best-effort — a failed
+  // write here shouldn't poison the post-call response to ElevenLabs.
+  if (payload.conversation_id && Object.keys(flatDataCollection).length > 0) {
+    try {
+      const campaigns = await callCampaignsCol();
+      await campaigns.updateOne(
+        { "items.conversation_id": payload.conversation_id },
+        {
+          $set: {
+            "items.$.data_collection": flatDataCollection,
+            "items.$.completed_at": new Date(),
+            last_event_at: new Date(),
+          },
+        },
+      );
+    } catch (err) {
+      log.warn("data_collection write-back failed", {
+        conversation_id: payload.conversation_id,
+        message: err instanceof Error ? err.message : "unknown",
+      });
+    }
+  }
 
   return NextResponse.json({ results });
 }

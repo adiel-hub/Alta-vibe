@@ -25,6 +25,11 @@ const Body = z
   .object({
     label: z.string().min(1).max(120).optional(),
     data: z.record(z.string(), z.unknown()).optional(),
+    /** Hand-placed coordinates from a canvas drag. Round-trips to
+     *  ElevenLabs so a position set in one editor survives in both. */
+    position: z
+      .object({ x: z.number(), y: z.number() })
+      .optional(),
   })
   .strict()
   .refine((v) => Object.keys(v).length > 0, "empty patch");
@@ -67,12 +72,22 @@ export async function PATCH(
     ...current,
     label: parsed.data.label ?? current.label,
     data: parsed.data.data ? { ...current.data, ...parsed.data.data } : current.data,
+    ...(parsed.data.position
+      ? { position: parsed.data.position }
+      : {}),
   };
   const nextNodes = [...agent.config_cache.workflow.nodes];
   nextNodes[idx] = updatedNode;
+  // Preserve `bindings` — that field is local-only (ElevenLabs has no
+  // concept of it), so any code that rebuilds the workflow must carry
+  // it forward or the next agent GET will recompute config.tools off
+  // an empty bindings list and silently drop every tool.
   const nextWorkflow: WorkflowState = {
     nodes: nextNodes,
     edges: agent.config_cache.workflow.edges,
+    ...(agent.config_cache.workflow.bindings !== undefined
+      ? { bindings: agent.config_cache.workflow.bindings }
+      : {}),
   };
   const nextSystemPrompt = composeSystemPromptWithWorkflow(
     agent.config_cache.system_prompt,
@@ -181,6 +196,10 @@ export async function DELETE(
     edges: agent.config_cache.workflow.edges.filter(
       (e) => e.from !== nodeId && e.to !== nodeId,
     ),
+    // Preserve bindings (same reason as the PATCH branch — local-only field).
+    ...(agent.config_cache.workflow.bindings !== undefined
+      ? { bindings: agent.config_cache.workflow.bindings }
+      : {}),
   };
   const nextSystemPrompt = composeSystemPromptWithWorkflow(
     agent.config_cache.system_prompt,

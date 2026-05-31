@@ -23,12 +23,34 @@ export const ADD_NODE_MENU: Array<{
   label: string;
   hint: string;
   defaultLabel: string;
+  /**
+   * Optional pre-seed for `node.data` when this menu entry is picked. Used
+   * to split the two transfer modes into separate menu items: picking
+   * "Agent transfer" seeds `{ agent_id: "" }` so the inspector lands on
+   * the agent sub-form, and picking "Phone number transfer" seeds
+   * `{ phone_number: "" }` for the phone sub-form. Inspector already keys
+   * its mode picker off these two fields.
+   */
+  data?: Record<string, unknown>;
 }> = [
   { type: "speak", label: "Say", hint: "Agent speaks a line.", defaultLabel: "Speak" },
   { type: "collect", label: "Ask", hint: "Collect a field from the caller.", defaultLabel: "Collect" },
   { type: "condition", label: "Router", hint: "Branch on a variable or rule.", defaultLabel: "Route" },
   { type: "tool_call", label: "Tool", hint: "Run a runtime tool.", defaultLabel: "Tool call" },
-  { type: "transfer", label: "Transfer", hint: "Hand off to another agent or number.", defaultLabel: "Transfer" },
+  {
+    type: "transfer",
+    label: "Agent transfer",
+    hint: "Hand off to another ElevenLabs agent.",
+    defaultLabel: "Transfer to agent",
+    data: { agent_id: "" },
+  },
+  {
+    type: "transfer",
+    label: "Phone number transfer",
+    hint: "Hand off to a phone number.",
+    defaultLabel: "Transfer to phone",
+    data: { phone_number: "" },
+  },
   { type: "end", label: "End", hint: "End the call.", defaultLabel: "End call" },
 ];
 

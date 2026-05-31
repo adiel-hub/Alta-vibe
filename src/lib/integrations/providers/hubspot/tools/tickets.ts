@@ -10,7 +10,6 @@ export const HUBSPOT_TICKET_TOOLS: ProviderRuntimeToolSpec[] = [
     phase: "in_call",
     method: "POST",
     path: "/crm/v3/objects/tickets",
-    default_install: true,
     category: "Tickets",
     body_schema: {
       type: "object",

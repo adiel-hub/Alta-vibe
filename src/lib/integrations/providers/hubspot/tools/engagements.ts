@@ -10,7 +10,6 @@ export const HUBSPOT_ENGAGEMENT_TOOLS: ProviderRuntimeToolSpec[] = [
     phase: "post_call",
     method: "POST",
     path: "/crm/v3/objects/calls",
-    default_install: true,
     category: "Engagements",
     body_schema: {
       type: "object",

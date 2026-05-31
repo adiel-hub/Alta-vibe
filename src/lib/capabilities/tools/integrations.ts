@@ -9,8 +9,9 @@
  *
  * The connect flow itself (paste-a-PAT) happens via widgets
  * (request_user_action with kind='connect_integration'); on resolve, the
- * registerProviderForAgent helper auto-installs each provider tool marked
- * `default_install: true`.
+ * registerProviderForAgent helper stores the workspace integration
+ * credentials. Tools are then opt-in — install via the Tools tab or the
+ * `install_provider_tool` capability.
  */
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -161,7 +162,6 @@ export const integrationsCapability: Capability = {
             description: t.description,
             phase: t.phase,
             category: t.category ?? "Other",
-            default_install: !!t.default_install,
             installed: installedNames.has(scopedToolName(t)),
           })),
         );
@@ -173,30 +173,39 @@ export const integrationsCapability: Capability = {
 
     tool(
       "install_provider_tool",
-      "Install one curated tool from a connected provider (e.g. HubSpot create_deal, log_note). Pass the provider id and the tool's stable `key` (NOT the wire name). The provider must already be connected; use list_provider_catalog to discover available keys.",
+      "Attach one curated tool from a connected provider (e.g. HubSpot create_deal, log_note) to this agent's workflow. The tool becomes a binding on `workflow.bindings` — it is available to the agent during the call and can be referenced by `tool_call` workflow nodes. Pass the provider id and the tool's stable `key` (NOT the wire name). The provider must already be connected; use list_provider_catalog to discover available keys.",
       {
         provider: z.string().min(1),
         tool_key: z.string().min(1),
       },
       async ({ provider, tool_key }) =>
         runToolStep(ctx, "integrations", "install_provider_tool", async () => {
-          const { entry, upstreamPatch } = await installProviderTool(
+          const { entry } = await installProviderTool(
             ctx.agentMongoId,
             provider,
             tool_key,
           );
-          const nextTools = [...ctx.config.tools, entry];
+          // The bindings module already persisted config.tools + workflow.bindings
+          // and pushed the upstream tool_ids patch. Re-read so our local
+          // patch reflects the authoritative derived list.
+          const { agentsCol } = await import("@/lib/mongodb");
+          const fresh = await (await agentsCol()).findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
           return {
-            patch: { tools: nextTools },
-            upstreamPatch,
-            summary: `Installed ${entry.name} on this agent.`,
+            patch: {
+              tools: fresh?.config_cache.tools ?? ctx.config.tools,
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
+            summary: `Attached ${entry.name} to the workflow.`,
           };
         }),
     ),
 
     tool(
       "uninstall_provider_tool",
-      "Remove a single installed provider tool by name or id. Leaves the rest of the provider's tools — and the connection — intact.",
+      "Remove a tool binding from the workflow by name or id. Drops the binding from `workflow.bindings`, deletes the upstream ElevenLabs runtime-tool record (for in-call tools), and recomputes `config.tools`. Any workflow `tool_call` node that referenced the removed tool will become stale — check the workflow afterward and either repoint the node or remove it. Leaves the rest of the provider's tools — and the connection — intact.",
       {
         tool_id: z.string().min(1).optional(),
         tool_name: z.string().min(1).optional(),
@@ -206,17 +215,21 @@ export const integrationsCapability: Capability = {
           if (!tool_id && !tool_name) {
             throw new Error("Pass either tool_id or tool_name.");
           }
-          const { remaining, upstreamPatch } = await uninstallProviderTool(
+          await uninstallProviderTool(
             ctx.agentMongoId,
             { id: tool_id, name: tool_name },
           );
+          const { agentsCol } = await import("@/lib/mongodb");
+          const fresh = await (await agentsCol()).findOne({
+            _id: new ObjectId(ctx.agentMongoId),
+          });
           return {
-            patch: { tools: remaining },
-            // Local-only tools have no upstream tool_ids change; omitting
-            // `upstreamPatch` (and using skipUpstream) keeps the deferred
-            // turn buffer untouched in that case.
-            ...(upstreamPatch ? { upstreamPatch } : { skipUpstream: true }),
-            summary: `Uninstalled ${tool_name ?? tool_id}.`,
+            patch: {
+              tools: fresh?.config_cache.tools ?? ctx.config.tools,
+              workflow: fresh?.config_cache.workflow ?? ctx.config.workflow,
+            },
+            skipUpstream: true,
+            summary: `Removed binding for ${tool_name ?? tool_id}.`,
           };
         }),
     ),
@@ -227,14 +240,13 @@ export const integrationsCapability: Capability = {
       { provider: z.string().min(1) },
       async ({ provider }) =>
         runToolStep(ctx, "integrations", "disconnect_integration", async () => {
-          const { tools, system_prompt, upstreamPatch } =
-            await disconnectProviderForAgent(ctx.agentMongoId, provider);
+          const { tools, upstreamPatch } = await disconnectProviderForAgent(
+            ctx.agentMongoId,
+            provider,
+          );
           const providerDef = getProvider(provider);
           return {
-            patch: {
-              tools,
-              ...(system_prompt !== undefined ? { system_prompt } : {}),
-            },
+            patch: { tools },
             upstreamPatch,
             summary: `Disconnected ${providerDef?.name ?? provider}.`,
           };

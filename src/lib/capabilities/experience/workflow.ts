@@ -48,8 +48,34 @@ const log = createLogger("capability:workflow");
  *   our edge.label  is preserved on the ElevenLabs side as `label` (passthrough).
  */
 export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
+  // Transfer nodes that the user just dropped on the canvas (from the
+  // "+" picker) may not have a destination yet — empty agent_id / no
+  // phone / no sip. Shipping them to ElevenLabs trips a 422 like
+  // "standalone_agent: agent_id is required". Detect those and skip
+  // them (plus any edge touching them) so the upstream payload stays
+  // valid. The local cache still keeps the node so the canvas shows
+  // it; once the user fills in the destination, the next save propagates.
+  const incompleteNodeIds = new Set<string>();
+  for (const n of w.nodes) {
+    if (n.type !== "transfer") continue;
+    const d = n.data ?? {};
+    const phone = typeof d.phone_number === "string" ? d.phone_number.trim() : "";
+    const sip = typeof d.sip_uri === "string" ? d.sip_uri.trim() : "";
+    const agent =
+      typeof d.agent_id === "string"
+        ? d.agent_id.trim()
+        : typeof d.target_agent_id === "string"
+          ? d.target_agent_id.trim()
+          : "";
+    if (!phone && !sip && !agent) {
+      incompleteNodeIds.add(n.id);
+    }
+  }
+  const isLive = (id: string) => !incompleteNodeIds.has(id);
+
   const outgoingByNode = new Map<string, WorkflowEdge[]>();
   for (const e of w.edges) {
+    if (!isLive(e.from) || !isLive(e.to)) continue;
     const list = outgoingByNode.get(e.from) ?? [];
     list.push(e);
     outgoingByNode.set(e.from, list);
@@ -57,6 +83,7 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
 
   const nodes: Record<string, ElevenWorkflowNode> = {};
   for (const n of w.nodes) {
+    if (!isLive(n.id)) continue;
     const out = outgoingByNode.get(n.id) ?? [];
     const edgeOrder = out.map((e) => e.id);
     const base: ElevenWorkflowNode = { type: "end", edge_order: edgeOrder };
@@ -103,26 +130,55 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
       case "tool_call": {
         // Tool nodes hold an array of tool locators that run in parallel.
         // The node is considered successful only if all locators succeed.
-        // `additional_prompt` is NOT a field on tool nodes — any prose
-        // belongs on the upstream override_agent node that feeds this one.
+        // We accept two shapes from `data`:
+        //   - `tool_ids: string[]` — parallel execution (preferred)
+        //   - `tool_id: string`    — legacy single-tool shorthand
+        // and merge to a deduped, in-call-bound array on the wire.
         base.type = "tool";
-        const toolId = n.data?.tool_id as string | undefined;
-        if (toolId) base.tools = [{ tool_id: toolId }];
+        const ids: string[] = [];
+        const toolIds = n.data?.tool_ids;
+        if (Array.isArray(toolIds)) {
+          for (const id of toolIds) {
+            if (typeof id === "string" && id.length > 0 && !ids.includes(id))
+              ids.push(id);
+          }
+        }
+        const toolId = n.data?.tool_id;
+        if (
+          typeof toolId === "string" &&
+          toolId.length > 0 &&
+          !ids.includes(toolId)
+        ) {
+          ids.push(toolId);
+        }
+        if (ids.length > 0) base.tools = ids.map((tool_id) => ({ tool_id }));
         break;
       }
       case "transfer": {
         const phoneRaw = n.data?.phone_number as string | undefined;
-        if (phoneRaw) {
+        const sipRaw = n.data?.sip_uri as string | undefined;
+        if (phoneRaw || sipRaw) {
           base.type = "phone_number";
-          // `transfer_destination` is a discriminated union; pick the
-          // dynamic-variable variant if the value reads like a template
-          // ({{var}}), otherwise treat as a literal E.164.
-          base.transfer_destination = isDynamicVar(phoneRaw)
-            ? {
-                type: "phone_dynamic_variable",
-                phone_number: stripDynamicVar(phoneRaw),
-              }
-            : { type: "phone", phone_number: phoneRaw };
+          // `transfer_destination` is a discriminated union with four
+          // variants — phone / phone_dynamic_variable / sip_uri /
+          // sip_uri_dynamic_variable. We prefer `sip_uri` when both
+          // fields are set (a SIP URI is more specific). Dynamic variant
+          // is chosen when the value reads like a {{template}}.
+          if (sipRaw) {
+            base.transfer_destination = isDynamicVar(sipRaw)
+              ? {
+                  type: "sip_uri_dynamic_variable",
+                  sip_uri: stripDynamicVar(sipRaw),
+                }
+              : { type: "sip_uri", sip_uri: sipRaw };
+          } else if (phoneRaw) {
+            base.transfer_destination = isDynamicVar(phoneRaw)
+              ? {
+                  type: "phone_dynamic_variable",
+                  phone_number: stripDynamicVar(phoneRaw),
+                }
+              : { type: "phone", phone_number: phoneRaw };
+          }
           const tType = n.data?.transfer_type;
           if (
             tType === "blind" ||
@@ -177,11 +233,22 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
         break;
       }
     }
+    // Position is a per-node hint the visual editor uses on both sides
+    // (ours auto-lays out, ElevenLabs dashboard places by hand). Round-
+    // tripping it means an agent re-saved by us doesn't lose the user's
+    // hand-placed coordinates from the EL dashboard, and vice versa.
+    if (n.position) {
+      (base as Record<string, unknown>).position = {
+        x: n.position.x,
+        y: n.position.y,
+      };
+    }
     nodes[n.id] = base;
   }
 
   const edges: Record<string, ElevenWorkflowEdge> = {};
   for (const e of w.edges) {
+    if (!isLive(e.from) || !isLive(e.to)) continue;
     edges[e.id] = {
       source: e.from,
       target: e.to,
@@ -192,7 +259,13 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
     };
   }
 
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    ...(typeof w.prevent_subagent_loops === "boolean"
+      ? { prevent_subagent_loops: w.prevent_subagent_loops }
+      : {}),
+  };
 }
 
 /**
@@ -317,12 +390,24 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
     const data: Record<string, unknown> = {};
     const ext = n as Record<string, unknown>;
     if (n.additional_prompt) data.prompt = n.additional_prompt;
-    // Tool node: current schema nests under `tools: [{ tool_id }]`. Fall
-    // back to the legacy flat `tool_id` if the agent was last saved by an
-    // older version of this serializer.
+    // Tool node: current schema nests under `tools: [{ tool_id }, ...]`
+    // and the runtime executes every entry in parallel. We preserve the
+    // full array as `data.tool_ids` and ALSO populate `data.tool_id`
+    // with the first entry so legacy inspector code and serializers
+    // that read the singular form keep working.
     const toolsArr = ext.tools as Array<{ tool_id?: string }> | undefined;
-    if (toolsArr?.[0]?.tool_id) data.tool_id = toolsArr[0].tool_id;
-    else if (typeof ext.tool_id === "string") data.tool_id = ext.tool_id;
+    if (Array.isArray(toolsArr) && toolsArr.length > 0) {
+      const ids = toolsArr
+        .map((t) => t?.tool_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0);
+      if (ids.length > 0) {
+        data.tool_ids = ids;
+        data.tool_id = ids[0];
+      }
+    } else if (typeof ext.tool_id === "string") {
+      data.tool_id = ext.tool_id;
+      data.tool_ids = [ext.tool_id];
+    }
     // Agent transfer: current schema uses `agent_id`. Accept legacy
     // `target_agent_id` so older cached agents read back.
     if (typeof ext.agent_id === "string") data.agent_id = ext.agent_id;
@@ -335,9 +420,10 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
       data.enable_transferred_agent_first_message =
         ext.enable_transferred_agent_first_message;
     // Phone transfer: current schema nests under
-    // `transfer_destination: { type, phone_number/sip_uri }`. Accept the
-    // legacy flat `phone_number` too. Re-wrap dynamic variants back into
-    // {{var}} syntax so the inspector edits the same string the user typed.
+    // `transfer_destination: { type, phone_number/sip_uri }`. Phone and
+    // SIP land in separate internal data keys so a re-save doesn't
+    // collapse a SIP URI into a phone field (the previous bug). Dynamic
+    // variants get re-wrapped into {{var}} syntax for the inspector.
     const td = ext.transfer_destination as
       | { type?: string; phone_number?: string; sip_uri?: string }
       | undefined;
@@ -347,7 +433,7 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
           ? `{{${td.phone_number}}}`
           : td.phone_number;
     } else if (td?.sip_uri) {
-      data.phone_number =
+      data.sip_uri =
         td.type === "sip_uri_dynamic_variable"
           ? `{{${td.sip_uri}}}`
           : td.sip_uri;
@@ -403,11 +489,22 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
       if (typeof cc.agent?.first_message === "string")
         data.override_first_message = cc.agent.first_message;
     }
+    // Position is plumbed through verbatim. EL dashboard authors place
+    // by hand; we auto-lay out when missing, so this only matters when
+    // the same agent is opened in both editors.
+    const rawPos = ext.position as { x?: unknown; y?: unknown } | undefined;
+    const position =
+      rawPos &&
+      typeof rawPos.x === "number" &&
+      typeof rawPos.y === "number"
+        ? { x: rawPos.x, y: rawPos.y }
+        : undefined;
     return {
       id,
       type: ourTypeFor(n.type),
       label: n.label ?? id,
       data,
+      ...(position ? { position } : {}),
     };
   });
 
@@ -435,7 +532,13 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
     };
   });
 
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    ...(typeof w.prevent_subagent_loops === "boolean"
+      ? { prevent_subagent_loops: w.prevent_subagent_loops }
+      : {}),
+  };
 }
 
 const NodeTypeEnum = z.enum([
@@ -561,21 +664,97 @@ function validateWorkflow(
   const toolsByName = new Map(agentTools.map((t) => [t.name, t]));
   for (const n of w.nodes) {
     if (n.type !== "tool_call") continue;
-    const data = n.data as { tool_id?: unknown; tool_name?: unknown } | undefined;
-    const ref =
-      (typeof data?.tool_id === "string" && toolsById.get(data.tool_id)) ||
-      (typeof data?.tool_name === "string" && toolsByName.get(data.tool_name)) ||
-      null;
-    if (ref && ref.phase !== "in_call") {
-      throw new Error(
-        `tool_call node "${n.id}" references "${ref.name}" which is a ${ref.phase} tool. ` +
-        `${ref.phase} tools fire automatically from the call's envelope, not from the workflow graph — ` +
-        `the workflow only runs DURING the conversation. Remove this node. ` +
-        (ref.phase === "pre_call"
-          ? `The lookup already ran before the call connected; its output is in dynamic variables ` +
-            `(e.g. {{caller_name}}, {{caller_company}}) — reference those in your speak/collect prompts instead.`
-          : `Add a data_collection field for the value you want logged; the post-call tool will pick it up after hangup.`),
-      );
+    const data = n.data as
+      | {
+          tool_id?: unknown;
+          tool_ids?: unknown;
+          tool_name?: unknown;
+        }
+      | undefined;
+    // Build the union of every tool id referenced by this node — both
+    // the singular `tool_id` (single-tool shorthand) and the array
+    // `tool_ids` (parallel execution). Each id must be a real in-call
+    // binding for the wire payload to be valid.
+    const ids: string[] = [];
+    if (typeof data?.tool_id === "string" && data.tool_id.length > 0) {
+      ids.push(data.tool_id);
+    }
+    if (Array.isArray(data?.tool_ids)) {
+      for (const raw of data.tool_ids) {
+        if (typeof raw === "string" && raw.length > 0 && !ids.includes(raw)) {
+          ids.push(raw);
+        }
+      }
+    }
+    // Fallback: pure `tool_name` reference (no id at all). Resolve to a
+    // single binding for the phase-check below.
+    const nameRef =
+      ids.length === 0 && typeof data?.tool_name === "string"
+        ? toolsByName.get(data.tool_name)
+        : null;
+    if (ids.length === 0 && nameRef) {
+      ids.push(nameRef.id);
+    }
+    for (const id of ids) {
+      const ref = toolsById.get(id);
+      if (!ref) {
+        // An id was provided but doesn't match any binding. With
+        // `config.tools` derived from `workflow.bindings`, an unknown
+        // id means the binding was dropped (uninstalled) since the
+        // node was authored. Surface this so the agent (or user)
+        // replaces the reference instead of letting a dead node ship.
+        throw new Error(
+          `tool_call node "${n.id}" references tool_id "${id}" which is not bound to this agent. ` +
+          `Install the tool first (install_provider_tool / write_tool) or pick an existing one. ` +
+          `Currently attached: ${
+            agentTools.filter((t) => t.phase === "in_call").map((t) => t.name).join(", ") || "(none)"
+          }.`,
+        );
+      }
+      if (ref.phase !== "in_call") {
+        throw new Error(
+          `tool_call node "${n.id}" references "${ref.name}" which is a ${ref.phase} tool. ` +
+          `${ref.phase} tools fire automatically from the call's envelope, not from the workflow graph — ` +
+          `the workflow only runs DURING the conversation. Remove this node. ` +
+          (ref.phase === "pre_call"
+            ? `The lookup already ran before the call connected; its output is in dynamic variables ` +
+              `(e.g. {{caller_name}}, {{caller_company}}) — reference those in your speak/collect prompts instead.`
+            : `Add a data_collection field for the value you want logged; the post-call tool will pick it up after hangup.`),
+        );
+      }
+    }
+  }
+
+  // override_agent nodes (speak / collect / condition) can carry
+  // `additional_tool_ids`: tools the LLM gets access to *only* while
+  // that node is active. They must reference real bindings, and they
+  // must be in-call tools (lifecycle ids are never exposed to EL).
+  const externalIds = new Set(
+    agentTools.filter((t) => t.phase === "in_call").map((t) => t.id),
+  );
+  for (const n of w.nodes) {
+    const addIds = (n.data as { additional_tool_ids?: unknown })?.additional_tool_ids;
+    if (!Array.isArray(addIds)) continue;
+    for (const raw of addIds) {
+      if (typeof raw !== "string") {
+        throw new Error(
+          `Node "${n.id}" has a non-string entry in additional_tool_ids — every entry must be a tool id.`,
+        );
+      }
+      if (!externalIds.has(raw)) {
+        const ref = toolsById.get(raw);
+        if (ref && ref.phase !== "in_call") {
+          throw new Error(
+            `Node "${n.id}" additional_tool_ids includes "${raw}" (${ref.phase} tool "${ref.name}"). ` +
+            `Only in-call tools can be scoped to a node — ${ref.phase} tools fire from the call envelope.`,
+          );
+        }
+        throw new Error(
+          `Node "${n.id}" additional_tool_ids includes "${raw}" which is not bound to this agent. ` +
+          `Install the tool first or drop the reference. ` +
+          `Available in-call tool ids: ${[...externalIds].join(", ") || "(none)"}.`,
+        );
+      }
     }
   }
 
@@ -683,6 +862,13 @@ const NodeInput = z.object({
   type: NodeTypeEnum,
   label: z.string().min(1).max(80),
   data: z.record(z.string(), z.unknown()).default({}),
+  /** Optional hand-placed coordinates on the visual editor. Our canvas
+   *  auto-lays out when missing; only set this if you actually want to
+   *  pin a node at a specific point (e.g. matching an EL-dashboard
+   *  layout the user is mirroring). */
+  position: z
+    .object({ x: z.number(), y: z.number() })
+    .optional(),
 });
 
 /**
@@ -743,6 +929,11 @@ const EditOp = z.discriminatedUnion("op", [
     backward_condition: EdgeConditionInput.nullable().optional(),
   }),
   z.object({ op: z.literal("remove_edge"), id: z.string().min(1) }),
+  /** Toggle the workflow-level `prevent_subagent_loops` flag. */
+  z.object({
+    op: z.literal("set_prevent_subagent_loops"),
+    value: z.boolean(),
+  }),
 ]);
 
 type EditOpT = z.infer<typeof EditOp>;
@@ -753,6 +944,7 @@ function applyOps(
 ): WorkflowState {
   let nodes = [...state.nodes];
   let edges = [...state.edges];
+  let preventSubagentLoops = state.prevent_subagent_loops;
   for (const op of ops) {
     switch (op.op) {
       case "add_node": {
@@ -764,6 +956,7 @@ function applyOps(
           type: op.node.type,
           label: op.node.label,
           data: op.node.data ?? {},
+          ...(op.node.position ? { position: op.node.position } : {}),
         });
         break;
       }
@@ -777,6 +970,10 @@ function applyOps(
           label: op.label ?? cur.label,
           data: op.data ? { ...cur.data, ...op.data } : cur.data,
         };
+        break;
+      }
+      case "set_prevent_subagent_loops": {
+        preventSubagentLoops = op.value;
         break;
       }
       case "remove_node": {
@@ -833,7 +1030,13 @@ function applyOps(
       }
     }
   }
-  return { nodes, edges };
+  return {
+    nodes,
+    edges,
+    ...(typeof preventSubagentLoops === "boolean"
+      ? { prevent_subagent_loops: preventSubagentLoops }
+      : {}),
+  };
 }
 
 export const workflowCapability: Capability = {
@@ -846,12 +1049,13 @@ export const workflowCapability: Capability = {
       // Big up-front graph definition. Use this when building a workflow
       // from scratch — one call, whole graph. Cheaper than 12 add_node +
       // edge calls and keeps the canvas from flickering as nodes pop in.
-      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run a runtime tool — data.tool_id), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR data.phone_number for an E.164 phone transfer + optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers), 'end' (hang up).\n\nOverride-agent (speak/collect/condition) extras: data.additional_tool_ids[], data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label? }\n  - { type: 'llm', condition: 'the caller confirmed', label? }\n  - { type: 'expression', expression: <AST>, label? }\n  - { type: 'result', successful: true|false, label? }  ← branch on a tool node's success/failure\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge). At most ONE edge per (from, to) pair — upstream rejects duplicates even when their conditions differ. If both branches go to the same node, collapse to a single unconditional edge; otherwise split the targets.",
+      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nThe workflow is the single source of truth for tools. `tool_call` nodes (and the optional per-node `additional_tool_ids`) reference bindings that already exist in `workflow.bindings` — created via `install_provider_tool`, `write_tool`, or `create_custom_runtime_tool`. Saving the workflow re-derives `config.tools` from bindings and patches ElevenLabs. Referencing a tool id that isn't bound throws a clear error; install it first.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run runtime tools — use data.tool_id for a single tool OR data.tool_ids[] to fire several IN PARALLEL on the same node; every id must reference an existing in-call binding, and the node only counts as successful if ALL listed tools succeed), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR set data.phone_number for an E.164 phone transfer; OR set data.sip_uri for a SIP URI transfer (e.g. 'sip:alice@example.com'). Either destination accepts optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers. Wrap a value in {{var}} to make it a dynamic variable.), 'end' (hang up).\n\nOverride-agent (speak/collect/condition) extras: data.additional_tool_ids[] (in-call binding ids the agent can call only while in this node), data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nOptional per-node `position: { x, y }` — only set if you're mirroring a hand-placed layout (e.g. matching ElevenLabs dashboard coordinates). Our canvas auto-lays out otherwise.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label }\n  - { type: 'llm', condition: 'the caller confirmed', label }  ← MOST COMMON\n  - { type: 'expression', expression: <AST>, label }            ← deterministic; rarely needed — prefer 'llm'\n  - { type: 'result', successful: true|false, label }           ← branch off a tool node's success/failure\n\n**ALWAYS include a short `label` (≤50 chars)** on every condition — that's exactly what renders on the dark pill on the edge in the canvas, and is the only thing the user sees without hovering. Bad: omitting the label so the full `condition` string spills onto the canvas. Good: `label: 'wants billing'` + `condition: 'the caller wants to discuss billing or invoices'`.\n\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge). At most ONE edge per (from, to) pair — upstream rejects duplicates even when their conditions differ. If both branches go to the same node, collapse to a single unconditional edge; otherwise split the targets.\n\nTop-level `prevent_subagent_loops: true` blocks the runtime from transferring back to an agent already on the call's transfer stack — set when chaining `standalone_agent` transfers across multiple agents.",
       {
         nodes: z.array(NodeInput).min(1).max(40),
         edges: z.array(EdgeInput).max(80).default([]),
+        prevent_subagent_loops: z.boolean().optional(),
       },
-      async ({ nodes, edges }) =>
+      async ({ nodes, edges, prevent_subagent_loops }) =>
         runToolStep(ctx, "workflow", "set_workflow", async () => {
           log.info("set_workflow entry", {
             turn_job_id: ctx.turn_job_id,
@@ -866,6 +1070,7 @@ export const workflowCapability: Capability = {
                 (typeof e.condition === "string" && e.condition.length > 0) ||
                 !!e.forward_condition,
             ).length,
+            prevent_subagent_loops,
           });
           // Stamp missing ids so the agent doesn't have to.
           const stampedNodes: WorkflowNode[] = nodes.map((n) => ({
@@ -873,6 +1078,7 @@ export const workflowCapability: Capability = {
             type: n.type,
             label: n.label,
             data: n.data ?? {},
+            ...(n.position ? { position: n.position } : {}),
           }));
           const knownIds = new Set(stampedNodes.map((n) => n.id));
           const stampedEdges: WorkflowEdge[] = edges.map((e) => {
@@ -893,6 +1099,9 @@ export const workflowCapability: Capability = {
           const next: WorkflowState = {
             nodes: stampedNodes,
             edges: stampedEdges,
+            ...(typeof prevent_subagent_loops === "boolean"
+              ? { prevent_subagent_loops }
+              : {}),
           };
           const result = buildWorkflowPatch(ctx, next);
           return {
@@ -908,7 +1117,7 @@ export const workflowCapability: Capability = {
 
     tool(
       "edit_workflow",
-      "Apply a list of incremental edits to the existing workflow WITHOUT having to re-send the whole graph. Operations run in order, so you can rename a node, add two new branches, and remove an edge in one call. Cheaper than rewriting the workflow with set_workflow when only a few things change.\n\nEach `operations` entry is one of:\n- { op: 'add_node', node: { type, label, data?, id? } }\n- { op: 'update_node', id, label?, data?, type? }  (data is shallow-merged into node.data)\n- { op: 'remove_node', id }  (also drops any edges touching the node; cannot remove 'start')\n- { op: 'add_edge', edge: { from, to, label?, condition?, forward_condition?, backward_condition?, id? } }\n- { op: 'update_edge', id, label?, condition?, forward_condition?, backward_condition? }  (set backward_condition to null to remove a back-edge / kill a loop)\n- { op: 'remove_edge', id }",
+      "Apply a list of incremental edits to the existing workflow WITHOUT having to re-send the whole graph. Operations run in order, so you can rename a node, add two new branches, and remove an edge in one call. Cheaper than rewriting the workflow with set_workflow when only a few things change.\n\nEach `operations` entry is one of:\n- { op: 'add_node', node: { type, label, data?, id?, position? } }  (data shape mirrors set_workflow — tool_call accepts data.tool_id or data.tool_ids[]; transfer accepts data.phone_number or data.sip_uri)\n- { op: 'update_node', id, label?, data?, type? }  (data is shallow-merged into node.data)\n- { op: 'remove_node', id }  (also drops any edges touching the node; cannot remove 'start')\n- { op: 'add_edge', edge: { from, to, label?, condition?, forward_condition?, backward_condition?, id? } }  (always set a short label ≤50 chars — that's the pill text on the canvas)\n- { op: 'update_edge', id, label?, condition?, forward_condition?, backward_condition? }  (set backward_condition to null to remove a back-edge / kill a loop)\n- { op: 'remove_edge', id }\n- { op: 'set_prevent_subagent_loops', value: true|false }  (workflow-level — blocks the runtime from transferring back into an agent already on the call's transfer stack)",
       {
         operations: z.array(EditOp).min(1).max(40),
       },

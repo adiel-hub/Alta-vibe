@@ -748,6 +748,12 @@ textarea, input, select {
       20px 20px,
     var(--color-panel-sunken);
   min-height: 0;
+  /* Suppress text selection across the whole canvas — pan/drag was
+     leaving a blue highlight smear over node titles, descriptions, and
+     edge pills. The right-side inspector is its own element and still
+     supports selection inside its inputs/textareas. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .vb-flow-inspector {
@@ -2088,17 +2094,24 @@ button.vb-el-phantom:hover {
 .vb-edge-revealed .vb-edge-path {
   opacity: 1;
 }
-.vb-edge .vb-edge-pill {
-  transition: opacity 200ms ease-out 80ms;
+.vb-edge-pill-btn {
+  transition:
+    opacity 200ms ease-out 80ms,
+    box-shadow 120ms ease,
+    transform 120ms ease;
 }
-.vb-edge-pending .vb-edge-pill {
+.vb-edge-pill-pending {
   opacity: 0;
 }
-.vb-edge-revealed .vb-edge-pill {
+.vb-edge-pill-revealed {
   opacity: 1;
 }
 
-/* Edge pill — dark rounded label rendered on top of an edge mid-point. */
+/* Edge pill — dark rounded label rendered at an edge midpoint. Lives in
+   the regular DOM (not inside the SVG), so clicks just work like any
+   other button. `left/top` come from inline styles and point at the
+   midpoint of the edge curve; the translate(-50%) centers the pill on
+   that anchor in both axes. */
 .vb-edge-pill {
   display: inline-flex;
   align-items: center;
@@ -2111,14 +2124,31 @@ button.vb-el-phantom:hover {
   border-radius: 999px;
   line-height: 1.2;
   white-space: nowrap;
-  max-width: 180px;
+  /* Sized to fit the 50-character cap applied at the call-site. The JSX
+     truncates the label with an ellipsis once it crosses 50 chars; this
+     width gives those 50 chars room to render without an extra
+     CSS-level clip. The full text remains available in the tooltip. */
+  max-width: 360px;
   overflow: hidden;
   text-overflow: ellipsis;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
-  position: absolute;
-  left: 50%;
-  top: 50%;
+  border: none;
+  cursor: pointer;
   transform: translate(-50%, -50%);
+  z-index: 5;
+}
+.vb-edge-pill:hover {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  transform: translate(-50%, -50%) scale(1.04);
+}
+.vb-edge-pill:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.vb-edge-pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Flow node (used by WorkflowTab). */
