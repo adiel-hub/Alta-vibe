@@ -5,11 +5,20 @@ export function ProviderIcon({
 }: {
   icon: string;
   name: string;
-  size?: "sm" | "lg";
+  size?: "xs" | "sm" | "lg";
 }) {
   const imgClass =
-    size === "lg" ? "h-10 w-10 shrink-0" : "h-5 w-5 shrink-0";
-  const textClass = size === "lg" ? "text-3xl leading-none" : "text-base leading-none";
+    size === "lg"
+      ? "h-10 w-10 shrink-0"
+      : size === "xs"
+        ? "h-3.5 w-3.5 shrink-0"
+        : "h-5 w-5 shrink-0";
+  const textClass =
+    size === "lg"
+      ? "text-3xl leading-none"
+      : size === "xs"
+        ? "text-xs leading-none"
+        : "text-base leading-none";
   if (icon.startsWith("/") || icon.startsWith("http")) {
     return (
       // eslint-disable-next-line @next/next/no-img-element

@@ -1485,6 +1485,87 @@ textarea, input, select {
   font-style: italic;
 }
 
+/* Bound-tool tile — the elevated "what tool runs here" card inside a
+   tool_call node. Leads with the integration's provider logo, then the
+   tool's friendly name with the provider name as a muted subline. */
+.vb-el-tool-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-panel);
+  box-shadow: var(--shadow-xs);
+  max-width: 100%;
+  overflow: hidden;
+}
+/* Optional / LLM-decided tools (additional_tool_ids) — dashed + no shadow to
+   read as "the agent may call this" vs the deterministic bound tool. */
+.vb-el-tool-tile-optional {
+  border-style: dashed;
+  background: var(--color-panel);
+  box-shadow: none;
+}
+/* Hover ✕ to detach an optional tool from its node. Hidden until the tile
+   is hovered. */
+.vb-el-tool-tile-x {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.vb-el-tool-tile-optional:hover .vb-el-tool-tile-x {
+  opacity: 1;
+}
+.vb-el-tool-tile-x:hover {
+  color: var(--color-danger);
+  background: var(--color-panel-soft);
+}
+.vb-el-tool-tile-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  line-height: 1;
+}
+.vb-el-tool-tile-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.vb-el-tool-tile-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-foreground-strong);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vb-el-tool-tile-provider {
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Phantom lifecycle tool cards — pre/post-call tools rendered next to
    start/end. These are NOT workflow nodes (not in workflow.nodes; never
    sent to ElevenLabs); they're a visual reminder that something fires
@@ -1647,8 +1728,8 @@ button.vb-el-phantom:hover {
   white-space: nowrap;
 }
 .vb-el-phantom-popover-remove {
-  width: 100%;
-  padding: 7px 10px;
+  width: auto;
+  padding: 7px 14px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-panel-soft);
@@ -1723,6 +1804,189 @@ button.vb-el-phantom:hover {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--color-muted);
+}
+
+/* Field-mapping editor inside the pre-call tool popover: map extra provider
+   properties → dynamic variables. Compact (260px popover): the property
+   picker takes a full row; the arrow + variable input + remove wrap below. */
+.vb-el-fieldmap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vb-el-fieldmap-head {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-muted);
+}
+.vb-el-fieldmap-hint {
+  font-size: 10.5px;
+  color: var(--color-muted);
+  line-height: 1.4;
+}
+.vb-el-fieldmap-cols {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted-soft);
+}
+.vb-el-fieldmap-default {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+}
+.vb-el-fieldmap-default-prop {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-foreground);
+}
+.vb-el-fieldmap-default-var {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--color-muted);
+}
+.vb-el-fieldmap-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vb-el-fieldmap-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-panel-soft);
+}
+.vb-el-fieldmap-select {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 5px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.vb-el-fieldmap-select select {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.vb-el-fieldmap-select-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-foreground-strong);
+}
+.vb-el-fieldmap-chev {
+  flex: 0 0 auto;
+  color: var(--color-muted-soft);
+}
+.vb-el-fieldmap-arrow {
+  flex: 0 0 auto;
+  color: var(--color-muted-soft);
+  font-size: 11px;
+}
+.vb-el-fieldmap-var {
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--color-foreground-strong);
+  outline: none;
+}
+.vb-el-fieldmap-var:focus {
+  border-color: var(--color-accent);
+}
+.vb-el-fieldmap-varlocked {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 2px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--color-muted);
+}
+.vb-el-fieldmap-remove-spacer {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+}
+.vb-el-fieldmap-remove {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--color-muted);
+}
+.vb-el-fieldmap-remove:hover {
+  color: var(--color-danger);
+  background: var(--color-panel);
+}
+.vb-el-fieldmap-add {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--color-muted);
+  border: 1px dashed var(--color-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: transparent;
+}
+.vb-el-fieldmap-add:hover {
+  color: var(--color-foreground-strong);
+  border-color: var(--color-accent);
+}
+.vb-el-fieldmap-save {
+  align-self: stretch;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-foreground-strong);
+  border-radius: 6px;
+  padding: 6px;
+}
+.vb-el-fieldmap-save:disabled {
+  background: var(--color-border-strong);
+  color: var(--color-muted-soft);
+}
+.vb-el-fieldmap-error {
+  font-size: 10.5px;
+  color: var(--color-danger);
 }
 
 /* Wrapper that hosts the node card plus its hover-revealed actions.

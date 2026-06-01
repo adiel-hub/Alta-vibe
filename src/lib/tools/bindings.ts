@@ -553,6 +553,48 @@ export async function uninstallBinding(
 }
 
 /**
+ * Set the per-agent custom field mappings on a provider binding (matched by
+ * its scoped tool name). Field mappings are local-only and don't change the
+ * ElevenLabs tool, so this updates our workflow + re-derives
+ * `config_cache.tools` with `skipUpstream` — no PATCH to ElevenLabs. Returns
+ * the derived tools + the updated workflow for the client to apply.
+ */
+export async function setBindingFieldMappings(
+  agentMongoId: string,
+  toolName: string,
+  fieldMappings: Array<{ property: string; variable: string }>,
+): Promise<{ tools: RuntimeTool[]; revision: number; workflow: WorkflowState }> {
+  const agents = await agentsCol();
+  const agent = await agents.findOne({ _id: new ObjectId(agentMongoId) });
+  if (!agent) throw new Error("Agent not found.");
+
+  const current = agent.config_cache.workflow.bindings ?? [];
+  let matched = false;
+  const nextBindings: ToolBinding[] = current.map((b) => {
+    if (b.kind !== "provider") return b;
+    const spec = findProviderTool(b.provider, b.tool_key);
+    if (!spec || scopedToolName(spec) !== toolName) return b;
+    matched = true;
+    return {
+      ...b,
+      field_mappings: fieldMappings.length > 0 ? fieldMappings : undefined,
+    };
+  });
+  if (!matched) {
+    throw new Error(`No installed provider tool named "${toolName}".`);
+  }
+
+  const result = await setBindings(agentMongoId, nextBindings, {
+    skipUpstream: true,
+  });
+  const workflow: WorkflowState = {
+    ...agent.config_cache.workflow,
+    bindings: result.bindings,
+  };
+  return { tools: result.tools, revision: result.revision, workflow };
+}
+
+/**
  * Attach a custom-tool binding for an existing `custom_tools` row. Used
  * by the `write_tool` and `create_custom_runtime_tool` capabilities.
  */

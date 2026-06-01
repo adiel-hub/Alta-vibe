@@ -110,6 +110,25 @@ export type ProviderRuntimeToolSpec = {
    * Default 0.
    */
   priority?: number;
+
+  /**
+   * Opt-in marker for per-agent custom field mappings (see
+   * ToolBinding.field_mappings). When present, the UI shows a mapping editor
+   * for this tool and enrichment augments `build_body` (requesting the extra
+   * properties) and `output_aliases` (projecting them into variables) from
+   * the binding's mappings. Only meaningful for HTTP-typed pre-call tools.
+   */
+  field_mapping?: {
+    /** Which provider object's properties to list in the picker (e.g. "contacts"). */
+    object: string;
+    /** Body key holding the requested-properties array. Default "properties". */
+    request_properties_key?: string;
+    /**
+     * Template for the response JSON path of a mapped property, with
+     * `{property}` substituted (e.g. "results.0.properties.{property}").
+     */
+    output_path_template: string;
+  };
 };
 
 export type IntegrationProvider = {

@@ -185,6 +185,47 @@ function projectOutput(
   }
 }
 
+/**
+ * Return a per-call spec clone honoring a binding's custom field mappings:
+ * extra provider properties get requested in the body and projected into the
+ * chosen variable names. The shared registry spec is never mutated.
+ */
+function applyFieldMappings(
+  spec: ProviderRuntimeToolSpec,
+  mappings: Array<{ property: string; variable: string }>,
+): ProviderRuntimeToolSpec {
+  const fm = spec.field_mapping;
+  const clean = mappings.filter((m) => m.property && m.variable);
+  if (!fm || clean.length === 0) return spec;
+
+  const propsKey = fm.request_properties_key ?? "properties";
+  const extraProps = clean.map((m) => m.property);
+  const extraAliases: Record<string, string> = {};
+  for (const m of clean) {
+    extraAliases[m.variable] = fm.output_path_template.replace(
+      "{property}",
+      m.property,
+    );
+  }
+
+  const baseBuild = spec.build_body;
+  return {
+    ...spec,
+    output_aliases: { ...spec.output_aliases, ...extraAliases },
+    build_body: baseBuild
+      ? (ctx, prior) => {
+          const body = baseBuild(ctx, prior);
+          if (!body) return body;
+          const cur = body[propsKey];
+          if (Array.isArray(cur)) {
+            body[propsKey] = Array.from(new Set([...cur, ...extraProps]));
+          }
+          return body;
+        }
+      : baseBuild,
+  };
+}
+
 export type EnrichmentResult = {
   /** dynamic_variables to hand ElevenLabs. */
   variables: Record<string, string>;
@@ -253,12 +294,26 @@ export async function enrichCallContextDetailed(input: {
   const skipped: Array<{ tool: string; reason: string }> = [];
   const narratives: string[] = [];
 
+  // Per-binding custom field mappings, keyed by ElevenLabs tool id, so a
+  // pre-call tool can pull extra provider properties into chosen variables.
+  const mappingsByToolId = new Map<
+    string,
+    Array<{ property: string; variable: string }>
+  >();
+  for (const b of agent.config_cache.workflow.bindings ?? []) {
+    if (b.kind === "provider" && b.field_mappings && b.field_mappings.length > 0) {
+      mappingsByToolId.set(b.elevenlabs_tool_id, b.field_mappings);
+    }
+  }
+
   for (const tool of allTools) {
-    const spec = await resolveSpecForRuntimeTool(tool);
+    let spec = await resolveSpecForRuntimeTool(tool);
     if (!spec) {
       skipped.push({ tool: tool.name, reason: "spec not found" });
       continue;
     }
+    const mappings = mappingsByToolId.get(tool.id);
+    if (mappings) spec = applyFieldMappings(spec, mappings);
     specByName.set(tool.name, spec);
     pending.add(tool);
   }

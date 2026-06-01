@@ -165,6 +165,13 @@ export type ToolBinding =
       tool_key: string;
       phase: RuntimePhase;
       elevenlabs_tool_id: string;
+      /**
+       * Per-agent extra field mappings for pre-call enrichment tools that
+       * declare `field_mapping` on their spec. Each entry pulls an extra
+       * provider property (e.g. a custom HubSpot property) and projects it
+       * into a dynamic variable. Local-only — never sent to ElevenLabs.
+       */
+      field_mappings?: Array<{ property: string; variable: string }>;
     }
   | {
       kind: "custom";

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
 import type {
@@ -19,7 +20,14 @@ import {
   NODE_H,
   NODE_W,
   TERMINAL_H,
+  nodeDisplayLabel,
 } from "./_shared/constants";
+import {
+  loadProviderIconsCached,
+  type ProviderIconInfo,
+} from "./_shared/providerIconsCache";
+import { ProviderIcon } from "../Tools/primitives/ProviderIcon";
+import { FieldMappingEditor, type FieldMappingState } from "./FieldMappingEditor";
 import { log } from "./_shared/logger";
 import {
   IconCopy,
@@ -47,6 +55,24 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // nodes flanking `start` / `end` so users see the call's full envelope
   // without polluting the actual workflow graph that goes to ElevenLabs.
   const allTools = useAgentStore((s) => s.config?.tools);
+  // provider id → { icon, name }, so tool_call cards can show the
+  // integration logo (HubSpot, Slack, …) on their bound-tool tile.
+  const [providerIcons, setProviderIcons] = useState<
+    Map<string, ProviderIconInfo>
+  >(() => new Map());
+  useEffect(() => {
+    let cancelled = false;
+    loadProviderIconsCached(agentId)
+      .then((m) => {
+        if (!cancelled) setProviderIcons(m);
+      })
+      .catch(() => {
+        /* non-fatal — the tile just falls back to the tool emoji */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
   const { preCallTools, postCallTools } = useMemo(() => {
     const tools = allTools ?? [];
     return {
@@ -555,6 +581,47 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     }
   };
 
+  /**
+   * Detach a tool from a node's `additional_tool_ids` (the hover ✕ on an
+   * optional tool tile). Mirrors attachToolToNode in reverse.
+   */
+  const removeAdditionalTool = async (parentId: string, toolId: string) => {
+    setPendingNodeId(parentId);
+    try {
+      const current = useAgentStore
+        .getState()
+        .config?.workflow.nodes.find((n) => n.id === parentId);
+      const existing = Array.isArray(current?.data?.additional_tool_ids)
+        ? (current!.data.additional_tool_ids as string[])
+        : [];
+      const nextIds = existing.filter((id) => id !== toolId);
+      if (nextIds.length === existing.length) return; // nothing to remove
+      const res = await appFetch(
+        `/api/agents/${agentId}/workflow/${parentId}`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ data: { additional_tool_ids: nextIds } }),
+        },
+      );
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(body?.error ?? `Remove failed (${res.status})`);
+      }
+      const json = (await res.json()) as {
+        revision: number;
+        patch: Partial<AgentConfigCache>;
+      };
+      applyConfigDirect(json.patch, json.revision);
+    } catch (err) {
+      console.error("remove additional tool failed", err);
+    } finally {
+      setPendingNodeId(null);
+    }
+  };
+
   const deleteNode = async (nodeId: string) => {
     setPendingNodeId(nodeId);
     try {
@@ -982,7 +1049,7 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                     ) : (
                       <div className="vb-el-body">
                         <div dir="auto" className="vb-el-title">
-                          {n.label}
+                          {nodeDisplayLabel(n)}
                         </div>
                         {desc && (
                           <div dir="auto" className="vb-el-desc">
@@ -996,22 +1063,44 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                               <span>Tool not found</span>
                             </div>
                           ) : (
-                            <div
-                              className="vb-el-tool-chip"
-                              title={boundTool.description}
-                            >
-                              <span aria-hidden>
-                                {friendlyForTool(boundTool.name).emoji}
-                              </span>
-                              <span className="vb-el-tool-chip-label">
-                                {friendlyForTool(boundTool.name).label}
-                              </span>
-                              {boundTool.provider && (
-                                <span className="vb-el-tool-chip-provider">
-                                  {boundTool.provider}
-                                </span>
-                              )}
-                            </div>
+                            (() => {
+                              const providerInfo = boundTool.provider
+                                ? providerIcons.get(boundTool.provider)
+                                : undefined;
+                              return (
+                                <div
+                                  className="vb-el-tool-tile"
+                                  title={boundTool.description}
+                                >
+                                  <span
+                                    className="vb-el-tool-tile-icon"
+                                    aria-hidden
+                                  >
+                                    {providerInfo ? (
+                                      <ProviderIcon
+                                        size="xs"
+                                        icon={providerInfo.icon}
+                                        name={providerInfo.name}
+                                      />
+                                    ) : (
+                                      friendlyForTool(boundTool.name).emoji
+                                    )}
+                                  </span>
+                                  <span className="vb-el-tool-tile-text">
+                                    <span className="vb-el-tool-tile-name">
+                                      {friendlyForTool(boundTool.name).label}
+                                    </span>
+                                    {(providerInfo?.name ||
+                                      boundTool.provider) && (
+                                      <span className="vb-el-tool-tile-provider">
+                                        {providerInfo?.name ??
+                                          boundTool.provider}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              );
+                            })()
                           )
                         )}
                         {n.type === "tool_call" && boundTool === "unbound" && (
@@ -1019,6 +1108,73 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                             No tool selected
                           </div>
                         )}
+                        {/* Tools the LLM may optionally call while this node
+                            is active (data.additional_tool_ids). Rendered as
+                            tiles, mirroring the tool_call chip. */}
+                        {(() => {
+                          const addIds = Array.isArray(
+                            n.data?.additional_tool_ids,
+                          )
+                            ? (n.data.additional_tool_ids as unknown[]).filter(
+                                (x): x is string => typeof x === "string",
+                              )
+                            : [];
+                          if (addIds.length === 0) return null;
+                          return addIds.map((id) => {
+                            const t = (allTools ?? []).find((x) => x.id === id);
+                            if (!t) return null;
+                            const providerInfo = t.provider
+                              ? providerIcons.get(t.provider)
+                              : undefined;
+                            return (
+                              <div
+                                key={id}
+                                className="vb-el-tool-tile vb-el-tool-tile-optional"
+                                title={`Optional: the agent may call ${friendlyForTool(t.name).label}`}
+                              >
+                                <span
+                                  className="vb-el-tool-tile-icon"
+                                  aria-hidden
+                                >
+                                  {providerInfo ? (
+                                    <ProviderIcon
+                                      size="xs"
+                                      icon={providerInfo.icon}
+                                      name={providerInfo.name}
+                                    />
+                                  ) : (
+                                    friendlyForTool(t.name).emoji
+                                  )}
+                                </span>
+                                <span className="vb-el-tool-tile-text">
+                                  <span className="vb-el-tool-tile-name">
+                                    {friendlyForTool(t.name).label}
+                                  </span>
+                                  {(providerInfo?.name || t.provider) && (
+                                    <span className="vb-el-tool-tile-provider">
+                                      {providerInfo?.name ?? t.provider}
+                                    </span>
+                                  )}
+                                </span>
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-label="Remove tool from this node"
+                                  title="Remove from this node"
+                                  className="vb-el-tool-tile-x"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    void removeAdditionalTool(n.id, t.id);
+                                  }}
+                                >
+                                  ✕
+                                </span>
+                              </div>
+                            );
+                          });
+                        })()}
                       </div>
                     )}
                   </button>
@@ -1148,7 +1304,6 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
         <NodeInspector
           agentId={agentId}
           node={workflow.nodes.find((n) => n.id === selectedId) ?? null}
-          outgoingEdges={workflow.edges.filter((e) => e.from === selectedId)}
           incomingEdges={workflow.edges.filter((e) => e.to === selectedId)}
           focusedEdgeId={focusedEdgeId}
           allNodes={workflow.nodes}
@@ -1249,6 +1404,24 @@ function PhantomLifecycleColumn({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // provider id → { icon, name } so phantom cards show the integration logo,
+  // matching the in-call tool tile. Shared module cache — no extra fetch.
+  const [providerIcons, setProviderIcons] = useState<
+    Map<string, ProviderIconInfo>
+  >(() => new Map());
+  useEffect(() => {
+    let cancelled = false;
+    loadProviderIconsCached(agentId)
+      .then((m) => {
+        if (!cancelled) setProviderIcons(m);
+      })
+      .catch(() => {
+        /* non-fatal — cards fall back to the tool emoji */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   async function uninstall(toolName: string) {
     setBusyKey(`uninstall:${toolName}`);
@@ -1283,7 +1456,7 @@ function PhantomLifecycleColumn({
   // "different / informational" without forcing a separate scale on the
   // whole canvas.
   const PHANTOM_W = 220;
-  const PHANTOM_H = 56;
+  const PHANTOM_H = 62;
   const ADD_BTN_H = 32;
   const GAP = 12;
   // Pre-call cards sit to the LEFT of start, post-call to the RIGHT of end.
@@ -1303,6 +1476,9 @@ function PhantomLifecycleColumn({
       {tools.map((t, i) => {
         const y = startY + i * (PHANTOM_H + GAP);
         const friendly = friendlyForTool(t.name);
+        const providerInfo = t.provider
+          ? providerIcons.get(t.provider)
+          : undefined;
         const ax = side === "left" ? colX + PHANTOM_W : anchor.x + NODE_W;
         const ay = y + PHANTOM_H / 2;
         const bx = side === "left" ? anchor.x : colX;
@@ -1356,10 +1532,25 @@ function PhantomLifecycleColumn({
                 {side === "left" ? "Pre-call" : "Post-call"}
               </div>
               <div className="vb-el-phantom-body">
-                <span className="vb-el-phantom-emoji" aria-hidden>
-                  {friendly.emoji}
+                <span className="vb-el-tool-tile-icon" aria-hidden>
+                  {providerInfo ? (
+                    <ProviderIcon
+                      size="xs"
+                      icon={providerInfo.icon}
+                      name={providerInfo.name}
+                    />
+                  ) : (
+                    friendly.emoji
+                  )}
                 </span>
-                <span className="vb-el-phantom-label">{friendly.label}</span>
+                <span className="vb-el-tool-tile-text">
+                  <span className="vb-el-tool-tile-name">{friendly.label}</span>
+                  {(providerInfo?.name || t.provider) && (
+                    <span className="vb-el-tool-tile-provider">
+                      {providerInfo?.name ?? t.provider}
+                    </span>
+                  )}
+                </span>
               </div>
             </button>
           </div>
@@ -1393,15 +1584,9 @@ function PhantomLifecycleColumn({
           output exposes (pre_call only), and a Remove button. */}
       {inspectorFor && (
         <PhantomInspectorPopover
+          agentId={agentId}
           tool={inspectorFor}
           side={side}
-          x={colX}
-          y={(() => {
-            const i = tools.findIndex((t) => t.id === inspectorFor.id);
-            return startY + Math.max(0, i) * (PHANTOM_H + GAP);
-          })()}
-          width={PHANTOM_W}
-          height={PHANTOM_H}
           busy={busyKey === `uninstall:${inspectorFor.name}`}
           error={actionError}
           onRemove={() => uninstall(inspectorFor.name)}
@@ -1440,105 +1625,121 @@ function PhantomLifecycleColumn({
 }
 
 function PhantomInspectorPopover({
+  agentId,
   tool,
   side,
-  x,
-  y,
-  width,
-  height,
   busy,
   error,
   onRemove,
   onClose,
 }: {
+  agentId: string;
   tool: RuntimeTool;
   side: "left" | "right";
-  x: number;
-  y: number;
-  width: number;
-  height: number;
   busy: boolean;
   error: string | null;
   onRemove: () => void;
   onClose: () => void;
 }) {
   const friendly = friendlyForTool(tool.name);
-  // Pop the inspector to the side of the card so it doesn't cover the
-  // card itself.
-  const popX = side === "left" ? x - 260 - 12 : x + width + 12;
-  return (
+  const saveRef = useRef<(() => void) | null>(null);
+  const [mapState, setMapState] = useState<FieldMappingState>({
+    dirty: false,
+    saving: false,
+    canSave: false,
+  });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Portal to body so the modal escapes the canvas's transform/scale (which
+  // would otherwise contain `position: fixed`). Mirrors ToolPickerModal.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
-      style={{
-        position: "absolute",
-        left: popX,
-        top: y - 4,
-        width: 260,
-        zIndex: 60,
-      }}
-      onClick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      aria-label={friendly.label}
+      onClick={onClose}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onWheel={(e) => e.stopPropagation()}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6 animate-fade-in"
     >
-      <div className="vb-el-phantom-popover">
-        <div className="vb-el-phantom-popover-head">
-          <span aria-hidden style={{ fontSize: 14 }}>
-            {friendly.emoji}
-          </span>
-          <span className="vb-el-phantom-popover-title">
-            {friendly.label}
-          </span>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="flex max-h-[85vh] w-full max-w-[540px] flex-col overflow-hidden rounded-2xl border border-(--color-border) bg-(--color-panel) shadow-2xl"
+      >
+        <header className="flex items-center justify-between gap-3 border-b border-(--color-border) px-5 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span aria-hidden style={{ fontSize: 16 }}>
+              {friendly.emoji}
+            </span>
+            <h3 className="truncate text-sm font-semibold text-(--color-foreground-strong)">
+              {friendly.label}
+            </h3>
+          </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="vb-el-phantom-popover-close"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
           >
             ✕
           </button>
-        </div>
-        <div className="vb-el-phantom-popover-meta">
-          <span className="vb-el-phantom-tag">
-            {side === "left" ? "Pre-call" : "Post-call"}
-          </span>
-          {tool.provider && (
-            <span className="vb-el-phantom-popover-provider">
-              {tool.provider}
-            </span>
+        </header>
+
+        <div className="flex-1 overflow-auto px-5 py-4">
+          {side === "left" && (
+            <FieldMappingEditor
+              agentId={agentId}
+              tool={tool}
+              saveRef={saveRef}
+              onStateChange={setMapState}
+            />
           )}
-        </div>
-        <p className="vb-el-phantom-popover-desc">{tool.description}</p>
-        {side === "left" && (
-          <div className="vb-el-phantom-popover-vars">
-            <div className="vb-el-phantom-popover-varhead">
-              Outputs available as
+          {side === "left" && (
+            <div className="vb-el-phantom-popover-vars">
+              <div className="vb-el-phantom-popover-varhead">
+                Outputs available as
+              </div>
+              <code className="vb-el-phantom-popover-varcode">
+                {`{{pre_${tool.name}__<field>}}`}
+              </code>
             </div>
-            <code className="vb-el-phantom-popover-varcode">
-              {`{{pre_${tool.name}__<field>}}`}
-            </code>
-          </div>
-        )}
-        {error && (
-          <div className="vb-el-phantom-popover-error">{error}</div>
-        )}
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={busy}
-          className="vb-el-phantom-popover-remove"
-        >
-          {busy ? "Removing…" : "Remove"}
-        </button>
+          )}
+          {error && <div className="vb-el-phantom-popover-error">{error}</div>}
+        </div>
+
+        <footer className="flex items-center justify-between gap-3 border-t border-(--color-border) px-5 py-3">
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={busy}
+            className="vb-el-phantom-popover-remove"
+          >
+            {busy ? "Removing…" : "Remove"}
+          </button>
+          {side === "left" && mapState.dirty && (
+            <button
+              type="button"
+              onClick={() => saveRef.current?.()}
+              disabled={!mapState.canSave || mapState.saving}
+              className="rounded-md bg-(--color-foreground-strong) px-4 py-1.5 text-xs font-semibold text-white transition disabled:bg-(--color-border-strong) disabled:text-(--color-muted-soft)"
+            >
+              {mapState.saving ? "Saving…" : "Save"}
+            </button>
+          )}
+        </footer>
       </div>
-      {/* Click-outside swallow so we don't immediately close ourselves. */}
-      <div
-        onClick={onClose}
-        style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: -1,
-        }}
-      />
-      {/* Suppress unused warning */}
-      <span style={{ display: "none" }}>{height}</span>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

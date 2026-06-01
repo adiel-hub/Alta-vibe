@@ -6,11 +6,16 @@ import type {
   WorkflowEdge,
   WorkflowNode,
 } from "@/types/agent";
-import { ICON } from "./_shared/constants";
+import { ICON, nodeDisplayLabel } from "./_shared/constants";
 import { Field } from "./_shared/Field";
 import { IconTrash } from "./_shared/icons";
 import type { InspectorVoice } from "./_shared/types";
 import { loadVoicesCached } from "./_shared/voicesCache";
+import {
+  loadProviderIconsCached,
+  type ProviderIconInfo,
+} from "./_shared/providerIconsCache";
+import { ProviderIcon } from "../Tools/primitives/ProviderIcon";
 
 // ── Right-side inspector for the selected node ───────────────────────────
 //
@@ -24,13 +29,12 @@ import { loadVoicesCached } from "./_shared/voicesCache";
 //                 OR standalone_agent (data.agent_id) — picker selects mode
 //   - start/end → no editable fields
 //
-// Plus a read-only "Connections" section listing outgoing edges with their
-// label + condition + target. Saves a single PATCH body { label?, data? }
-// and replays the response patch into the store.
+// Saves a single PATCH body { label?, data? } and replays the response patch
+// into the store. Outgoing connections aren't shown here — the user reads them
+// off the workflow canvas.
 export function NodeInspector({
   agentId,
   node,
-  outgoingEdges,
   incomingEdges,
   focusedEdgeId,
   allNodes,
@@ -39,7 +43,6 @@ export function NodeInspector({
 }: {
   agentId: string;
   node: WorkflowNode | null;
-  outgoingEdges: WorkflowEdge[];
   /** Edges that point AT this node. For tool_call nodes we auto-surface the
    *  single incoming edge's `forward_condition` as the tool's "entry
    *  condition" — the user thinks of it as "when does this tool fire?",
@@ -58,7 +61,10 @@ export function NodeInspector({
   const availableTools = useAgentStore((s) => s.config?.tools ?? []);
 
   // Snapshot the incoming data so we can dirty-check + reset on node change.
-  const initialLabel = node?.label ?? "";
+  // Pre-fill the title with the friendly default ("Tool node", …) when the
+  // node only carries a raw id label — both this snapshot and the input
+  // state use it, so the field reads nicely without becoming dirty on open.
+  const initialLabel = node ? nodeDisplayLabel(node) : "";
   const initialData = useMemo(
     () => JSON.stringify(node?.data ?? {}),
     [node?.id],
@@ -74,6 +80,10 @@ export function NodeInspector({
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [voices, setVoices] = useState<InspectorVoice[]>([]);
+  // provider id → { icon, name }, used to show each tool's integration logo.
+  const [providerIcons, setProviderIcons] = useState<
+    Map<string, ProviderIconInfo>
+  >(() => new Map());
 
   // Edge-condition editor only renders when the user reached this panel
   // by clicking an edge pill on the canvas. Direct node clicks never
@@ -123,7 +133,7 @@ export function NodeInspector({
 
   // Reset when the selected node id changes.
   useEffect(() => {
-    setLabel(node?.label ?? "");
+    setLabel(node ? nodeDisplayLabel(node) : "");
     setData({ ...(node?.data ?? {}) });
     setError(null);
     setShowAdvanced(false);
@@ -156,6 +166,22 @@ export function NodeInspector({
       cancelled = true;
     };
   }, []);
+
+  // Lazy-load the provider catalog once so each tool row can show its
+  // integration icon (HubSpot, Slack, Google, …) instead of a text badge.
+  useEffect(() => {
+    let cancelled = false;
+    loadProviderIconsCached(agentId)
+      .then((m) => {
+        if (!cancelled) setProviderIcons(m);
+      })
+      .catch(() => {
+        /* non-fatal — tool rows just render without their provider logo */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   if (!node) return null;
 
@@ -272,9 +298,6 @@ export function NodeInspector({
       setSaving(false);
     }
   };
-
-  const nodeById = (id: string) =>
-    allNodes.find((n) => n.id === id) ?? null;
 
   // Render the type-specific main field(s).
   const renderTypeFields = () => {
@@ -393,12 +416,7 @@ export function NodeInspector({
         };
         return (
           <>
-            <Field
-              label={selectedIds.length > 1 ? "Tools (parallel)" : "Tool"}
-              hint={
-                "Tools this node dispatches. Pick one for a single dispatch, or check several to fire them in parallel — the node succeeds only if ALL selected tools succeed."
-              }
-            >
+            <Field label={selectedIds.length > 1 ? "Tools (parallel)" : "Tool"}>
               {inCallTools.length === 0 && staleIds.length === 0 ? (
                 <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
                   No in-call tools attached to this agent yet. Install one
@@ -408,25 +426,35 @@ export function NodeInspector({
                 <ul className="flex max-h-56 flex-col gap-1 overflow-auto rounded-md border border-(--color-border) bg-white p-2">
                   {inCallTools.map((t) => {
                     const isOn = selectedIds.includes(t.id);
+                    // A tool node always keeps at least one tool. Clicking the
+                    // sole selected tool is a no-op — removal is "delete node".
+                    const isLastSelected = isOn && selectedIds.length === 1;
                     return (
                       <li key={t.id}>
-                        <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-(--color-panel-soft)">
-                          <input
-                            type="checkbox"
-                            checked={isOn}
-                            onChange={() => toggleId(t.id)}
-                            className="mt-0.5"
-                          />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isLastSelected) return;
+                            toggleId(t.id);
+                          }}
+                          aria-pressed={isOn}
+                          className={`flex w-full items-start gap-2 rounded-md border px-2 py-1.5 text-left text-xs transition ${
+                            isOn
+                              ? "border-(--color-border-strong) bg-(--color-panel-soft)"
+                              : "cursor-pointer border-transparent hover:bg-(--color-panel-soft)"
+                          } ${isLastSelected ? "cursor-default" : "cursor-pointer"}`}
+                        >
+                          {t.provider && providerIcons.has(t.provider) && (
+                            <span className="mt-0.5 shrink-0">
+                              <ProviderIcon
+                                icon={providerIcons.get(t.provider)!.icon}
+                                name={providerIcons.get(t.provider)!.name}
+                              />
+                            </span>
+                          )}
                           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                            <span className="flex items-center gap-1.5">
-                              <span className="font-medium text-(--color-foreground-strong)">
-                                {t.name}
-                              </span>
-                              {t.provider && (
-                                <span className="rounded bg-(--color-accent)/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-(--color-accent)">
-                                  {t.provider}
-                                </span>
-                              )}
+                            <span className="font-medium text-(--color-foreground-strong)">
+                              {t.name}
                             </span>
                             {t.description && (
                               <span className="line-clamp-2 text-[11px] text-(--color-muted)">
@@ -434,28 +462,40 @@ export function NodeInspector({
                               </span>
                             )}
                           </span>
-                        </label>
+                          {isOn && (
+                            <span
+                              className="mt-0.5 shrink-0 text-(--color-foreground-strong)"
+                              aria-hidden
+                            >
+                              ✓
+                            </span>
+                          )}
+                        </button>
                       </li>
                     );
                   })}
                   {staleIds.map((id) => (
                     <li key={id}>
-                      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-red-400/30 bg-red-500/5 px-2 py-1.5 text-xs">
-                        <input
-                          type="checkbox"
-                          checked
-                          onChange={() => toggleId(id)}
-                          className="mt-0.5"
-                        />
+                      <button
+                        type="button"
+                        onClick={() => toggleId(id)}
+                        className="flex w-full cursor-pointer items-start gap-2 rounded-md border border-red-400/30 bg-red-500/5 px-2 py-1.5 text-left text-xs"
+                      >
                         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                           <span className="font-mono text-[11px] text-red-600">
                             {id}
                           </span>
                           <span className="text-[10px] text-red-500">
-                            Unbound — uncheck to remove the dead reference.
+                            Unbound — click to remove the dead reference.
                           </span>
                         </span>
-                      </label>
+                        <span
+                          className="mt-0.5 shrink-0 text-red-500"
+                          aria-hidden
+                        >
+                          ✕
+                        </span>
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -475,12 +515,6 @@ export function NodeInspector({
               <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
                 No incoming edges yet — connect a parent node so the
                 workflow can reach this tool.
-              </p>
-            )}
-            {incomingEdges.length >= 1 && (
-              <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-[11px] text-(--color-muted)">
-                Click an edge label on the canvas to edit when this tool
-                fires.
               </p>
             )}
           </>
@@ -751,9 +785,6 @@ export function NodeInspector({
             ⤷
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-mono uppercase tracking-widest text-(--color-muted-soft)">
-              edge · {incomingEdge.id}
-            </div>
             <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
               {parentLabel} → {targetLabel}
             </div>
@@ -881,11 +912,8 @@ export function NodeInspector({
           {ICON[node.type]}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[10px] font-mono uppercase tracking-widest text-(--color-muted-soft)">
-            {node.type} · {node.id}
-          </div>
           <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
-            {node.label || "(untitled)"}
+            {nodeDisplayLabel(node)}
           </div>
         </div>
         <button
@@ -1050,16 +1078,17 @@ export function NodeInspector({
                                 onChange={() => toggle(t.id)}
                                 className="mt-0.5"
                               />
+                              {t.provider && providerIcons.has(t.provider) && (
+                                <span className="mt-0.5 shrink-0">
+                                  <ProviderIcon
+                                    icon={providerIcons.get(t.provider)!.icon}
+                                    name={providerIcons.get(t.provider)!.name}
+                                  />
+                                </span>
+                              )}
                               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                                <span className="flex items-center gap-1.5">
-                                  <span className="font-medium text-(--color-foreground-strong)">
-                                    {t.name}
-                                  </span>
-                                  {t.provider && (
-                                    <span className="rounded bg-(--color-accent)/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-(--color-accent)">
-                                      {t.provider}
-                                    </span>
-                                  )}
+                                <span className="font-medium text-(--color-foreground-strong)">
+                                  {t.name}
                                 </span>
                                 {t.description && (
                                   <span className="line-clamp-2 text-[11px] text-(--color-muted)">
@@ -1098,95 +1127,6 @@ export function NodeInspector({
             </div>
           </details>
         )}
-
-        <div className="rounded-md border border-(--color-border)">
-          <div className="border-b border-(--color-border) px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-(--color-muted)">
-            Connections ({outgoingEdges.length})
-          </div>
-          {outgoingEdges.length === 0 ? (
-            <p className="px-3 py-3 text-xs text-(--color-muted)">
-              This node has no outgoing edges yet.
-            </p>
-          ) : (
-            <ul className="divide-y divide-(--color-border)">
-              {outgoingEdges.map((e) => {
-                const target = nodeById(e.to);
-                const fc = e.forward_condition;
-                const bc = e.backward_condition;
-                return (
-                  <li key={e.id} className="px-3 py-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="text-(--color-muted)">→</span>
-                      <span className="font-medium text-(--color-foreground-strong)">
-                        {target?.label ?? e.to}
-                      </span>
-                      <span className="font-mono text-[10px] text-(--color-muted-soft)">
-                        {target?.type ?? "?"}
-                      </span>
-                    </div>
-                    {(e.label || e.condition || fc) && (
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--color-muted)">
-                        {e.label && (
-                          <span className="inline-flex items-center gap-1">
-                            <span aria-hidden>↳</span>
-                            {e.label}
-                          </span>
-                        )}
-                        {fc?.type === "llm" && (
-                          <span className="font-mono text-(--color-accent)">
-                            when: {fc.condition}
-                          </span>
-                        )}
-                        {fc?.type === "expression" && (
-                          <span className="font-mono text-(--color-accent)">
-                            expr
-                          </span>
-                        )}
-                        {fc?.type === "result" && (
-                          <span
-                            className="font-mono"
-                            style={{
-                              color: fc.successful
-                                ? "var(--color-success, var(--color-accent))"
-                                : "var(--color-danger)",
-                            }}
-                          >
-                            on {fc.successful ? "success" : "failure"}
-                          </span>
-                        )}
-                        {fc?.type === "unconditional" && !e.label && (
-                          <span className="font-mono text-(--color-muted-soft)">
-                            always
-                          </span>
-                        )}
-                        {/* Legacy fallback: edges from before the structured
-                            condition variants existed only carry e.condition. */}
-                        {!fc && e.condition && (
-                          <span className="font-mono text-(--color-accent)">
-                            when: {e.condition}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                    {bc && (
-                      <div className="mt-1 text-[11px] text-(--color-muted)">
-                        <span aria-hidden>↩</span>{" "}
-                        <span className="font-mono">
-                          loops back ({bc.type}
-                          {bc.type === "llm" ? `: ${bc.condition}` : ""}
-                          {bc.type === "result"
-                            ? `: ${bc.successful ? "success" : "failure"}`
-                            : ""}
-                          )
-                        </span>
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
 
         {error && (
           <p className="vb-field-hint" style={{ color: "var(--color-danger)" }}>

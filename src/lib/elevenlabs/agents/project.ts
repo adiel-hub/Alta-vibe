@@ -31,14 +31,40 @@ export function projectAgentConfig(
   // Lifecycle tools (pre/post-call) live ONLY in config_cache — EL never
   // sees them (see lifecycle/toolIds.ts) — so we always re-merge them
   // from fallback or they vanish on every projection.
+  //
+  // `provider` (and method/url) are local-only provenance — ElevenLabs has no
+  // such field, so a naive projection strips them off in-call tools and the UI
+  // loses each tool's integration logo. Re-merge them. `workflow.bindings` is
+  // the authoritative source (it stores `provider` explicitly and is never
+  // projected from EL), keyed by the ElevenLabs tool id; we consult it first so
+  // the provider is recovered even for agents whose cached `config_cache.tools`
+  // already lost it. The prior cached tool (matched by name, then id) backs that
+  // up and carries method/url.
+  const fallbackToolByName = new Map(fallback.tools.map((t) => [t.name, t]));
+  const fallbackToolById = new Map(fallback.tools.map((t) => [t.id, t]));
+  const bindingProviderByElId = new Map<string, string>();
+  for (const b of fallback.workflow.bindings ?? []) {
+    if (b.kind === "provider") {
+      bindingProviderByElId.set(b.elevenlabs_tool_id, b.provider);
+    }
+  }
   const inCallTools: RuntimeTool[] = p?.tools
-    ? p.tools.map((tool) => ({
-        id: tool.id ?? tool.name,
-        name: tool.name,
-        type: tool.type,
-        description: tool.description ?? "",
-        phase: phaseFor(tool.name, tool.type),
-      }))
+    ? p.tools.map((tool) => {
+        const id = tool.id ?? tool.name;
+        const prior =
+          fallbackToolByName.get(tool.name) ?? fallbackToolById.get(id);
+        const provider = bindingProviderByElId.get(id) ?? prior?.provider;
+        return {
+          id,
+          name: tool.name,
+          type: tool.type,
+          description: tool.description ?? "",
+          phase: phaseFor(tool.name, tool.type),
+          ...(provider ? { provider } : {}),
+          ...(prior?.method ? { method: prior.method } : {}),
+          ...(prior?.url ? { url: prior.url } : {}),
+        };
+      })
     : fallback.tools.filter((t) => !isLocalToolId(t.id));
   const lifecycleTools = fallback.tools.filter((t) => isLocalToolId(t.id));
   const tools: RuntimeTool[] = [...inCallTools, ...lifecycleTools];

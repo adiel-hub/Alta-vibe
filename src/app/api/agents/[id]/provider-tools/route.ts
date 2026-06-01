@@ -22,6 +22,7 @@ import {
   installProviderTool,
   uninstallProviderTool,
 } from "@/lib/integrations/registerProviderTools";
+import { setBindingFieldMappings } from "@/lib/tools/bindings";
 import { ElevenLabsError, patchAgent } from "@/lib/elevenlabs/client";
 
 export const runtime = "nodejs";
@@ -30,6 +31,26 @@ export const dynamic = "force-dynamic";
 const InstallBody = z.object({
   provider: z.string().min(1),
   tool_key: z.string().min(1),
+});
+
+// PATCH — set per-agent custom field mappings on an installed pre-call tool.
+// Variable names must be safe dynamic-variable identifiers.
+const ConfigBody = z.object({
+  tool_name: z.string().min(1),
+  field_mappings: z
+    .array(
+      z.object({
+        property: z.string().min(1),
+        variable: z
+          .string()
+          .min(1)
+          .regex(
+            /^[a-zA-Z_][a-zA-Z0-9_]*$/,
+            "Variable names must start with a letter/underscore and contain only letters, digits, underscores.",
+          ),
+      }),
+    )
+    .max(50),
 });
 
 export async function GET(
@@ -70,6 +91,32 @@ export async function GET(
       method: t.method,
       category: t.category ?? "Other",
       installed: installedNames.has(scopedToolName(t)),
+      // Which provider object's properties are mappable for this tool (if
+      // any) + the built-in property→variable defaults — together they drive
+      // the pre-call field-mapping editor (defaults shown locked, customs editable).
+      ...(t.field_mapping
+        ? {
+            mappable_object: t.field_mapping.object,
+            default_field_mappings: Object.entries(t.output_aliases ?? {}).map(
+              ([variable, path]) => {
+                // `mappable` = the path is a real provider property (matches the
+                // template prefix, e.g. "results.0.properties."), so the UI can
+                // offer a property dropdown. Non-mappable defaults (e.g. the
+                // record id at "results.0.id") render read-only.
+                const prefix =
+                  t.field_mapping!.output_path_template.split("{property}")[0];
+                const mappable = path.startsWith(prefix);
+                return {
+                  variable,
+                  property: mappable
+                    ? path.slice(prefix.length)
+                    : (path.split(".").pop() ?? path),
+                  mappable,
+                };
+              },
+            ),
+          }
+        : {}),
     })),
   }));
 
@@ -166,6 +213,43 @@ export async function DELETE(
         { status: err.status },
       );
     }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const guard = requireSharedSecret(req);
+  if (guard) return guard;
+
+  const { id } = await params;
+  if (!ObjectId.isValid(id)) {
+    return NextResponse.json({ error: "Invalid id" }, { status: 400 });
+  }
+  const parsed = ConfigBody.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message ?? "Invalid body" },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const { tools, revision, workflow } = await setBindingFieldMappings(
+      id,
+      parsed.data.tool_name,
+      parsed.data.field_mappings,
+    );
+    // Field mappings are local-only (no ElevenLabs tool change), so we just
+    // hand the client the new derived tools + workflow to apply.
+    return NextResponse.json({
+      revision,
+      patch: { tools, workflow },
+    });
+  } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 400 });
   }

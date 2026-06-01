@@ -54,6 +54,38 @@ export const ADD_NODE_MENU: Array<{
   { type: "end", label: "End", hint: "End the call.", defaultLabel: "End call" },
 ];
 
+/** Friendly fallback title per node type, used when a node carries no
+ *  human-authored label (e.g. workflows synced from ElevenLabs label every
+ *  unnamed node with its raw id like "tool_call_ksj5lvr"). */
+export const DEFAULT_NODE_LABEL: Record<WorkflowNodeType, string> = {
+  start: "Start",
+  speak: "Speak",
+  collect: "Collect",
+  condition: "Route",
+  tool_call: "Tool node",
+  transfer: "Transfer",
+  end: "End call",
+};
+
+/**
+ * Display title for a node. Falls back to a friendly per-type label when the
+ * stored label is empty OR is just the raw node id (the shape ElevenLabs
+ * hands back: `<type>_<random>`, e.g. "tool_call_ksj5lvr"), so cards and the
+ * inspector read "Tool node" instead of an opaque id.
+ */
+export function nodeDisplayLabel(node: {
+  id: string;
+  type: WorkflowNodeType;
+  label?: string;
+}): string {
+  const label = node.label?.trim();
+  const looksLikeRawId =
+    !label ||
+    label === node.id ||
+    new RegExp(`^${node.type}_[a-z0-9]{4,}$`).test(label);
+  return looksLikeRawId ? DEFAULT_NODE_LABEL[node.type] : label;
+}
+
 /** Per-node glyph rendered inside the small circular badge on the card. */
 export const ICON: Record<WorkflowNodeType, string> = {
   start: "⚑",

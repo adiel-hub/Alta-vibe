@@ -69,6 +69,13 @@ export const HUBSPOT_CONTACT_TOOLS: ProviderRuntimeToolSpec[] = [
       caller_open_deal_count: "results.0.properties.num_associated_deals",
       caller_hubspot_contact_id: "results.0.id",
     },
+    // Lets users map extra (incl. custom) HubSpot contact properties onto
+    // their own dynamic variables — see ToolBinding.field_mappings.
+    field_mapping: {
+      object: "contacts",
+      request_properties_key: "properties",
+      output_path_template: "results.0.properties.{property}",
+    },
     narrative: (_ctx, output) => {
       const o = output as { results?: Array<{ properties?: Record<string, string> }> } | null;
       const hit = o?.results?.[0];
