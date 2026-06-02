@@ -14,7 +14,10 @@ import {
   projectAgentConfig,
   ElevenLabsError,
 } from "@/lib/elevenlabs/client";
-import { ensureBindingsMigrated } from "@/lib/tools/bindings";
+import {
+  ensureBindingsMigrated,
+  healToolIdCorruption,
+} from "@/lib/tools/bindings";
 import type { AgentDocument, AgentDTO } from "@/types/agent";
 
 export const runtime = "nodejs";
@@ -89,6 +92,25 @@ export async function GET(
     // Migration is best-effort: serving stale-but-cached state beats
     // failing the page. The next read will retry.
     console.error("[agent-get] bindings migration failed", err);
+  }
+
+  // Self-heal tool ids that got corrupted to the scoped name (which made
+  // upstream tool_ids patches 404). No-op when nothing is corrupted.
+  try {
+    const healed = await healToolIdCorruption(freshened);
+    if (healed) {
+      freshened = {
+        ...freshened,
+        revision: healed.revision,
+        config_cache: {
+          ...freshened.config_cache,
+          tools: healed.tools,
+          workflow: healed.workflow,
+        },
+      };
+    }
+  } catch (err) {
+    console.error("[agent-get] tool-id heal failed", err);
   }
 
   // Lazy backfill of `main_branch_id` for agents predating the versioning

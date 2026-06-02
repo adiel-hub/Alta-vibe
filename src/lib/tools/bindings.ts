@@ -20,6 +20,7 @@ import { agentsCol, customToolsCol } from "@/lib/mongodb";
 import {
   createRuntimeTool,
   deleteRuntimeTool,
+  listRuntimeTools,
 } from "@/lib/elevenlabs/client";
 import { patchAgent } from "@/lib/elevenlabs/client";
 import { externalToolIds, isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
@@ -62,6 +63,23 @@ function localToolId(): string {
 
 function isLifecycle(phase: RuntimePhase): boolean {
   return phase !== "in_call";
+}
+
+/** Resolve the proxy secret for a provider (re-used by install + heal). */
+async function resolveProxySecret(providerId: string): Promise<string> {
+  const provider = getProvider(providerId);
+  if (provider?.always_connected) return `builtin:${providerId}`;
+  const { findWorkspaceIntegration } = await import("@/lib/integrations/store");
+  const integration = await findWorkspaceIntegration(providerId);
+  const secret = (
+    integration?.metadata as { proxy_secret?: unknown } | undefined
+  )?.proxy_secret;
+  if (typeof secret !== "string") {
+    throw new Error(
+      `${provider?.name ?? providerId} is missing a proxy_secret.`,
+    );
+  }
+  return secret;
 }
 
 // ── Resolution: binding → RuntimeTool ──────────────────────────────────
@@ -677,4 +695,144 @@ export async function ensureBindingsMigrated(
   }
 
   return { tools, bindings: surviving, dropped };
+}
+
+/**
+ * Repair provider bindings whose `elevenlabs_tool_id` got corrupted to the
+ * tool's SCOPED NAME instead of the real ElevenLabs document id (root cause:
+ * a name-less inline tool in EL's GET → projection fell back to the name →
+ * migration baked it into the binding). Sending such an id as a `tool_id`
+ * trips a 404 `document_not_found`, blocking installs/attaches.
+ *
+ * A healthy binding's id is a random EL id, never equal to the scoped name —
+ * that exact equality is the (cheap) detector. When found, we recover the real
+ * id from EL's live tool list by name (re-registering the tool if EL has none),
+ * rewrite the bindings + the workflow node tool references, persist, and push
+ * the corrected `tool_ids` + workflow upstream. Self-healing: a steady-state
+ * agent hits only the detector loop (no EL calls) and returns null.
+ */
+export async function healToolIdCorruption(agent: AgentDocument): Promise<{
+  tools: RuntimeTool[];
+  workflow: WorkflowState;
+  revision: number;
+} | null> {
+  const bindings = agent.config_cache.workflow.bindings ?? [];
+  const corrupted: Array<{
+    binding: Extract<ToolBinding, { kind: "provider" }>;
+    scoped: string;
+    spec: ProviderRuntimeToolSpec;
+  }> = [];
+  for (const b of bindings) {
+    if (b.kind !== "provider") continue;
+    const spec = findProviderTool(b.provider, b.tool_key);
+    if (!spec) continue;
+    if (b.elevenlabs_tool_id === scopedToolName(spec)) {
+      corrupted.push({ binding: b, scoped: scopedToolName(spec), spec });
+    }
+  }
+  if (corrupted.length === 0) return null;
+
+  const agentMongoId = agent._id.toHexString();
+  const elTools = await listRuntimeTools().catch(() => [] as Array<{ id: string; name: string }>);
+  const idByName = new Map(elTools.map((t) => [t.name, t.id]));
+
+  // oldScopedNameId → realId. Only bindings we could resolve land here.
+  const remap = new Map<string, string>();
+  for (const { binding, scoped, spec } of corrupted) {
+    let realId = idByName.get(scoped);
+    if (!realId) {
+      // EL has no document for this tool — re-create it.
+      try {
+        const proxySecret = await resolveProxySecret(binding.provider);
+        realId = await registerProviderSpec(
+          spec,
+          binding.provider,
+          agentMongoId,
+          proxySecret,
+        );
+      } catch (err) {
+        log.warn("heal: could not re-register tool, leaving as-is", {
+          agent_id: agentMongoId,
+          tool: scoped,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+    }
+    remap.set(binding.elevenlabs_tool_id, realId);
+  }
+  if (remap.size === 0) return null;
+
+  const repairedBindings: ToolBinding[] = bindings.map((b) =>
+    b.kind === "provider" && remap.has(b.elevenlabs_tool_id)
+      ? { ...b, elevenlabs_tool_id: remap.get(b.elevenlabs_tool_id)! }
+      : b,
+  );
+
+  // Rewrite tool references on workflow nodes (tool_id / tool_ids[] /
+  // additional_tool_ids[]) so the workflow graph points at the real ids too.
+  const remapId = (id: string) => remap.get(id) ?? id;
+  const nodes = agent.config_cache.workflow.nodes.map((n) => {
+    const data = { ...(n.data ?? {}) };
+    let changed = false;
+    if (typeof data.tool_id === "string" && remap.has(data.tool_id)) {
+      data.tool_id = remapId(data.tool_id);
+      changed = true;
+    }
+    for (const key of ["tool_ids", "additional_tool_ids"] as const) {
+      const arr = data[key];
+      if (Array.isArray(arr) && arr.some((x) => typeof x === "string" && remap.has(x))) {
+        data[key] = arr.map((x) => (typeof x === "string" ? remapId(x) : x));
+        changed = true;
+      }
+    }
+    return changed ? { ...n, data } : n;
+  });
+
+  const { tools, bindings: survivingBindings } = await deriveFromBindings(
+    repairedBindings,
+    agentMongoId,
+  );
+  const nextWorkflow: WorkflowState = {
+    ...agent.config_cache.workflow,
+    nodes,
+    bindings: survivingBindings,
+  };
+  const nextRevision = agent.revision + 1;
+
+  const agents = await agentsCol();
+  await agents.updateOne(
+    { _id: agent._id } as Filter<AgentDocument>,
+    {
+      $set: {
+        "config_cache.tools": tools,
+        "config_cache.workflow": nextWorkflow,
+        revision: nextRevision,
+        updated_at: new Date(),
+      },
+    },
+  );
+
+  // Push corrected tool_ids + workflow upstream so EL stops 404-ing.
+  try {
+    const { toElevenWorkflow } = await import(
+      "@/lib/capabilities/experience/workflow"
+    );
+    await patchAgent(agent.elevenlabs_agent_id, {
+      tool_ids: externalToolIds(tools),
+      workflow: toElevenWorkflow(nextWorkflow),
+    });
+  } catch (err) {
+    log.warn("heal: upstream patch failed (state already persisted locally)", {
+      agent_id: agentMongoId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  log.info("healed corrupted tool-id bindings", {
+    agent_id: agentMongoId,
+    count: remap.size,
+  });
+
+  return { tools, workflow: nextWorkflow, revision: nextRevision };
 }

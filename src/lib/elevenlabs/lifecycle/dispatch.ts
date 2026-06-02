@@ -138,16 +138,28 @@ export async function fireHttp(
     };
   }
   const method = methodFor(tool);
-  const hasBody = method !== "GET" && method !== "HEAD" && method !== "DELETE";
-  const body = hasBody && bodyTemplate
-    ? JSON.stringify(templateValue(bodyTemplate, ctx))
+  const bodyless = method === "GET" || method === "HEAD" || method === "DELETE";
+  // A `build_body` that produced a NON-EMPTY object for a bodyless-upstream
+  // tool (e.g. a pre-call Dynamics OData GET lookup) needs to get that body to
+  // the proxy so the proxy can lift `{var}` path-template placeholders out of
+  // it. The proxy is authoritative on the upstream verb (it reads
+  // `spec.method`), so it still issues the GET/DELETE upstream and forwards no
+  // body there. We POST to the proxy purely as the body-carrying transport.
+  // Empty bodies (the post-call `() => ({})` default) keep the old behavior:
+  // a bodyless tool stays a bodyless request with its native verb.
+  const carriesBody =
+    !!bodyTemplate && (!bodyless || Object.keys(bodyTemplate).length > 0);
+  const hasBody = carriesBody;
+  const proxyMethod = carriesBody && bodyless ? "POST" : method;
+  const body = hasBody
+    ? JSON.stringify(templateValue(bodyTemplate as Record<string, unknown>, ctx))
     : undefined;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout_ms);
   try {
     const res = await fetch(tool.url, {
-      method,
+      method: proxyMethod,
       headers: {
         Authorization: `Bearer ${bearer}`,
         ...(hasBody ? { "content-type": "application/json" } : {}),

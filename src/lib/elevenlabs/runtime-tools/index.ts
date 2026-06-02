@@ -83,6 +83,37 @@ export async function createRuntimeTool(
   return { id: json.id, name: json.tool_config?.name ?? spec.name };
 }
 
+/**
+ * List the workspace's ElevenLabs runtime tools (id + name). Used to recover
+ * the real document id for a tool we only know by name — e.g. when a binding's
+ * `elevenlabs_tool_id` got corrupted to the scoped name (see
+ * `healToolIdCorruption`). Tolerant of response shape: EL returns
+ * `{ tools: [{ id, tool_config: { name } }] }`, but we also accept a bare array
+ * and a flat `name`.
+ */
+export async function listRuntimeTools(): Promise<
+  Array<{ id: string; name: string }>
+> {
+  const res = await elFetch("/v1/convai/tools", {
+    method: "GET",
+    section: "tools",
+  });
+  const json = (await res.json()) as
+    | { tools?: Array<Record<string, unknown>> }
+    | Array<Record<string, unknown>>;
+  const rows = Array.isArray(json) ? json : (json.tools ?? []);
+  const out: Array<{ id: string; name: string }> = [];
+  for (const row of rows) {
+    const id = row.id;
+    const cfg = row.tool_config as { name?: unknown } | undefined;
+    const name = (cfg?.name ?? row.name) as unknown;
+    if (typeof id === "string" && typeof name === "string") {
+      out.push({ id, name });
+    }
+  }
+  return out;
+}
+
 export async function deleteRuntimeTool(toolId: string): Promise<void> {
   await elFetch(`/v1/convai/tools/${toolId}`, {
     method: "DELETE",

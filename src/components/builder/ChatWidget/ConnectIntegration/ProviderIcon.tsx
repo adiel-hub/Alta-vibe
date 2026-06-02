@@ -15,11 +15,11 @@ function HubspotMark() {
   );
 }
 
-function GoogleCalendarMark() {
+function ImageMark({ src }: { src: string }) {
   // eslint-disable-next-line @next/next/no-img-element -- matches twilio/hubspot pattern (plain <img>)
   return (
     <img
-      src="/integrations/google-calendar.png"
+      src={src}
       alt=""
       width={14}
       height={14}
@@ -28,9 +28,18 @@ function GoogleCalendarMark() {
   );
 }
 
+// Providers whose mark is a bundled PNG in /public/integrations.
+const IMAGE_MARKS: Record<string, string> = {
+  google_calendar: "/integrations/google-calendar.png",
+  salesforce: "/integrations/salesforce.png",
+  dynamics365: "/integrations/dynamic365.png",
+  outlook_calendar: "/integrations/outlook.png",
+};
+
 export function ProviderIcon({ provider }: { provider: string }) {
   if (provider === "hubspot") return <HubspotMark />;
-  if (provider === "google_calendar") return <GoogleCalendarMark />;
+  const imageSrc = IMAGE_MARKS[provider];
+  if (imageSrc) return <ImageMark src={imageSrc} />;
   return (
     <svg
       width="14"

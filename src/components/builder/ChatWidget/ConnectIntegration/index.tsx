@@ -24,6 +24,7 @@ export function ConnectIntegrationWidget({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [token, setToken] = useState("");
+  const [instanceUrl, setInstanceUrl] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [revealed, setRevealed] = useState(false);
   // Workspace connection state, loaded from the provider-tools catalog on
@@ -34,6 +35,8 @@ export function ConnectIntegrationWidget({
   const docs = PROVIDER_DOCS[payload.provider];
   const supportsToken = Boolean(docs?.tokenLabel);
   const supportsOAuth = Boolean(docs?.oauth);
+  const requiresInstanceUrl = Boolean(docs?.oauth?.instanceUrlLabel);
+  const providerName = prettify(payload.provider);
   const popupRef = useRef<Window | null>(null);
 
   // Probe the workspace connection state once per mount. Re-runs only if
@@ -76,7 +79,7 @@ export function ConnectIntegrationWidget({
           }
         | null;
       if (!data || typeof data.type !== "string") return;
-      if (!data.type.startsWith("google_calendar_oauth_")) return;
+      if (!data.type.startsWith(`${payload.provider}_oauth_`)) return;
       if (data.action_id && data.action_id !== widget.action_id) return;
       setBusy(false);
       try {
@@ -92,15 +95,20 @@ export function ConnectIntegrationWidget({
           void attachToTurn(agentId, data.resumed_job_id, 0);
         }
       } else {
-        setError("Google didn't finish the sign-in. Try again.");
+        setError(`${providerName} didn't finish the sign-in. Try again.`);
       }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [supportsOAuth, widget.action_id, agentId]);
+  }, [supportsOAuth, widget.action_id, agentId, payload.provider, providerName]);
 
   const startOAuth = async () => {
     if (!docs?.oauth) return;
+    const trimmedInstance = instanceUrl.trim().replace(/\/$/, "");
+    if (requiresInstanceUrl && !/^https:\/\/.+/i.test(trimmedInstance)) {
+      setError(`Enter your ${docs.oauth.instanceUrlLabel} (https://…).`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -110,6 +118,7 @@ export function ConnectIntegrationWidget({
         body: JSON.stringify({
           agent_id: agentId,
           action_id: widget.action_id,
+          ...(requiresInstanceUrl ? { instance_url: trimmedInstance } : {}),
         }),
       });
       const json = (await res.json().catch(() => null)) as {
@@ -121,7 +130,7 @@ export function ConnectIntegrationWidget({
       }
       const popup = window.open(
         json.url,
-        "google_calendar_oauth",
+        `${payload.provider}_oauth`,
         "popup=yes,width=520,height=640",
       );
       if (!popup) {
@@ -139,6 +148,12 @@ export function ConnectIntegrationWidget({
   const onConnect = async () => {
     setError(null);
     if (supportsOAuth) {
+      // Per-tenant providers reveal a URL field on first click, then open the
+      // popup on the second once the instance/org URL is filled.
+      if (requiresInstanceUrl && !expanded) {
+        setExpanded(true);
+        return;
+      }
       await startOAuth();
       return;
     }
@@ -241,10 +256,9 @@ export function ConnectIntegrationWidget({
   };
 
   const isPending = widget.status === "pending";
-  const providerName = prettify(payload.provider);
   const connectLabel = busy
     ? supportsOAuth
-      ? "Waiting for Google…"
+      ? `Waiting for ${providerName}…`
       : "Connecting…"
     : "Connect";
   // Show the "already connected" view only while the widget is still
@@ -305,6 +319,26 @@ export function ConnectIntegrationWidget({
           )}
         </div>
       </div>
+
+      {isPending && !showConnectedView && expanded && requiresInstanceUrl && docs?.oauth?.instanceUrlLabel && (
+        <div className="border-t border-(--color-border) bg-(--color-panel) px-3 py-2.5">
+          <label className="mb-1 block text-[11px] font-medium text-(--color-muted)">
+            {docs.oauth.instanceUrlLabel}
+          </label>
+          <input
+            type="url"
+            value={instanceUrl}
+            onChange={(e) => setInstanceUrl(e.target.value)}
+            disabled={busy}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            autoComplete="off"
+            placeholder={docs.oauth.instanceUrlPlaceholder ?? "https://…"}
+            className="w-full rounded-md border border-(--color-border) bg-white px-2.5 py-1.5 font-mono text-[11px] outline-none focus:border-(--color-accent)"
+          />
+        </div>
+      )}
 
       {isPending && !showConnectedView && expanded && supportsToken && docs?.tokenLabel && (
         <div className="border-t border-(--color-border) bg-(--color-panel) px-3 py-2.5">
@@ -382,7 +416,11 @@ export function ConnectIntegrationWidget({
           </button>
           <Button
             size="sm"
-            disabled={busy || (expanded && token.trim().length === 0)}
+            disabled={
+              busy ||
+              (expanded && supportsToken && !supportsOAuth && token.trim().length === 0) ||
+              (expanded && requiresInstanceUrl && instanceUrl.trim().length === 0)
+            }
             onClick={onConnect}
           >
             {connectLabel}

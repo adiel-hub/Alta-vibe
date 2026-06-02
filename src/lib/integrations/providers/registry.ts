@@ -3,12 +3,18 @@ import type { RuntimeTool } from "@/types/agent";
 import { HUBSPOT_PROVIDER } from "./hubspot";
 import { SLACK_PROVIDER } from "./slack";
 import { GOOGLE_CALENDAR_PROVIDER } from "./google";
+import { SALESFORCE_PROVIDER } from "./salesforce";
+import { DYNAMICS365_PROVIDER } from "./dynamics365";
+import { OUTLOOK_CALENDAR_PROVIDER } from "./outlook_calendar";
 import { ALTA_PROVIDER } from "./alta";
 
 export const PROVIDERS: IntegrationProvider[] = [
   HUBSPOT_PROVIDER,
   SLACK_PROVIDER,
   GOOGLE_CALENDAR_PROVIDER,
+  SALESFORCE_PROVIDER,
+  DYNAMICS365_PROVIDER,
+  OUTLOOK_CALENDAR_PROVIDER,
   ALTA_PROVIDER,
 ];
 

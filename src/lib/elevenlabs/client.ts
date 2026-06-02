@@ -77,6 +77,7 @@ export type { RuntimeToolSpec } from "./runtime-tools";
 export {
   createRuntimeTool,
   deleteRuntimeTool,
+  listRuntimeTools,
 } from "./runtime-tools";
 
 // --- Phone numbers ----------------------------------------------------------

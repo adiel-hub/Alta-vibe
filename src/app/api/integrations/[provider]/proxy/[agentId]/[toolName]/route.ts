@@ -9,9 +9,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { ObjectId } from "mongodb";
 import { findWorkspaceIntegration } from "@/lib/integrations/store";
-import { decryptToken } from "@/lib/integrations/tokens";
 import { getProvider, findProviderTool } from "@/lib/integrations/providers";
-import { getValidGoogleToken } from "@/lib/integrations/google/auth";
+import { resolveProviderToken } from "@/lib/integrations/oauth/tokenResolvers";
 import { createLogger, newRequestId } from "@/lib/logger";
 
 /**
@@ -97,22 +96,13 @@ async function handle(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  // Google Calendar uses OAuth2 with short-lived access tokens — delegate
-  // to a provider-specific resolver that refreshes in-place when needed.
-  // Other providers (HubSpot PAT, Slack bot token) just decrypt the stored
-  // access_token directly.
+  // Resolve the upstream access token via the provider→resolver registry:
+  // OAuth2 providers (Google, Salesforce, Dynamics, Outlook) refresh in-place
+  // when near expiry; static-credential providers (HubSpot PAT, Slack bot
+  // token) just decrypt the stored access_token.
   let token: string;
   try {
-    if (params.provider === "google_calendar") {
-      token = await getValidGoogleToken(params.agentId);
-    } else {
-      const encrypted = (doc.credentials as { access_token?: unknown }).access_token;
-      if (typeof encrypted !== "string") {
-        log.error("no encrypted token");
-        return NextResponse.json({ error: "Missing credentials" }, { status: 500 });
-      }
-      token = decryptToken(encrypted);
-    }
+    token = await resolveProviderToken(params.provider, params.agentId);
   } catch (err) {
     log.error("token resolve failed", {
       message: err instanceof Error ? err.message : String(err),
@@ -182,7 +172,15 @@ async function handle(
     }
   }
 
-  const upstream = providerDef.base_api_url + resolvedPath + (url.search || "");
+  // Per-tenant providers (Salesforce, Dynamics) store the customer's API base
+  // (`instance_url` / org URL) on the integration row at connect time. Prefer
+  // it over the provider's static base_api_url when present.
+  const instanceUrl = (doc.credentials as { instance_url?: unknown }).instance_url;
+  const baseApiUrl =
+    typeof instanceUrl === "string" && instanceUrl
+      ? instanceUrl.replace(/\/$/, "")
+      : providerDef.base_api_url;
+  const upstream = baseApiUrl + resolvedPath + (url.search || "");
 
   const upstreamHeaders: Record<string, string> = {
     Authorization: `Bearer ${token}`,
