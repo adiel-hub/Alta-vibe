@@ -6,11 +6,14 @@ node_modules
 
 # next.js
 .next
-out
+/out
 
 # production
-build
-dist
+# Anchored to repo root so these only match build OUTPUT dirs — a bare
+# `build` pattern also matches source route folders like
+# src/app/audiences/build/, silently dropping them from git (and deploys).
+/build
+/dist
 
 # misc
 .DS_Store
