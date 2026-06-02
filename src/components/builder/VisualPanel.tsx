@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore, type SectionKey } from "@/store/agentStore";
+import { useCallMonitorStore } from "@/store/callMonitorStore";
 import { OverviewTab } from "./tabs/Overview";
 import { WorkflowTab } from "./tabs/Workflow";
 import { VoiceTab } from "./tabs/Voice";
@@ -47,6 +48,8 @@ const FULL_BLEED_TABS: TabId[] = ["workflow"];
 
 export function VisualPanel({ agentId }: { agentId: string }) {
   const [tab, setTab] = useState<TabId>("persona");
+  const callStatus = useCallMonitorStore((s) => s.status);
+  const prevCallStatus = useRef(callStatus);
   const elevenLabsAgentId = useAgentStore(
     (s) => s.agent?.elevenlabs_agent_id,
   );
@@ -92,6 +95,16 @@ export function VisualPanel({ agentId }: { agentId: string }) {
     lastAutoSwitchAt.current = lastActiveSection.at;
     setTab(next);
   }, [lastActiveSection, activeJobId]);
+
+  // When a web test call starts, jump to the Workflow tab so the user can
+  // watch the call move through the graph live. Only fires on the idle→live
+  // edge (web calls), so a manual tab change mid-call is respected.
+  useEffect(() => {
+    if (callStatus === "live" && prevCallStatus.current !== "live") {
+      setTab("workflow");
+    }
+    prevCallStatus.current = callStatus;
+  }, [callStatus]);
 
   const fullBleed = FULL_BLEED_TABS.includes(tab);
 

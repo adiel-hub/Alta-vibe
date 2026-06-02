@@ -51,6 +51,8 @@ const Body = z
     label: z.string().max(120).nullable().optional(),
     condition: z.string().optional(),
     forward_condition: EdgeForwardCondition.optional(),
+    // `null` clears the backward (loop) condition; `undefined` keeps it.
+    backward_condition: EdgeForwardCondition.nullable().optional(),
   })
   .strict()
   .refine((v) => Object.keys(v).length > 0, "empty patch");
@@ -113,11 +115,17 @@ export async function PATCH(
       nextCondition = undefined;
     }
   }
+  // Backward (loop) condition: null clears, a value sets, absent keeps.
+  const nextBackward =
+    parsed.data.backward_condition === null
+      ? undefined
+      : parsed.data.backward_condition ?? current.backward_condition;
   const updatedEdge = {
     ...current,
     label: nextLabel,
     condition: nextCondition,
     forward_condition: nextForward,
+    backward_condition: nextBackward,
   };
   const nextEdges = [...agent.config_cache.workflow.edges];
   nextEdges[idx] = updatedEdge;

@@ -2188,6 +2188,34 @@ button.vb-el-phantom:hover {
     0 0 0 3px rgba(17, 24, 39, 0.08),
     var(--shadow-sm);
 }
+/* Live test-call position: the node the conversation is currently on pulses;
+   nodes it has already passed through stay dimly outlined as a trail. */
+.vb-el-node.call-active {
+  border-color: var(--color-call, #7c3aed);
+  animation: vb-call-pulse 1.4s ease-in-out infinite;
+}
+.vb-el-node.call-visited {
+  border-color: color-mix(in srgb, var(--color-call, #7c3aed) 55%, transparent);
+}
+.vb-el-node.call-visited .vb-el-body,
+.vb-el-node.call-visited .vb-el-icon {
+  opacity: 0.8;
+}
+@keyframes vb-call-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.5), var(--shadow-sm);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(124, 58, 237, 0), var(--shadow-sm);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vb-el-node.call-active {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.35), var(--shadow-sm);
+  }
+}
 .vb-el-icon {
   flex: 0 0 22px;
   width: 22px;
@@ -2317,6 +2345,152 @@ button.vb-el-phantom:hover {
   gap: 6px;
   padding: 10px 14px;
   border-top: 1px solid var(--color-panel-soft);
+}
+
+/* ── Edge condition editor: Forward/Backward tabs ──────────────────── */
+.vb-cond-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--color-panel-soft);
+}
+.vb-cond-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 8px 4px;
+  margin-right: 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-muted);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.vb-cond-tab:hover {
+  color: var(--color-foreground-strong);
+}
+.vb-cond-tab.is-active {
+  color: var(--color-foreground-strong);
+  border-bottom-color: var(--color-accent);
+}
+
+/* ── Expression builder (recursive AstNode editor) ─────────────────── */
+.vb-expr-root {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* Composite nodes (operators / groups / conditional) get a bordered card;
+   leaf nodes (variable / literal) render inline with no chrome. */
+.vb-expr-node {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--color-panel);
+}
+.vb-expr-node.is-inline {
+  border: none;
+  padding: 0;
+  background: none;
+}
+.vb-expr-node-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.vb-expr-kind-select {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 96px;
+}
+.vb-expr-var {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 120px;
+  min-width: 110px;
+}
+.vb-expr-var-icon {
+  position: absolute;
+  left: 8px;
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  color: var(--color-muted-soft);
+  pointer-events: none;
+}
+.vb-expr-var .vb-field-input {
+  padding-left: 30px;
+}
+.vb-expr-node-head > .vb-field-input,
+.vb-expr-node-head > .vb-field-textarea {
+  flex: 1 1 120px;
+  min-width: 110px;
+}
+.vb-expr-null {
+  font-size: 12px;
+  color: var(--color-muted);
+}
+/* Operand region (left/right, group children, if/then/else) — indented. */
+.vb-expr-operands {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 10px;
+  border-left: 2px solid var(--color-panel-soft);
+}
+.vb-expr-operand {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.vb-expr-operand-label {
+  flex: 0 0 36px;
+  padding-top: 7px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-muted-soft);
+}
+.vb-expr-operand > .vb-expr-node {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.vb-expr-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.vb-expr-add {
+  appearance: none;
+  align-self: flex-start;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel-soft);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--color-foreground-strong);
+  cursor: pointer;
+}
+.vb-expr-add:hover {
+  border-color: var(--color-border-strong);
+}
+.vb-expr-remove {
+  appearance: none;
+  border: none;
+  background: none;
+  color: var(--color-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px;
+  cursor: pointer;
+}
+.vb-expr-remove:hover {
+  color: var(--color-danger);
 }
 
 /* ── "Live build" reveal ─────────────────────────────────────────────

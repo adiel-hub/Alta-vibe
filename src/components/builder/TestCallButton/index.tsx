@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ConversationProvider, useConversation } from "@elevenlabs/react";
 import { appFetch } from "@/lib/apiClient";
+import { useAgentStore } from "@/store/agentStore";
+import { useCallMonitorStore } from "@/store/callMonitorStore";
 import { createClientLogger } from "@/lib/clientLogger";
 import type { TranscriptLine, View } from "./types";
 import { MenuItem } from "./MenuItem";
@@ -41,6 +43,26 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
   const rootRef = useRef<HTMLDivElement>(null);
 
   const conversation = useConversation({
+    onConnect: ({ conversationId }: { conversationId: string }) => {
+      log.info("web call connected", { conversationId });
+      useCallMonitorStore.getState().setConversationId(conversationId);
+    },
+    // Drives live workflow-node tracking. ElevenLabs emits a workflow tool
+    // `notify_condition_<N>_met` on every edge traversal and a system
+    // `end_call` at the end node; the engine maps those to the active node.
+    onAgentToolResponse: (e: {
+      tool_name?: string;
+      tool_type?: string;
+      is_error?: boolean;
+    }) => {
+      if (!e.tool_name || !e.tool_type) return;
+      useCallMonitorStore.getState().ingest({
+        kind: "tool_response",
+        toolName: e.tool_name,
+        toolType: e.tool_type,
+        isError: !!e.is_error,
+      });
+    },
     onError: (e: unknown) => {
       log.error("conversation error", {
         error: typeof e === "string" ? e : String(e),
@@ -64,6 +86,7 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
     },
     onDisconnect: () => {
       log.info("conversation disconnected");
+      useCallMonitorStore.getState().ingest({ kind: "disconnect" });
     },
   });
   const isActive = conversation.status === "connected";
@@ -97,6 +120,10 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
     setStarting(true);
     setTranscript([]);
     setOpen(false);
+    // Seed live node-tracking from a frozen snapshot of the current workflow
+    // graph, so the Workflow canvas can highlight the call's position.
+    const workflow = useAgentStore.getState().config?.workflow;
+    if (workflow) useCallMonitorStore.getState().start(workflow);
     try {
       const tokenRes = await appFetch(
         `/api/agents/${agentId}/conversation-token`,
@@ -109,6 +136,7 @@ function TestCallButtonInner({ agentId }: { agentId: string }) {
       log.error("start failed", {
         error: err instanceof Error ? err.message : String(err),
       });
+      useCallMonitorStore.getState().reset();
       setError(err instanceof Error ? err.message : "Failed to start session");
     } finally {
       setStarting(false);

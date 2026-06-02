@@ -8,6 +8,7 @@ import type {
 } from "@/types/agent";
 import { ICON, nodeDisplayLabel } from "./_shared/constants";
 import { Field } from "./_shared/Field";
+import { EdgeConditionEditor } from "./EdgeConditionEditor";
 import { IconTrash } from "./_shared/icons";
 import type { InspectorVoice } from "./_shared/types";
 import { loadVoicesCached } from "./_shared/voicesCache";
@@ -85,36 +86,12 @@ export function NodeInspector({
     Map<string, ProviderIconInfo>
   >(() => new Map());
 
-  // Edge-condition editor only renders when the user reached this panel
-  // by clicking an edge pill on the canvas. Direct node clicks never
-  // surface edge controls — edges are edited from the dedicated edge
-  // mode (see early return below). Storage stays on the edge; saves
-  // PATCH /workflow/edges/[edgeId].
+  // Edge-condition editing happens in a dedicated panel (EdgeConditionEditor)
+  // when the user clicks an edge pill on the canvas. Direct node clicks never
+  // surface edge controls.
   const incomingEdge = focusedEdgeId
     ? incomingEdges.find((e) => e.id === focusedEdgeId) ?? null
     : null;
-  const initialEntryFc = incomingEdge?.forward_condition;
-  const initialEntryType: "unconditional" | "llm" | "result" =
-    initialEntryFc?.type === "llm"
-      ? "llm"
-      : initialEntryFc?.type === "result"
-        ? "result"
-        : "unconditional";
-  const initialEntryCondition =
-    initialEntryFc?.type === "llm" ? initialEntryFc.condition : "";
-  const initialEntrySuccessful =
-    initialEntryFc?.type === "result" ? initialEntryFc.successful : true;
-  // Edge pill text. Priority on read matches the canvas: explicit
-  // condition.label first, then the edge's legacy root label.
-  const initialEntryLabel =
-    initialEntryFc?.label ?? incomingEdge?.label ?? "";
-  const [entryType, setEntryType] = useState<
-    "unconditional" | "llm" | "result"
-  >(initialEntryType);
-  const [entryCondition, setEntryCondition] = useState(initialEntryCondition);
-  const [entrySuccessful, setEntrySuccessful] = useState(initialEntrySuccessful);
-  const [entryLabel, setEntryLabel] = useState(initialEntryLabel);
-  const PILL_MAX_CHARS = 50;
 
   const canDelete = node?.id !== "start";
 
@@ -139,18 +116,6 @@ export function NodeInspector({
     setShowAdvanced(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
-
-  // Reset entry-condition state when the FOCUSED edge changes — covers
-  // clicking a different pill while staying on the same target node, and
-  // also re-initializes when the node itself changes (since incomingEdge
-  // becomes a different object).
-  useEffect(() => {
-    setEntryType(initialEntryType);
-    setEntryCondition(initialEntryCondition);
-    setEntrySuccessful(initialEntrySuccessful);
-    setEntryLabel(initialEntryLabel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingEdge?.id]);
 
   // Lazy-load voice list once per session for the override dropdown.
   useEffect(() => {
@@ -185,18 +150,8 @@ export function NodeInspector({
 
   if (!node) return null;
 
-  const entryDirty =
-    !!incomingEdge &&
-    (entryType !== initialEntryType ||
-      (entryType === "llm" && entryCondition !== initialEntryCondition) ||
-      (entryType === "result" && entrySuccessful !== initialEntrySuccessful) ||
-      entryLabel.trim() !== initialEntryLabel.trim());
   const dirty =
-    label !== initialLabel ||
-    JSON.stringify(data) !== initialData ||
-    entryDirty;
-  const entryConditionInvalid =
-    entryType === "llm" && entryCondition.trim().length === 0;
+    label !== initialLabel || JSON.stringify(data) !== initialData;
 
   const setField = (key: string, value: unknown) =>
     setData((d) => {
@@ -211,17 +166,11 @@ export function NodeInspector({
       onClose();
       return;
     }
-    if (entryConditionInvalid) {
-      setError("Entry condition cannot be empty.");
-      return;
-    }
     setSaving(true);
     setError(null);
     try {
-      // Save the node first (label / data). For tool_call nodes whose
-      // entry condition was edited, follow up with the edge PATCH —
-      // we do these sequentially so the second call sees the latest
-      // revision and the panel ends with one applied state_patch.
+      // Save the node's label / data. Edge conditions are edited separately
+      // via the EdgeConditionEditor (pill click).
       const nodeBody: { label?: string; data?: Record<string, unknown> } = {};
       if (label !== initialLabel) nodeBody.label = label;
       if (JSON.stringify(data) !== initialData) nodeBody.data = data;
@@ -232,51 +181,6 @@ export function NodeInspector({
             method: "PATCH",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(nodeBody),
-          },
-        );
-        if (!res.ok) {
-          const errBody = (await res.json().catch(() => null)) as
-            | { error?: string }
-            | null;
-          throw new Error(errBody?.error ?? `Save failed (${res.status})`);
-        }
-        const json = (await res.json()) as {
-          revision: number;
-          patch: Partial<AgentConfigCache>;
-        };
-        applyConfigDirect(json.patch, json.revision);
-      }
-      if (entryDirty && incomingEdge) {
-        const trimmedLabel = entryLabel.trim();
-        const labelField = trimmedLabel.length > 0 ? trimmedLabel : undefined;
-        const forwardCondition =
-          entryType === "unconditional"
-            ? {
-                type: "unconditional" as const,
-                ...(labelField ? { label: labelField } : {}),
-              }
-            : entryType === "llm"
-              ? {
-                  type: "llm" as const,
-                  condition: entryCondition.trim(),
-                  ...(labelField ? { label: labelField } : {}),
-                }
-              : {
-                  type: "result" as const,
-                  successful: entrySuccessful,
-                  ...(labelField ? { label: labelField } : {}),
-                };
-        const res = await appFetch(
-          `/api/agents/${agentId}/workflow/edges/${incomingEdge.id}`,
-          {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              forward_condition: forwardCondition,
-              // Also clear the legacy edge-root label so the pill only
-              // reads from the structured condition's label going forward.
-              label: labelField ?? null,
-            }),
           },
         );
         if (!res.ok) {
@@ -779,129 +683,13 @@ export function NodeInspector({
     const parentLabel = parentNode?.label ?? incomingEdge.from;
     const targetLabel = node.label || node.id;
     return (
-      <aside className="vb-el-inspector">
-        <header className="vb-el-inspector-head">
-          <span className="vb-el-icon" aria-hidden>
-            ⤷
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-semibold text-(--color-foreground-strong)">
-              {parentLabel} → {targetLabel}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close inspector"
-            className="grid h-7 w-7 place-items-center rounded-md text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-(--color-foreground-strong)"
-          >
-            ✕
-          </button>
-        </header>
-
-        <div className="vb-el-inspector-body">
-          <Field
-            label="Label (pill text)"
-            hint={`Short text that renders on the dark pill in the canvas — keep ≤${PILL_MAX_CHARS} chars. Leave empty to fall back to the condition body.`}
-          >
-            <input
-              dir="auto"
-              value={entryLabel}
-              maxLength={PILL_MAX_CHARS}
-              onChange={(e) => setEntryLabel(e.target.value)}
-              className="vb-field-input"
-              placeholder="e.g. wants billing"
-            />
-            <p className="mt-1 text-[10px] text-(--color-muted-soft)">
-              {entryLabel.length}/{PILL_MAX_CHARS}
-            </p>
-          </Field>
-          <Field
-            label="Condition"
-            hint={`Decides when the flow routes from “${parentLabel}” into “${targetLabel}”.`}
-          >
-            <select
-              value={entryType}
-              onChange={(e) =>
-                setEntryType(
-                  e.target.value as "unconditional" | "llm" | "result",
-                )
-              }
-              className="vb-field-input"
-            >
-              <option value="llm">LLM Condition</option>
-              <option value="unconditional">Unconditional</option>
-              <option value="result">Tool result branch</option>
-            </select>
-            {entryType === "llm" && (
-              <>
-                <textarea
-                  dir="auto"
-                  value={entryCondition}
-                  onChange={(e) => setEntryCondition(e.target.value)}
-                  placeholder="e.g. the caller confirmed they want to open a support ticket"
-                  rows={4}
-                  className={`vb-field-input vb-field-textarea mt-2 ${
-                    entryConditionInvalid
-                      ? "border-red-400/60 ring-1 ring-red-400/40"
-                      : ""
-                  }`}
-                />
-                {entryConditionInvalid && (
-                  <p className="mt-1 text-xs text-red-500">
-                    Condition cannot be empty.
-                  </p>
-                )}
-              </>
-            )}
-            {entryType === "result" && (
-              <select
-                value={entrySuccessful ? "successful" : "failed"}
-                onChange={(e) =>
-                  setEntrySuccessful(e.target.value === "successful")
-                }
-                className="vb-field-input mt-2"
-              >
-                <option value="successful">Parent tool succeeded</option>
-                <option value="failed">Parent tool failed</option>
-              </select>
-            )}
-            {entryType === "unconditional" && (
-              <p className="mt-1 text-xs text-(--color-muted)">
-                The flow always routes here next.
-              </p>
-            )}
-          </Field>
-
-          {error && (
-            <p
-              className="vb-field-hint"
-              style={{ color: "var(--color-danger)" }}
-            >
-              {error}
-            </p>
-          )}
-        </div>
-
-        <footer className="vb-el-inspector-foot">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={saving}
-            className="rounded-md px-3 py-1.5 text-xs text-(--color-muted) hover:text-(--color-foreground-strong)"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={save}
-            disabled={!entryDirty || saving}
-            className="rounded-md bg-(--color-foreground-strong) px-3 py-1.5 text-xs font-semibold text-white disabled:bg-(--color-border-strong) disabled:text-(--color-muted-soft)"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </footer>
-      </aside>
+      <EdgeConditionEditor
+        agentId={agentId}
+        edge={incomingEdge}
+        parentLabel={parentLabel}
+        targetLabel={targetLabel}
+        onClose={onClose}
+      />
     );
   }
 

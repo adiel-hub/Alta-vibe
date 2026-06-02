@@ -611,7 +611,17 @@ deliver the finished thing, not to negotiate.
        If you want different behaviour for the failure path, route it
        to a different target (e.g. a "ticket_failed" speak node that
        then forwards to wrap), so each (from, to) pair stays unique.
-     ➜ **Transfer nodes (type: "transfer") have hard requirements.**
+     ➜ **Put a condition on edges leaving conversational nodes
+       (speak / collect / condition).** Give each such edge a
+       \`forward_condition\` of \`{ type: "llm", condition: "...", label }\`
+       describing WHEN the flow should advance (e.g. "the caller's
+       question has been answered", "the caller said goodbye"). If you
+       leave these edges \`unconditional\`, the agent satisfies them
+       instantly and races straight through every node to \`end\`,
+       hanging up before it can actually talk. Reserve \`unconditional\`
+       for the start→first-node edge and for the single default exit of
+       a tool_call node; use \`{ type: "result", successful }\` to branch
+       on a tool node's success/failure.
        The platform translates them to ElevenLabs' standalone_agent or
        phone_number node types, and BOTH require a real target:
          - data.agent_id — an existing ElevenLabs agent_id, OR

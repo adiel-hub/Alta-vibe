@@ -12,6 +12,7 @@ import type {
 import type { ElevenAgentRaw } from "./types";
 import type { ElevenWorkflow, ElevenWorkflowNode } from "../workflow/types";
 import { isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
+import { findProviderTool, scopedToolName } from "@/lib/integrations/providers";
 
 export function projectAgentConfig(
   el: ElevenAgentRaw,
@@ -43,14 +44,26 @@ export function projectAgentConfig(
   const fallbackToolByName = new Map(fallback.tools.map((t) => [t.name, t]));
   const fallbackToolById = new Map(fallback.tools.map((t) => [t.id, t]));
   const bindingProviderByElId = new Map<string, string>();
+  // scoped tool name → real ElevenLabs document id, from the (authoritative)
+  // provider bindings. EL's inline `prompt.tools[]` often omits `id`; if we
+  // fell back to the name there, `config_cache.tools[].id` would become the
+  // scoped name and a later `tool_ids` patch would 404. Recover the real id by
+  // name from the binding (which `healToolIdCorruption` keeps valid).
+  const elIdByName = new Map<string, string>();
   for (const b of fallback.workflow.bindings ?? []) {
     if (b.kind === "provider") {
       bindingProviderByElId.set(b.elevenlabs_tool_id, b.provider);
+      const spec = findProviderTool(b.provider, b.tool_key);
+      if (spec) elIdByName.set(scopedToolName(spec), b.elevenlabs_tool_id);
     }
   }
   const inCallTools: RuntimeTool[] = p?.tools
     ? p.tools.map((tool) => {
-        const id = tool.id ?? tool.name;
+        const id =
+          tool.id ??
+          elIdByName.get(tool.name) ??
+          fallbackToolByName.get(tool.name)?.id ??
+          tool.name;
         const prior =
           fallbackToolByName.get(tool.name) ?? fallbackToolById.get(id);
         const provider = bindingProviderByElId.get(id) ?? prior?.provider;
@@ -282,6 +295,11 @@ function projectWorkflow(
     }
     if (Array.isArray(ext.additional_tool_ids))
       data.additional_tool_ids = ext.additional_tool_ids;
+    // Ordered list of this node's outgoing edge ids. ElevenLabs indexes the
+    // runtime `notify_condition_<N>_met` workflow tool into THIS array (1-based),
+    // so live-call node tracking needs it preserved verbatim — the local `edges`
+    // array order is object-iteration order and does NOT match.
+    if (Array.isArray(ext.edge_order)) data.edge_order = ext.edge_order;
     if (Array.isArray(ext.additional_knowledge_base))
       data.additional_knowledge_base = ext.additional_knowledge_base;
     const cc = ext.conversation_config as

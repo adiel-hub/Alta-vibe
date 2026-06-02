@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAgentStore } from "@/store/agentStore";
+import { useCallMonitorStore } from "@/store/callMonitorStore";
 import { appFetch } from "@/lib/apiClient";
 import type {
   AgentConfigCache,
@@ -147,6 +148,13 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   // to zoom further.
   const [zoom, setZoom] = useState(0.75);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Live test-call position (written by TestCallButton via the SDK's
+  // workflow-transition events). Independent of `selectedId`: a node can be
+  // both selected and the live call's active node.
+  const callStatus = useCallMonitorStore((s) => s.status);
+  const callActiveNodeId = useCallMonitorStore((s) => s.activeNodeId);
+  const callVisited = useCallMonitorStore((s) => s.visited);
+  const callLive = callStatus === "live" || callStatus === "ended";
   // When the user clicks an edge pill, we open the target node's inspector
   // AND remember which edge they actually wanted to edit — so the inspector
   // surfaces that edge's condition editor (the same UI tool_call nodes have
@@ -318,6 +326,27 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     // explicitly calls `recenter()`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeIdsKey]);
+
+  // Camera follows the live call: pan to center the active node as it moves.
+  // Pan only (keeps the user's zoom), and yields if the user is dragging/panning.
+  useEffect(() => {
+    if (callStatus !== "live" || !callActiveNodeId || !baseLayout) return;
+    if (panState.current?.active || dragState.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const node = workflow?.nodes.find((n) => n.id === callActiveNodeId);
+    const p = node?.position ?? baseLayout.positions.get(callActiveNodeId);
+    if (!p) return;
+    const isTerminal = node?.type === "start" || node?.type === "end";
+    const h = isTerminal ? TERMINAL_H : NODE_H;
+    setPan({
+      x: el.clientWidth / 2 - (p.x + NODE_W / 2) * zoom,
+      y: el.clientHeight / 2 - (p.y + h / 2) * zoom,
+    });
+    // zoom intentionally omitted: re-pan only when the active node changes,
+    // not on every zoom step (the wheel handler owns focal-point panning).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callActiveNodeId, callStatus]);
 
   if (!workflow || !baseLayout) return null;
 
@@ -829,6 +858,17 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 >
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-accent)" />
                 </marker>
+                <marker
+                  id="vb-arrow-call"
+                  viewBox="0 0 10 10"
+                  refX="8"
+                  refY="5"
+                  markerWidth="6"
+                  markerHeight="6"
+                  orient="auto"
+                >
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-call, #7c3aed)" />
+                </marker>
               </defs>
               {workflow.edges.map((e) => {
                 const a = laid.positions.get(e.from);
@@ -863,6 +903,12 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                 const isLit =
                   selectedId !== null &&
                   (e.from === selectedId || e.to === selectedId);
+                // Traversed by the live call: `from` immediately precedes `to`
+                // in the visited trail (consecutive, so we don't light edges
+                // the conversation never actually crossed).
+                const fromVisitIdx = callLive ? callVisited.indexOf(e.from) : -1;
+                const isTraversed =
+                  fromVisitIdx !== -1 && callVisited[fromVisitIdx + 1] === e.to;
                 const revealed = visibleEdgeIds.has(e.id);
                 return (
                   <g
@@ -874,12 +920,20 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                       className="vb-edge-path"
                       fill="none"
                       stroke={
-                        isLit
-                          ? "var(--color-accent)"
-                          : "var(--color-border-strong)"
+                        isTraversed
+                          ? "var(--color-call, #7c3aed)"
+                          : isLit
+                            ? "var(--color-accent)"
+                            : "var(--color-border-strong)"
                       }
-                      strokeWidth={isLit ? 2 : 1.5}
-                      markerEnd={`url(#${isLit ? "vb-arrow-lit" : "vb-arrow"})`}
+                      strokeWidth={isTraversed ? 2.5 : isLit ? 2 : 1.5}
+                      markerEnd={`url(#${
+                        isTraversed
+                          ? "vb-arrow-call"
+                          : isLit
+                            ? "vb-arrow-lit"
+                            : "vb-arrow"
+                      })`}
                     />
                   </g>
                 );
@@ -972,6 +1026,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
               const p = laid.positions.get(n.id);
               if (!p) return null;
               const isSel = n.id === selectedId;
+              // Pulse the active node only during a live call; once ended, the
+              // whole path (including the final node) settles into the dim trail.
+              const isCallActive = callStatus === "live" && n.id === callActiveNodeId;
+              const isCallVisited =
+                callLive && callVisited.includes(n.id) && !isCallActive;
               const desc =
                 (n.data?.prompt as string | undefined) ??
                 (n.data?.instruction as string | undefined) ??
@@ -1027,6 +1086,8 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
                       isSel ? "selected" : ""
                     } ${
                       isTerminal ? "vb-el-terminal" : ""
+                    } ${isCallActive ? "call-active" : ""} ${
+                      isCallVisited ? "call-visited" : ""
                     }`}
                     style={{
                       width: nodeWidth,

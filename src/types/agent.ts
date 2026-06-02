@@ -105,17 +105,63 @@ export type WorkflowNode = {
 };
 
 /**
+ * Expression AST for the `expression` edge condition. Mirrors ElevenLabs'
+ * `AstNodeInput` wire shape VERBATIM (leaves + binary comparisons + n-ary
+ * and/or groups), so a value built here round-trips to upstream unchanged.
+ * We model the common subset the builder exposes; upstream supports a wider
+ * operator set (arithmetic, conditional, llm) we don't surface.
+ */
+/** Comparison ops (return boolean) and arithmetic ops (return number) — all binary. */
+export type WorkflowComparisonOp =
+  | "eq_operator"
+  | "neq_operator"
+  | "gt_operator"
+  | "gte_operator"
+  | "lt_operator"
+  | "lte_operator";
+export type WorkflowArithmeticOp =
+  | "add_operator"
+  | "sub_operator"
+  | "mul_operator"
+  | "div_operator";
+export type WorkflowBinaryOp = WorkflowComparisonOp | WorkflowArithmeticOp;
+
+/** The `llm` operand evaluates a sub-prompt (boolean) or a JSON-schema extraction. */
+export type WorkflowLlmAstValue =
+  | { type?: "llm"; prompt: string }
+  | { type?: "llm"; valueSchema: unknown };
+
+export type WorkflowAstNode =
+  | { type: "dynamic_variable"; name: string }
+  | { type: "string_literal"; value: string }
+  | { type: "number_literal"; value: number }
+  | { type: "boolean_literal"; value: boolean }
+  | { type: "null_literal" }
+  | { type: "llm"; value: WorkflowLlmAstValue }
+  | { type: WorkflowBinaryOp; left: WorkflowAstNode; right: WorkflowAstNode }
+  | { type: "and_operator" | "or_operator"; children: WorkflowAstNode[] }
+  | {
+      type: "conditional_operator";
+      condition: WorkflowAstNode;
+      trueExpression: WorkflowAstNode;
+      falseExpression: WorkflowAstNode;
+    };
+
+/**
  * Edge condition discriminated union. Matches ElevenLabs' four accepted
  * `forward_condition` / `backward_condition` variants:
  *   - "unconditional"  — always traverse
  *   - "llm"            — natural-language predicate evaluated by the LLM
- *   - "expression"     — deterministic AST evaluated against state (the
- *                        ASTNode shape is treated as an opaque JSON blob)
+ *   - "expression"     — deterministic AST evaluated against state (see
+ *                        WorkflowAstNode)
  *   - "result"         — branches on a `tool` node's success/failure
  */
 export type WorkflowEdgeCondition =
   | { type: "unconditional"; label?: string }
   | { type: "llm"; condition: string; label?: string }
+  // `expression` stays `unknown` at this boundary so the serialization layers
+  // (which validate it with z.unknown()) pass it through without casts. The
+  // editor narrows it to WorkflowAstNode where it actually builds the tree.
   | { type: "expression"; expression: unknown; label?: string }
   | { type: "result"; successful: boolean; label?: string };
 
