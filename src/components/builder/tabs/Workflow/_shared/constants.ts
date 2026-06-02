@@ -2,8 +2,8 @@ import type { WorkflowNodeType } from "@/types/agent";
 
 export const NODE_W = 260;
 export const NODE_H = 96;
-export const COL_GAP = 160;
-export const ROW_GAP = 88;
+export const COL_GAP = 320;
+export const ROW_GAP = 176;
 export const PADDING = 32;
 export const EDGE_LABEL_W = 140;
 /**

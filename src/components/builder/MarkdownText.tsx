@@ -39,6 +39,7 @@ export function MarkdownText({
 
 type Block =
   | { kind: "p"; text: string }
+  | { kind: "h"; level: number; text: string }
   | { kind: "ul"; items: string[] }
   | { kind: "ol"; items: string[] };
 
@@ -69,8 +70,16 @@ function parseBlocks(text: string): Block[] {
   };
 
   for (const raw of lines) {
+    const hMatch = /^(#{1,6})\s+(.+?)\s*#*$/.exec(raw);
     const ulMatch = /^\s*[-*]\s+(.+)$/.exec(raw);
     const olMatch = /^\s*\d+\.\s+(.+)$/.exec(raw);
+    if (hMatch) {
+      flushPara();
+      flushUl();
+      flushOl();
+      out.push({ kind: "h", level: hMatch[1].length, text: hMatch[2] });
+      continue;
+    }
     if (ulMatch) {
       flushPara();
       flushOl();
@@ -101,10 +110,34 @@ function parseBlocks(text: string): Block[] {
   return out;
 }
 
+// Heading sizing by ATX level. `#`/`##` read as section titles; deeper
+// levels taper toward body weight so a prompt's outline stays scannable
+// without any single heading shouting.
+const HEADING_CLASS: Record<number, string> = {
+  1: "text-[15px] font-semibold",
+  2: "text-[14px] font-semibold",
+  3: "text-[13px] font-semibold",
+  4: "text-[13px] font-medium",
+  5: "text-[13px] font-medium",
+  6: "text-[13px] font-medium",
+};
+
 function renderBlock(b: Block, key: number, cursor: ReactNode | null): ReactNode {
   if (b.kind === "p") {
     return (
       <p key={key} className="whitespace-pre-wrap leading-relaxed">
+        {renderInline(b.text)}
+        {cursor}
+      </p>
+    );
+  }
+  if (b.kind === "h") {
+    const cls = HEADING_CLASS[b.level] ?? HEADING_CLASS[6];
+    return (
+      <p
+        key={key}
+        className={`${cls} mt-3 mb-1 leading-snug text-(--color-foreground-strong) first:mt-0`}
+      >
         {renderInline(b.text)}
         {cursor}
       </p>

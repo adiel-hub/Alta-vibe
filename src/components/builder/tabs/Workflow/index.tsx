@@ -20,6 +20,7 @@ import {
   ICON,
   NODE_H,
   NODE_W,
+  PADDING,
   TERMINAL_H,
   nodeDisplayLabel,
 } from "./_shared/constants";
@@ -335,7 +336,7 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
     const el = scrollRef.current;
     if (!el) return;
     const node = workflow?.nodes.find((n) => n.id === callActiveNodeId);
-    const p = node?.position ?? baseLayout.positions.get(callActiveNodeId);
+    const p = baseLayout.positions.get(callActiveNodeId);
     if (!p) return;
     const isTerminal = node?.type === "start" || node?.type === "end";
     const h = isTerminal ? TERMINAL_H : NODE_H;
@@ -351,27 +352,34 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
   if (!workflow || !baseLayout) return null;
 
   // Effective positions, in priority order:
-  //   1. Active drag override (this session's in-flight drag).
-  //   2. Persisted `node.position` (round-trips through the serializer,
-  //      so EL-dashboard placements + earlier drags survive reload).
-  //   3. Auto-layout fallback (greenfield workflow with no positions).
-  const persistedPosById = new Map(
-    workflow.nodes
-      .filter((n) => n.position)
-      .map((n) => [n.id, n.position as { x: number; y: number }] as const),
-  );
+  //   1. Active drag override (this session's in-flight drag — transient,
+  //      not persisted).
+  //   2. Auto-layout (the single source of truth). Any persisted
+  //      `node.position` (EL-dashboard placements / older drags) is
+  //      intentionally ignored so the graph always renders in the clean,
+  //      spread-out BFS layout.
   const getPos = (id: string) =>
-    overrides[id] ??
-    persistedPosById.get(id) ??
-    baseLayout.positions.get(id) ??
-    { x: 0, y: 0 };
+    overrides[id] ?? baseLayout.positions.get(id) ?? { x: 0, y: 0 };
 
+  const positions = new Map(
+    workflow.nodes.map((n) => [n.id, getPos(n.id)] as const),
+  );
+
+  // Size the stage/SVG to the actual extent of the rendered positions, not
+  // just the BFS bounds — so an in-session drag past the edge can never
+  // clip a node card or its connectors. Edges stay within node bounds
+  // (Bezier control points lie between the anchors), so enclosing the node
+  // extent encloses the edges too.
+  let maxX = 0;
+  let maxY = 0;
+  for (const p of positions.values()) {
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
   const laid = {
-    width: baseLayout.width,
-    height: baseLayout.height,
-    positions: new Map(
-      workflow.nodes.map((n) => [n.id, getPos(n.id)] as const),
-    ),
+    width: Math.max(baseLayout.width, maxX + NODE_W + PADDING),
+    height: Math.max(baseLayout.height, maxY + NODE_H + PADDING),
+    positions,
   };
 
   // ── Canvas pan: mousedown on empty area, move, up. Updates a translate
@@ -443,42 +451,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
         setSelectedId(dragState.current.nodeId);
         setFocusedEdgeId(null);
         setAddMenuFor(null);
-      } else {
-        // The pointer actually moved — persist the final position to
-        // the backend so it survives reload + Alta re-saves. Local
-        // `overrides` state is the source of truth during the drag;
-        // the PATCH writes that into `node.position` (which the
-        // serializer round-trips to ElevenLabs).
-        const id = dragState.current.nodeId;
-        const finalPos = overrides[id];
-        if (finalPos) {
-          void appFetch(`/api/agents/${agentId}/workflow/${id}`, {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              position: { x: finalPos.x, y: finalPos.y },
-            }),
-          })
-            .then(async (res) => {
-              if (!res.ok) {
-                const body = (await res
-                  .json()
-                  .catch(() => null)) as { error?: string } | null;
-                throw new Error(
-                  body?.error ?? `Save position failed (${res.status})`,
-                );
-              }
-              const json = (await res.json()) as {
-                revision: number;
-                patch: Partial<AgentConfigCache>;
-              };
-              applyConfigDirect(json.patch, json.revision);
-            })
-            .catch((err) => {
-              console.error("persist node position failed", err);
-            });
-        }
       }
+      // A drag that moved is transient only: the `overrides` entry keeps the
+      // node under the cursor for this session, but we no longer persist it.
+      // The auto-layout is the single source of truth, so the node returns to
+      // its computed slot on reload.
       dragState.current = null;
       if (el) el.style.cursor = "grab";
       el?.releasePointerCapture?.(e.pointerId);

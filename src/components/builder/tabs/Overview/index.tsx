@@ -6,6 +6,7 @@ import { useAgentStore } from "@/store/agentStore";
 import { Button } from "@/components/ui/Button";
 import type { AgentConfigCache } from "@/types/agent";
 import { Typewriter } from "../../Typewriter";
+import { MarkdownLiveEditor } from "../../MarkdownLiveEditor";
 
 /**
  * Persona tab — the "doc page" version of the agent's identity.
@@ -62,6 +63,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
           busy={inFlight.has("system_prompt")}
           pending={systemPromptPending}
           multiline
+          markdown
           rows={14}
           placeholder="You are a helpful voice agent…"
           fill
@@ -129,6 +131,7 @@ function PersonaField({
   label,
   value,
   multiline,
+  markdown,
   rows,
   mono,
   busy,
@@ -143,6 +146,9 @@ function PersonaField({
   label: string;
   value: string;
   multiline?: boolean;
+  /** Render the idle editor as a live in-place markdown editor (system
+   *  prompt) instead of a plain textarea. */
+  markdown?: boolean;
   rows?: number;
   mono?: boolean;
   busy?: boolean;
@@ -324,6 +330,24 @@ function PersonaField({
           >
             <Typewriter text={value} live cps={cps} />
           </div>
+        ) : markdown ? (
+          // Single in-place editor: the user types raw markdown and sees it
+          // formatted live, in the same box. `draft` stays the exact markdown
+          // string, so Save round-trips losslessly.
+          <MarkdownLiveEditor
+            value={draft}
+            onChange={(next) => {
+              setDraft(next);
+              setDirty(true);
+            }}
+            placeholder={placeholder}
+            fill={fill}
+            className={`vb-field-input vb-field-textarea ${
+              fill
+                ? "min-h-0 flex-1 overflow-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                : ""
+            }`}
+          />
         ) : multiline ? (
           <textarea
             dir="auto"
