@@ -85,12 +85,27 @@ export type PhoneNumber = {
 
 // --- Workflow graph --------------------------------------------------------
 
+/**
+ * Internal node types. These mirror ElevenLabs' workflow node set 1:1 — every
+ * type here maps to exactly one upstream node type (no invented client-only
+ * nodes):
+ *   - speak        → override_agent  ("Subagent": scoped prompt/tools/KB)
+ *   - say          → say             (Alpha: speak a literal line or LLM message)
+ *   - update_state → update_state    (set conversation variables)
+ *   - tool_call    → tool
+ *   - transfer     → standalone_agent | phone_number (data-dependent)
+ *   - start/end    → start / end
+ *
+ * Legacy `collect` / `condition` nodes (older builder inventions that both
+ * projected to override_agent) are no longer authored; they are normalized to
+ * `speak` on read/serialize via {@link normalizeWorkflowNodeType}.
+ */
 export type WorkflowNodeType =
   | "start"
   | "speak"
-  | "collect"
+  | "say"
+  | "update_state"
   | "tool_call"
-  | "condition"
   | "transfer"
   | "end";
 
@@ -98,11 +113,66 @@ export type WorkflowNode = {
   id: string;
   type: WorkflowNodeType;
   label: string;
-  /** Free-form data per node type (prompt, tool_id, collect_field, condition, etc). */
+  /**
+   * Free-form data per node type:
+   *   - speak:        prompt (→ additional_prompt) + override extras
+   *   - say:          message_type ("literal"|"prompt"), message_text |
+   *                   message_prompt, + override extras
+   *   - update_state: updates[] of { variable_name, expression } (expression is
+   *                   the opaque AST — see WorkflowAstNode)
+   *   - tool_call:    tool_ids[] / tool_id
+   *   - transfer:     agent_id | phone_number | sip_uri (+ transfer opts)
+   */
   data: Record<string, unknown>;
   /** Layout hint; consumed by the right-panel renderer. Auto-laid-out by default. */
   position?: { x: number; y: number };
 };
+
+/**
+ * Normalize a (possibly legacy) node type string to the canonical set. Older
+ * cached workflows may still carry `collect` / `condition` — both projected to
+ * `override_agent` on the wire, so they fold losslessly into `speak`. Unknown
+ * strings also default to `speak` (the most generic override_agent node).
+ * Applied wherever a workflow is read from cache or serialized upstream.
+ */
+export function normalizeWorkflowNodeType(type: string): WorkflowNodeType {
+  switch (type) {
+    case "start":
+    case "speak":
+    case "say":
+    case "update_state":
+    case "tool_call":
+    case "transfer":
+    case "end":
+      return type;
+    // Legacy builder-only nodes — collapse into the override_agent node.
+    case "collect":
+    case "condition":
+    default:
+      return "speak";
+  }
+}
+
+/**
+ * One variable assignment inside an `update_state` node. `variable_name` is the
+ * conversation-state key to set; `expression` is the opaque ElevenLabs AST that
+ * computes the value (string/number/boolean literal, dynamic_variable, llm, or
+ * an operator tree — see WorkflowAstNode). We keep `expression` as `unknown` so
+ * complex trees round-trip verbatim even when the inspector only edits leaves.
+ */
+export type WorkflowStateUpdate = {
+  variable_name: string;
+  expression: unknown;
+};
+
+/**
+ * `say` node message — a discriminated union ElevenLabs keys on `type`:
+ *   - literal: a fixed line of text the agent speaks verbatim
+ *   - prompt:  an instruction the LLM uses to generate the line
+ */
+export type WorkflowSayMessage =
+  | { type: "literal"; text: string }
+  | { type: "prompt"; prompt: string };
 
 /**
  * Expression AST for the `expression` edge condition. Mirrors ElevenLabs'

@@ -51,6 +51,27 @@ export type ElevenWorkflowNode = {
    * forward_condition in order; the first one that matches wins.
    */
   edge_order?: string[];
+  /**
+   * `say` node only (REQUIRED on that node type). Discriminated on `type`:
+   *   - { type: "literal", text }  — speak this exact line
+   *   - { type: "prompt", prompt } — LLM generates the line from this prompt
+   */
+  message?:
+    | { type: "literal"; text: string }
+    | { type: "prompt"; prompt: string };
+  /**
+   * `update_state` node only (REQUIRED on that node type). Each entry sets a
+   * conversation-state variable from an AST expression. The wire item carries
+   * its own `type` discriminator (currently always "dynamic_variable") and an
+   * `expression` AST node (string_literal/number_literal/boolean_literal/
+   * null_literal/dynamic_variable/llm/operators) — kept opaque, same as edge
+   * `expression` conditions.
+   */
+  updates?: Array<{
+    type?: "dynamic_variable";
+    variable_name: string;
+    expression: unknown;
+  }>;
   /** Free-form per-type config (tool_id, target_agent_id, phone_number, …). */
   [extra: string]: unknown;
 };

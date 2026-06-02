@@ -810,7 +810,19 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
             <svg
               width={laid.width}
               height={laid.height}
-              style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+              style={{
+                position: "absolute",
+                inset: 0,
+                pointerEvents: "none",
+                // An <svg> clips to its own [0,0,width,height] viewport by
+                // default. The nodes are HTML siblings (NOT inside the SVG),
+                // so when a node is dragged up/left into negative space its
+                // card still renders but its connector gets sliced off at the
+                // SVG boundary — a visible "cut line". The outer canvas
+                // (overflow:hidden) already clips to the viewport, so letting
+                // edges paint past the SVG bounds is safe.
+                overflow: "visible",
+              }}
             >
               <defs>
                 <marker
@@ -1362,14 +1374,11 @@ export function WorkflowTab({ agentId }: { agentId: string }) {
             const parentId = toolPickerFor;
             setToolPickerFor(null);
             const parent = workflow.nodes.find((n) => n.id === parentId);
-            // Only override_agent parents (speak / collect / condition)
-            // support `additional_tool_ids`; for any other parent type
-            // the "attach to node" choice is meaningless, so fall through
-            // to creating a new tool_call child.
-            const canAttach =
-              parent?.type === "speak" ||
-              parent?.type === "collect" ||
-              parent?.type === "condition";
+            // Only override_agent-class parents (speak / say) support
+            // `additional_tool_ids`; for any other parent type the "attach to
+            // node" choice is meaningless, so fall through to creating a new
+            // tool_call child.
+            const canAttach = parent?.type === "speak" || parent?.type === "say";
             if (canAttach && parent) {
               setAttachChoice({ parentId, tool });
               return;

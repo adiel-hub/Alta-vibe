@@ -33,10 +33,26 @@ export const ADD_NODE_MENU: Array<{
    */
   data?: Record<string, unknown>;
 }> = [
-  { type: "speak", label: "Say", hint: "Agent speaks a line.", defaultLabel: "Speak" },
-  { type: "collect", label: "Ask", hint: "Collect a field from the caller.", defaultLabel: "Collect" },
-  { type: "condition", label: "Router", hint: "Branch on a variable or rule.", defaultLabel: "Route" },
-  { type: "tool_call", label: "Tool", hint: "Run a runtime tool.", defaultLabel: "Tool call" },
+  {
+    type: "speak",
+    label: "Subagent",
+    hint: "Override the agent's behavior for this step (goal, tools, knowledge).",
+    defaultLabel: "Subagent",
+  },
+  {
+    type: "say",
+    label: "Say",
+    hint: "Speak a fixed line, or an LLM-generated message.",
+    defaultLabel: "Say",
+    data: { message_type: "literal", message_text: "" },
+  },
+  {
+    type: "update_state",
+    label: "Update state",
+    hint: "Set conversation variables.",
+    defaultLabel: "Update state",
+    data: { updates: [] },
+  },
   {
     type: "transfer",
     label: "Agent transfer",
@@ -51,6 +67,7 @@ export const ADD_NODE_MENU: Array<{
     defaultLabel: "Transfer to phone",
     data: { phone_number: "" },
   },
+  { type: "tool_call", label: "Tool", hint: "Run a runtime tool.", defaultLabel: "Tool call" },
   { type: "end", label: "End", hint: "End the call.", defaultLabel: "End call" },
 ];
 
@@ -59,9 +76,9 @@ export const ADD_NODE_MENU: Array<{
  *  unnamed node with its raw id like "tool_call_ksj5lvr"). */
 export const DEFAULT_NODE_LABEL: Record<WorkflowNodeType, string> = {
   start: "Start",
-  speak: "Speak",
-  collect: "Collect",
-  condition: "Route",
+  speak: "Subagent",
+  say: "Say",
+  update_state: "Update state",
   tool_call: "Tool node",
   transfer: "Transfer",
   end: "End call",
@@ -90,8 +107,8 @@ export function nodeDisplayLabel(node: {
 export const ICON: Record<WorkflowNodeType, string> = {
   start: "⚑",
   speak: "🙂",
-  collect: "❓",
-  condition: "⤳",
+  say: "💬",
+  update_state: "✎",
   tool_call: "🔧",
   transfer: "↪",
   end: "✕",

@@ -22,13 +22,14 @@ import { ProviderIcon } from "../Tools/primitives/ProviderIcon";
 //
 // Surfaces every field the ElevenLabs workflow node schema exposes, keyed
 // off our internal node.type:
-//   - speak     → maps to override_agent: additional_prompt
-//   - collect   → override_agent + a `collect_field` data key
-//   - condition → override_agent acting as router; surfaces `expression`
-//   - tool_call → tool: tools[].tool_id (dropdown of agent's tools)
-//   - transfer  → phone_number (data.phone_number → transfer_destination)
-//                 OR standalone_agent (data.agent_id) — picker selects mode
-//   - start/end → no editable fields
+//   - speak        → override_agent: additional_prompt (+ advanced overrides)
+//   - say          → say: a structured message (literal text | LLM prompt),
+//                    plus the same advanced overrides as override_agent
+//   - update_state → update_state: variable assignments (updates[])
+//   - tool_call    → tool: tools[].tool_id (dropdown of agent's tools)
+//   - transfer     → phone_number (data.phone_number → transfer_destination)
+//                    OR standalone_agent (data.agent_id) — picker selects mode
+//   - start/end    → no editable fields
 //
 // Saves a single PATCH body { label?, data? } and replays the response patch
 // into the store. Outgoing connections aren't shown here — the user reads them
@@ -209,8 +210,8 @@ export function NodeInspector({
       case "speak":
         return (
           <Field
-            label="What the agent should say"
-            hint="Free-text instruction the agent follows when it reaches this node. Used as additional_prompt on the override_agent node."
+            label="What this step should do"
+            hint="Goal/instruction the agent follows while this node is active. Serialized as additional_prompt on the override_agent node. Branching happens on the outgoing edges."
           >
             <textarea
               dir="auto"
@@ -223,67 +224,228 @@ export function NodeInspector({
           </Field>
         );
 
-      case "collect":
+      case "say": {
+        const messageType =
+          data.message_type === "prompt" ? "prompt" : "literal";
+        const modeBtnClass = (active: boolean) =>
+          `flex-1 rounded-md border px-2 py-1.5 text-xs ${
+            active
+              ? "border-(--color-accent) bg-(--color-accent)/10 text-(--color-accent)"
+              : "border-(--color-border) text-(--color-muted)"
+          }`;
         return (
           <>
-            <Field
-              label="What to collect"
-              hint="The single piece of information this node should gather (used as a dynamic variable name in the conversation)."
-            >
-              <input
-                dir="auto"
-                value={(data.collect_field as string) ?? ""}
-                onChange={(e) => setField("collect_field", e.target.value)}
-                className="vb-field-input"
-                placeholder="e.g. caller_email"
-              />
+            <Field label="Message">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setField("message_type", "literal")}
+                  className={modeBtnClass(messageType === "literal")}
+                >
+                  Spoken text
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setField("message_type", "prompt")}
+                  className={modeBtnClass(messageType === "prompt")}
+                >
+                  LLM prompt
+                </button>
+              </div>
             </Field>
-            <Field
-              label="How to ask"
-              hint="Instruction the agent follows while gathering this info."
-            >
-              <textarea
-                dir="auto"
-                value={(data.prompt as string) ?? ""}
-                onChange={(e) => setField("prompt", e.target.value)}
-                className="vb-field-input vb-field-textarea"
-                rows={5}
-                placeholder="e.g. Ask the caller for their email so we can follow up."
-              />
-            </Field>
+            {messageType === "literal" ? (
+              <Field
+                label="Text to speak"
+                hint="The exact line the agent speaks. Serialized as message { type: literal, text }."
+              >
+                <textarea
+                  dir="auto"
+                  value={(data.message_text as string) ?? ""}
+                  onChange={(e) => setField("message_text", e.target.value)}
+                  className="vb-field-input vb-field-textarea"
+                  rows={5}
+                  placeholder="e.g. Thanks for calling — one moment while I pull that up."
+                />
+              </Field>
+            ) : (
+              <Field
+                label="Prompt"
+                hint="Instruction the LLM uses to generate the line. Serialized as message { type: prompt, prompt }."
+              >
+                <textarea
+                  dir="auto"
+                  value={(data.message_prompt as string) ?? ""}
+                  onChange={(e) => setField("message_prompt", e.target.value)}
+                  className="vb-field-input vb-field-textarea"
+                  rows={5}
+                  placeholder="e.g. Confirm the caller's request back to them in one sentence."
+                />
+              </Field>
+            )}
           </>
         );
+      }
 
-      case "condition":
+      case "update_state": {
+        const updates = Array.isArray(data.updates)
+          ? (data.updates as Array<Record<string, unknown>>)
+          : [];
+        // Read a single update's value as an editable string + a "kind" so the
+        // common leaf expressions (text/number/boolean/variable) are editable.
+        // Anything more complex (operator trees, llm) is preserved verbatim and
+        // shown read-only so it round-trips unchanged.
+        type Kind = "text" | "number" | "boolean" | "variable" | "complex";
+        const readExpr = (
+          expr: unknown,
+        ): { kind: Kind; value: string } => {
+          const e = expr as { type?: string; value?: unknown; name?: unknown };
+          switch (e?.type) {
+            case "string_literal":
+              return { kind: "text", value: String(e.value ?? "") };
+            case "number_literal":
+              return { kind: "number", value: String(e.value ?? "") };
+            case "boolean_literal":
+              return { kind: "boolean", value: e.value ? "true" : "false" };
+            case "dynamic_variable":
+              return { kind: "variable", value: String(e.name ?? "") };
+            default:
+              return { kind: "complex", value: "" };
+          }
+        };
+        const buildExpr = (kind: Kind, value: string): unknown => {
+          switch (kind) {
+            case "number":
+              return { type: "number_literal", value: Number(value) || 0 };
+            case "boolean":
+              return { type: "boolean_literal", value: value === "true" };
+            case "variable":
+              return { type: "dynamic_variable", name: value };
+            case "text":
+            default:
+              return { type: "string_literal", value };
+          }
+        };
+        const writeUpdates = (next: typeof updates) =>
+          setField("updates", next);
+        const patchUpdate = (i: number, patch: Record<string, unknown>) =>
+          writeUpdates(
+            updates.map((u, idx) => (idx === i ? { ...u, ...patch } : u)),
+          );
         return (
-          <>
-            <Field
-              label="Routing expression"
-              hint="Variable name or short logical expression. The outgoing edges' conditions are evaluated against this."
-            >
-              <input
-                dir="auto"
-                value={(data.expression as string) ?? ""}
-                onChange={(e) => setField("expression", e.target.value)}
-                className="vb-field-input"
-                placeholder="e.g. issue_category"
-              />
-            </Field>
-            <Field
-              label="Router instructions"
-              hint="Optional guidance the LLM uses when deciding which branch to take."
-            >
-              <textarea
-                dir="auto"
-                value={(data.prompt as string) ?? ""}
-                onChange={(e) => setField("prompt", e.target.value)}
-                className="vb-field-input vb-field-textarea"
-                rows={4}
-                placeholder="Decide which branch best matches the caller's intent."
-              />
-            </Field>
-          </>
+          <Field
+            label="Variable assignments"
+            hint="Each row sets a conversation-state variable. Reference these later with {{variable_name}} or in edge expressions."
+          >
+            <div className="space-y-2">
+              {updates.length === 0 && (
+                <p className="rounded-md border border-dashed border-(--color-border) bg-(--color-panel-soft) px-3 py-2 text-xs text-(--color-muted)">
+                  No assignments yet.
+                </p>
+              )}
+              {updates.map((u, i) => {
+                const { kind, value } = readExpr(u.expression);
+                return (
+                  <div
+                    key={i}
+                    className="space-y-1.5 rounded-md border border-(--color-border) p-2"
+                  >
+                    <div className="flex gap-1.5">
+                      <input
+                        dir="auto"
+                        value={(u.variable_name as string) ?? ""}
+                        onChange={(e) =>
+                          patchUpdate(i, { variable_name: e.target.value })
+                        }
+                        className="vb-field-input flex-1"
+                        placeholder="variable_name"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          writeUpdates(updates.filter((_, idx) => idx !== i))
+                        }
+                        aria-label="Remove assignment"
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-(--color-muted) hover:bg-(--color-panel-soft) hover:text-red-500"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {kind === "complex" ? (
+                      <p className="px-1 text-[11px] text-(--color-muted)">
+                        Complex expression — edit in the ElevenLabs editor.
+                      </p>
+                    ) : (
+                      <div className="flex gap-1.5">
+                        <select
+                          value={kind}
+                          onChange={(e) =>
+                            patchUpdate(i, {
+                              expression: buildExpr(
+                                e.target.value as Kind,
+                                "",
+                              ),
+                            })
+                          }
+                          className="vb-field-input w-28 shrink-0"
+                        >
+                          <option value="text">Text</option>
+                          <option value="number">Number</option>
+                          <option value="boolean">Boolean</option>
+                          <option value="variable">Variable</option>
+                        </select>
+                        {kind === "boolean" ? (
+                          <select
+                            value={value}
+                            onChange={(e) =>
+                              patchUpdate(i, {
+                                expression: buildExpr("boolean", e.target.value),
+                              })
+                            }
+                            className="vb-field-input flex-1"
+                          >
+                            <option value="true">true</option>
+                            <option value="false">false</option>
+                          </select>
+                        ) : (
+                          <input
+                            dir="auto"
+                            type={kind === "number" ? "number" : "text"}
+                            value={value}
+                            onChange={(e) =>
+                              patchUpdate(i, {
+                                expression: buildExpr(kind, e.target.value),
+                              })
+                            }
+                            className="vb-field-input flex-1"
+                            placeholder={
+                              kind === "variable" ? "source_variable" : "value"
+                            }
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() =>
+                  writeUpdates([
+                    ...updates,
+                    {
+                      variable_name: "",
+                      expression: { type: "string_literal", value: "" },
+                    },
+                  ])
+                }
+                className="rounded-md border border-(--color-border) px-2.5 py-1.5 text-xs text-(--color-muted) hover:bg-(--color-panel-soft)"
+              >
+                + Add assignment
+              </button>
+            </div>
+          </Field>
         );
+      }
 
       case "tool_call": {
         // Build the canonical set of selected ids from BOTH legacy
@@ -665,11 +827,9 @@ export function NodeInspector({
     }
   };
 
-  // Advanced overrides — only relevant for override_agent-class nodes.
-  const supportsOverrides =
-    node.type === "speak" ||
-    node.type === "collect" ||
-    node.type === "condition";
+  // Advanced overrides — only relevant for override_agent-class nodes
+  // (speak/Subagent and say both carry the override_agent override fields).
+  const supportsOverrides = node.type === "speak" || node.type === "say";
 
   // Edge-only mode: the user clicked an edge pill on the canvas. We render
   // a focused panel that ONLY shows the condition editor for that edge,

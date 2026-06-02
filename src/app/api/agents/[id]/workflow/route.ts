@@ -32,8 +32,8 @@ export const dynamic = "force-dynamic";
 const NODE_TYPES: WorkflowNodeType[] = [
   "start",
   "speak",
-  "collect",
-  "condition",
+  "say",
+  "update_state",
   "tool_call",
   "transfer",
   "end",

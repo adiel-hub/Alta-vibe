@@ -2241,11 +2241,11 @@ button.vb-el-phantom:hover {
   background: rgba(79, 70, 229, 0.1);
   color: var(--color-indigo-700);
 }
-.vb-el-icon-collect {
+.vb-el-icon-say {
   background: var(--color-violet-100);
   color: var(--color-violet-600);
 }
-.vb-el-icon-condition {
+.vb-el-icon-update_state {
   background: rgba(234, 88, 12, 0.1);
   color: var(--color-orange-600);
 }

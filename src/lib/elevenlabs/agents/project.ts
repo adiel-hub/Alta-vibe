@@ -9,6 +9,7 @@ import type {
   RuntimeTool,
   VoiceSettings,
 } from "@/types/agent";
+import { normalizeWorkflowNodeType } from "@/types/agent";
 import type { ElevenAgentRaw } from "./types";
 import type { ElevenWorkflow, ElevenWorkflowNode } from "../workflow/types";
 import { isLocalToolId } from "@/lib/elevenlabs/lifecycle/toolIds";
@@ -201,7 +202,18 @@ function projectWorkflow(
   remote: ElevenWorkflow | undefined,
   fallback: AgentConfigCache["workflow"],
 ): AgentConfigCache["workflow"] {
-  if (!remote || !remote.nodes) return fallback;
+  // No upstream workflow → serve the cached copy, but normalize any retired
+  // collect/condition node types it may still carry so the canvas/inspector
+  // only ever sees the canonical set.
+  if (!remote || !remote.nodes) {
+    return {
+      ...fallback,
+      nodes: fallback.nodes.map((n) => ({
+        ...n,
+        type: normalizeWorkflowNodeType(n.type),
+      })),
+    };
+  }
   const ourTypeFor = (
     t: ElevenWorkflowNode["type"],
   ): AgentConfigCache["workflow"]["nodes"][number]["type"] => {
@@ -219,8 +231,10 @@ function projectWorkflow(
       case "transfer_to_number":
         return "transfer";
       case "say":
-      case "override_agent":
+        return "say";
       case "update_state":
+        return "update_state";
+      case "override_agent":
       default:
         return "speak";
     }
@@ -316,6 +330,28 @@ function projectWorkflow(
         data.override_llm = cc.agent.prompt.llm;
       if (typeof cc.agent?.first_message === "string")
         data.override_first_message = cc.agent.first_message;
+    }
+    // say node: structured message → flat inspector keys.
+    const msg = ext.message as
+      | { type?: string; text?: string; prompt?: string }
+      | undefined;
+    if (msg && typeof msg === "object") {
+      if (msg.type === "prompt") {
+        data.message_type = "prompt";
+        data.message_prompt = typeof msg.prompt === "string" ? msg.prompt : "";
+      } else {
+        data.message_type = "literal";
+        data.message_text = typeof msg.text === "string" ? msg.text : "";
+      }
+    }
+    // update_state node: variable assignments (expression AST kept verbatim).
+    if (Array.isArray(ext.updates)) {
+      data.updates = (ext.updates as Array<Record<string, unknown>>)
+        .filter((u) => u && typeof u.variable_name === "string")
+        .map((u) => ({
+          variable_name: u.variable_name as string,
+          expression: u.expression,
+        }));
     }
     return {
       id,

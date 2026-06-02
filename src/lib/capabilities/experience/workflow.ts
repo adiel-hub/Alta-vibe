@@ -1,10 +1,11 @@
 /**
  * Workflow capability.
  *
- * The agent builds a conversation flow graph (start → speak → collect →
- * tool_call → condition → transfer → end) as it shapes the voice agent.
- * Nodes + edges live in `config_cache.workflow` and stream to the right
- * panel via state_patch events so the SVG visualizer fills in live.
+ * The agent builds a conversation flow graph (start → speak → say →
+ * update_state → tool_call → transfer → end) as it shapes the voice agent.
+ * Node types mirror ElevenLabs' workflow node set 1:1. Nodes + edges live in
+ * `config_cache.workflow` and stream to the right panel via state_patch events
+ * so the SVG visualizer fills in live.
  */
 import { z } from "zod";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -21,7 +22,7 @@ import type {
   WorkflowNodeType,
   WorkflowState,
 } from "@/types/agent";
-import { DEFAULT_WORKFLOW } from "@/types/agent";
+import { DEFAULT_WORKFLOW, normalizeWorkflowNodeType } from "@/types/agent";
 import { createLogger } from "@/lib/logger";
 import type { Capability } from "../types";
 import { runToolStep } from "../types";
@@ -34,13 +35,15 @@ const log = createLogger("capability:workflow");
  * their type names). Used by every workflow-mutating path so the runtime
  * actually walks the graph instead of relying on prompt text.
  *
- * Mapping:
+ * Mapping (1:1 with ElevenLabs' node set):
  *   start              → start
- *   speak / collect    → override_agent  (with additional_prompt)
- *   condition          → override_agent  (acts as a router via edge_order)
- *   tool_call          → dispatch_tool   (tool_id from data.tool_id)
- *   transfer           → agent_transfer | transfer_to_number  (data-dependent)
+ *   speak              → override_agent  (Subagent: additional_prompt + overrides)
+ *   say                → say             (literal text or LLM prompt message)
+ *   update_state       → update_state    (variable assignments: updates[])
+ *   tool_call          → tool            (tools[].tool_id)
+ *   transfer           → standalone_agent | phone_number  (data-dependent)
  *   end                → end
+ *   (legacy collect / condition fold into speak — see normalizeWorkflowNodeType)
  *
  * Edges:
  *   our edge.condition (non-empty) → forward_condition: { type: "llm", condition }
@@ -87,44 +90,103 @@ export function toElevenWorkflow(w: WorkflowState): ElevenWorkflow {
     const out = outgoingByNode.get(n.id) ?? [];
     const edgeOrder = out.map((e) => e.id);
     const base: ElevenWorkflowNode = { type: "end", edge_order: edgeOrder };
-    // `label` is only accepted on `override_agent` variants. Setting it on
-    // start/end/tool/etc. trips strict-union validation upstream, which then
-    // surfaces as the misleading "Workflow must contain a start node." 422.
-    // Attach it inside the override_agent branch only.
+    // `label` is only accepted on `override_agent`-class nodes (override_agent,
+    // say, update_state). Setting it on start/end/tool/etc. trips strict-union
+    // validation upstream, which then surfaces as the misleading "Workflow must
+    // contain a start node." 422. Attach it inside those branches only.
 
-    switch (n.type) {
+    // Fold any legacy collect/condition nodes into `speak` (all three project
+    // to override_agent; the distinction was client-only and is gone).
+    const nodeType = normalizeWorkflowNodeType(n.type);
+
+    // override_agent fields shared by `speak` (Subagent) and `say`.
+    const applyOverrideFields = () => {
+      const prompt =
+        (n.data?.prompt as string | undefined) ??
+        (n.data?.instruction as string | undefined) ??
+        // Legacy `condition` nodes stored their routing hint in `expression`.
+        (typeof n.data?.expression === "string"
+          ? (n.data?.expression as string)
+          : undefined);
+      if (prompt) base.additional_prompt = prompt;
+      // Per current spec, override_agent supports `additional_prompt`,
+      // `additional_knowledge_base[]`, `additional_tool_ids[]`, and a nested
+      // `conversation_config` (asr/turn/tts/conversation/language_presets/
+      // vad/agent). We plumb all four through.
+      const addToolIds = n.data?.additional_tool_ids;
+      if (Array.isArray(addToolIds) && addToolIds.length > 0) {
+        base.additional_tool_ids = addToolIds.filter(
+          (t) => typeof t === "string",
+        );
+      }
+      const addKb = n.data?.additional_knowledge_base;
+      if (Array.isArray(addKb) && addKb.length > 0) {
+        base.additional_knowledge_base = addKb;
+      }
+      const cc = buildNodeConversationConfig(n.data);
+      if (cc) base.conversation_config = cc;
+    };
+
+    switch (nodeType) {
       case "start":
         base.type = "start";
         break;
       case "end":
         base.type = "end";
         break;
-      case "speak":
-      case "collect":
-      case "condition": {
+      case "speak": {
         base.type = "override_agent";
         if (n.label) base.label = n.label;
-        const prompt =
-          (n.data?.prompt as string | undefined) ??
-          (n.data?.instruction as string | undefined) ??
-          (n.data?.expression as string | undefined);
-        if (prompt) base.additional_prompt = prompt;
-        // Per current spec, override_agent supports `additional_prompt`,
-        // `additional_knowledge_base[]`, `additional_tool_ids[]`, and a
-        // nested `conversation_config` (asr/turn/tts/conversation/
-        // language_presets/vad/agent). We plumb all four through.
-        const addToolIds = n.data?.additional_tool_ids;
-        if (Array.isArray(addToolIds) && addToolIds.length > 0) {
-          base.additional_tool_ids = addToolIds.filter(
-            (t) => typeof t === "string",
-          );
-        }
-        const addKb = n.data?.additional_knowledge_base;
-        if (Array.isArray(addKb) && addKb.length > 0) {
-          base.additional_knowledge_base = addKb;
-        }
-        const cc = buildNodeConversationConfig(n.data);
-        if (cc) base.conversation_config = cc;
+        applyOverrideFields();
+        break;
+      }
+      case "say": {
+        // `say` is an override_agent variant that ALSO speaks a structured
+        // message. Carries the same override fields plus a required `message`.
+        base.type = "say";
+        if (n.label) base.label = n.label;
+        applyOverrideFields();
+        const isPrompt = n.data?.message_type === "prompt";
+        base.message = isPrompt
+          ? {
+              type: "prompt",
+              prompt:
+                typeof n.data?.message_prompt === "string"
+                  ? (n.data.message_prompt as string)
+                  : "",
+            }
+          : {
+              type: "literal",
+              text:
+                typeof n.data?.message_text === "string"
+                  ? (n.data.message_text as string)
+                  : "",
+            };
+        break;
+      }
+      case "update_state": {
+        // Sets conversation-state variables. `updates` is REQUIRED (empty
+        // array is valid). Each entry is { variable_name, expression } where
+        // expression is the opaque ElevenLabs AST — preserved verbatim so
+        // operator trees authored in the EL dashboard round-trip unchanged.
+        base.type = "update_state";
+        if (n.label) base.label = n.label;
+        const rawUpdates = Array.isArray(n.data?.updates)
+          ? (n.data.updates as Array<Record<string, unknown>>)
+          : [];
+        base.updates = rawUpdates
+          .filter(
+            (u) =>
+              u &&
+              typeof u.variable_name === "string" &&
+              u.variable_name.length > 0 &&
+              u.expression != null,
+          )
+          .map((u) => ({
+            type: "dynamic_variable" as const,
+            variable_name: u.variable_name as string,
+            expression: u.expression,
+          }));
         break;
       }
       case "tool_call": {
@@ -353,9 +415,10 @@ function stripDynamicVar(value: string): string {
 
 /**
  * Reverse direction: an ElevenLabs workflow object (returned by getAgent)
- * back into our internal WorkflowState. We can't perfectly recover the
- * original speak/collect/condition distinction (all three project as
- * override_agent on their side), so we default to `speak` for those.
+ * back into our internal WorkflowState. Node types map 1:1 — say → say,
+ * update_state → update_state, override_agent → speak, tool → tool_call,
+ * standalone_agent/phone_number → transfer. An unknown/legacy node type
+ * defaults to `speak` (the generic override_agent node).
  */
 export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState | null {
   if (!w || !w.nodes) return null;
@@ -379,8 +442,10 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
       case "transfer_to_number":
         return "transfer";
       case "say":
-      case "override_agent":
+        return "say";
       case "update_state":
+        return "update_state";
+      case "override_agent":
       default:
         return "speak";
     }
@@ -489,6 +554,31 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
       if (typeof cc.agent?.first_message === "string")
         data.override_first_message = cc.agent.first_message;
     }
+    // say node: structured `message` (literal text | LLM prompt). Split into
+    // flat data keys the inspector edits, keyed by message_type.
+    const msg = ext.message as
+      | { type?: string; text?: string; prompt?: string }
+      | undefined;
+    if (msg && typeof msg === "object") {
+      if (msg.type === "prompt") {
+        data.message_type = "prompt";
+        data.message_prompt = typeof msg.prompt === "string" ? msg.prompt : "";
+      } else {
+        data.message_type = "literal";
+        data.message_text = typeof msg.text === "string" ? msg.text : "";
+      }
+    }
+    // update_state node: array of { variable_name, expression }. The wire item
+    // also carries a `type` discriminator we don't need internally; keep the
+    // expression AST verbatim so complex trees survive the round-trip.
+    if (Array.isArray(ext.updates)) {
+      data.updates = (ext.updates as Array<Record<string, unknown>>)
+        .filter((u) => u && typeof u.variable_name === "string")
+        .map((u) => ({
+          variable_name: u.variable_name as string,
+          expression: u.expression,
+        }));
+    }
     // Position is plumbed through verbatim. EL dashboard authors place
     // by hand; we auto-lay out when missing, so this only matters when
     // the same agent is opened in both editors.
@@ -541,15 +631,23 @@ export function fromElevenWorkflow(w: ElevenWorkflow | undefined): WorkflowState
   };
 }
 
-const NodeTypeEnum = z.enum([
-  "start",
-  "speak",
-  "collect",
-  "tool_call",
-  "condition",
-  "transfer",
-  "end",
-]);
+// Canonical node types mirror ElevenLabs 1:1. We still ACCEPT the retired
+// `collect` / `condition` from older set_workflow / edit_workflow calls (and
+// cached graphs), folding them to `speak` before validation so legacy callers
+// don't break.
+const NodeTypeEnum = z.preprocess(
+  (v) =>
+    v === "collect" || v === "condition" ? "speak" : v,
+  z.enum([
+    "start",
+    "speak",
+    "say",
+    "update_state",
+    "tool_call",
+    "transfer",
+    "end",
+  ]),
+);
 
 /**
  * Strip any legacy "--- WORKFLOW ---" prose footer from a system prompt.
@@ -725,7 +823,7 @@ function validateWorkflow(
     }
   }
 
-  // override_agent nodes (speak / collect / condition) can carry
+  // override_agent-class nodes (speak / say) can carry
   // `additional_tool_ids`: tools the LLM gets access to *only* while
   // that node is active. They must reference real bindings, and they
   // must be in-call tools (lifecycle ids are never exposed to EL).
@@ -1049,7 +1147,7 @@ export const workflowCapability: Capability = {
       // Big up-front graph definition. Use this when building a workflow
       // from scratch — one call, whole graph. Cheaper than 12 add_node +
       // edge calls and keeps the canvas from flickering as nodes pop in.
-      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nThe workflow is the single source of truth for tools. `tool_call` nodes (and the optional per-node `additional_tool_ids`) reference bindings that already exist in `workflow.bindings` — created via `install_provider_tool`, `write_tool`, or `create_custom_runtime_tool`. Saving the workflow re-derives `config.tools` from bindings and patches ElevenLabs. Referencing a tool id that isn't bound throws a clear error; install it first.\n\nNode types: 'start' (always exactly one, id='start'), 'speak' (agent says something — put the line in data.prompt), 'collect' (ask the caller for a value — data.prompt for the question, data.field for the variable name), 'condition' (router that branches on outgoing edges' conditions — data.expression names the variable being checked), 'tool_call' (run runtime tools — use data.tool_id for a single tool OR data.tool_ids[] to fire several IN PARALLEL on the same node; every id must reference an existing in-call binding, and the node only counts as successful if ALL listed tools succeed), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR set data.phone_number for an E.164 phone transfer; OR set data.sip_uri for a SIP URI transfer (e.g. 'sip:alice@example.com'). Either destination accepts optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers. Wrap a value in {{var}} to make it a dynamic variable.), 'end' (hang up).\n\nOverride-agent (speak/collect/condition) extras: data.additional_tool_ids[] (in-call binding ids the agent can call only while in this node), data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nOptional per-node `position: { x, y }` — only set if you're mirroring a hand-placed layout (e.g. matching ElevenLabs dashboard coordinates). Our canvas auto-lays out otherwise.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label }\n  - { type: 'llm', condition: 'the caller confirmed', label }  ← MOST COMMON\n  - { type: 'expression', expression: <AST>, label }            ← deterministic; rarely needed — prefer 'llm'\n  - { type: 'result', successful: true|false, label }           ← branch off a tool node's success/failure\n\n**Edges leaving conversational nodes (speak / collect / condition) should use 'llm' (or 'expression'), NOT 'unconditional'.** An unconditional exit is satisfied immediately, so the agent races through every node to 'end' and hangs up before it can talk. The condition states WHEN to advance (e.g. 'the caller's question has been answered'). Reserve 'unconditional' for the start→first-node edge and a tool_call node's single default exit.\n\n**ALWAYS include a short `label` (≤50 chars)** on every condition — that's exactly what renders on the dark pill on the edge in the canvas, and is the only thing the user sees without hovering. Bad: omitting the label so the full `condition` string spills onto the canvas. Good: `label: 'wants billing'` + `condition: 'the caller wants to discuss billing or invoices'`.\n\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge). At most ONE edge per (from, to) pair — upstream rejects duplicates even when their conditions differ. If both branches go to the same node, collapse to a single unconditional edge; otherwise split the targets.\n\nTop-level `prevent_subagent_loops: true` blocks the runtime from transferring back to an agent already on the call's transfer stack — set when chaining `standalone_agent` transfers across multiple agents.",
+      "Define (or REPLACE) the entire conversation workflow in a single call. Provide the full `nodes` and `edges` arrays. Use this when first building the workflow or when rewriting it wholesale. For incremental tweaks (rename a node, add one branch, etc.) use `edit_workflow` instead.\n\nThe workflow is the single source of truth for tools. `tool_call` nodes (and the optional per-node `additional_tool_ids`) reference bindings that already exist in `workflow.bindings` — created via `install_provider_tool`, `write_tool`, or `create_custom_runtime_tool`. Saving the workflow re-derives `config.tools` from bindings and patches ElevenLabs. Referencing a tool id that isn't bound throws a clear error; install it first.\n\nNode types (these mirror ElevenLabs 1:1): 'start' (always exactly one, id='start'), 'speak' (Subagent — scope the agent's behavior for this step; put the goal/instruction in data.prompt → additional_prompt. Branching is decided by the outgoing edges' conditions, NOT a field on the node), 'say' (speak a specific message — set data.message_type to 'literal' with data.message_text for an exact line, OR 'prompt' with data.message_prompt to have the LLM generate it), 'update_state' (set conversation variables — data.updates is an array of { variable_name, expression }, where expression is an AST node like { type:'string_literal', value } / { type:'number_literal', value } / { type:'boolean_literal', value } / { type:'dynamic_variable', name }), 'tool_call' (run runtime tools — use data.tool_id for a single tool OR data.tool_ids[] to fire several IN PARALLEL on the same node; every id must reference an existing in-call binding, and the node only counts as successful if ALL listed tools succeed), 'transfer' (hand off — data.agent_id for transfer to another ElevenLabs agent + optional data.delay_ms/transfer_message/enable_transferred_agent_first_message; OR set data.phone_number for an E.164 phone transfer; OR set data.sip_uri for a SIP URI transfer (e.g. 'sip:alice@example.com'). Either destination accepts optional data.transfer_type ('blind'|'conference'|'sip_refer'), data.post_dial_digits, data.custom_sip_headers. Wrap a value in {{var}} to make it a dynamic variable.), 'end' (hang up).\n\nOverride-agent extras (on 'speak' and 'say' nodes): data.additional_tool_ids[] (in-call binding ids the agent can call only while in this node), data.additional_knowledge_base[], data.override_voice_id, data.override_llm, data.override_first_message — these tighten what the agent can do at that node only.\n\nOptional per-node `position: { x, y }` — only set if you're mirroring a hand-placed layout (e.g. matching ElevenLabs dashboard coordinates). Our canvas auto-lays out otherwise.\n\nEdges: connect node ids via `from`/`to`. Set `forward_condition` with one of:\n  - { type: 'unconditional', label }\n  - { type: 'llm', condition: 'the caller confirmed', label }  ← MOST COMMON\n  - { type: 'expression', expression: <AST>, label }            ← deterministic; rarely needed — prefer 'llm'\n  - { type: 'result', successful: true|false, label }           ← branch off a tool node's success/failure\n\n**Edges leaving conversational nodes (speak / say) should use 'llm' (or 'expression'), NOT 'unconditional'.** An unconditional exit is satisfied immediately, so the agent races through every node to 'end' and hangs up before it can talk. The condition states WHEN to advance (e.g. 'the caller's question has been answered'). Reserve 'unconditional' for the start→first-node edge and a tool_call node's single default exit.\n\n**ALWAYS include a short `label` (≤50 chars)** on every condition — that's exactly what renders on the dark pill on the edge in the canvas, and is the only thing the user sees without hovering. Bad: omitting the label so the full `condition` string spills onto the canvas. Good: `label: 'wants billing'` + `condition: 'the caller wants to discuss billing or invoices'`.\n\nLegacy shortcuts also work: a top-level `condition` string is treated as { type: 'llm' }, and a top-level `label` is lifted into the condition's label. For loops, set `backward_condition` on the same edge (don't add a flipped sibling edge). At most ONE edge per (from, to) pair — upstream rejects duplicates even when their conditions differ. If both branches go to the same node, collapse to a single unconditional edge; otherwise split the targets.\n\nTop-level `prevent_subagent_loops: true` blocks the runtime from transferring back to an agent already on the call's transfer stack — set when chaining `standalone_agent` transfers across multiple agents.",
       {
         nodes: z.array(NodeInput).min(1).max(40),
         edges: z.array(EdgeInput).max(80).default([]),
