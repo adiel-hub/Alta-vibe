@@ -121,8 +121,11 @@ export async function runTurn(
         // Surface the model's chain-of-thought as `thinking` blocks so
         // we can log it server-side. Adaptive lets the model decide how
         // much to think per turn (default on Opus 4.7); we log whatever
-        // it emits.
+        // it emits. `effort: "medium"` reins in the default `high` so the
+        // model skips reasoning on simple steps and doesn't think between
+        // every tool call.
         thinking: { type: "adaptive" },
+        effort: "medium",
         abortController,
       },
     });
@@ -132,6 +135,7 @@ export async function runTurn(
       allowed_tool_count: allowedTools.length,
       max_turns: 50,
       thinking: "adaptive",
+      effort: "medium",
     });
 
     for await (const message of result) {
