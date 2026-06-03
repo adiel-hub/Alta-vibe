@@ -67,7 +67,7 @@ export function OverviewTab({ agentId }: { agentId: string }) {
           rows={14}
           placeholder="You are a helpful voice agent…"
           fill
-          cps={80}
+          cps={120}
         />
       </Section>
     </div>
