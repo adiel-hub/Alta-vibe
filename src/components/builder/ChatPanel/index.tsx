@@ -257,7 +257,7 @@ export function ChatPanel({
       <div
         ref={scrollerRef}
         className={`flex-1 space-y-4 overflow-y-auto px-5 py-5 text-(--color-foreground) ${
-          embedded ? "mx-auto w-full max-w-4xl" : ""
+          embedded ? "no-scrollbar mx-auto w-full max-w-4xl" : ""
         }`}
       >
         {turns.length === 0 && !streaming && (

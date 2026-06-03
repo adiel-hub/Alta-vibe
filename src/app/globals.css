@@ -2633,3 +2633,13 @@ button.vb-el-phantom:hover {
 .vb-node .kind.transfer i { background: var(--color-amber-500); }
 .vb-node .kind.end i { background: var(--color-muted); }
 .vb-node .label { line-height: 1.25; }
+
+/* Hide the scrollbar while keeping the element scrollable. Used for the
+   audience chat scroller so the grey track doesn't show. */
+.no-scrollbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/old Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/WebKit */
+}

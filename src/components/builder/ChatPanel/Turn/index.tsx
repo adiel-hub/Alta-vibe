@@ -104,7 +104,7 @@ export function TurnView({
   if (isUser) {
     return (
       <div className="animate-message-in flex justify-end">
-        <div className="max-w-[85%] rounded-2xl bg-gray-200 px-4 py-2 text-sm text-(--color-foreground-strong)">
+        <div className="max-w-[85%] rounded-2xl bg-gray-100 px-4 py-2 text-sm text-(--color-foreground-strong)">
           {blocks}
         </div>
       </div>

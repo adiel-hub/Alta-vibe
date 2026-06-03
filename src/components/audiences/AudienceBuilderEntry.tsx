@@ -135,7 +135,7 @@ function AudienceHero({ agentId }: { agentId: string }) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-10">
+    <div className="flex h-full items-center justify-center overflow-hidden px-6 py-10">
       <section
         className="hero-stage"
         style={{ padding: "0", maxWidth: "880px" }}
