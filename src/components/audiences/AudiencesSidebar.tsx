@@ -41,10 +41,8 @@ export function AudiencesSidebar({
     <aside className="flex w-64 shrink-0 flex-col gap-2 overflow-y-auto px-3 py-4">
       <Link
         href="/audiences/build"
-        className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition ${
-          isNewChat
-            ? "bg-(--color-accent) text-(--color-accent-foreground) shadow-sm"
-            : "text-(--color-foreground) hover:bg-(--color-panel-soft)"
+        className={`flex items-center gap-2 rounded-md border border-(--color-accent) bg-transparent px-3 py-2 text-sm text-(--color-accent) transition hover:bg-(--color-accent)/10 ${
+          isNewChat ? "bg-(--color-accent)/10" : ""
         }`}
       >
         <span aria-hidden>＋</span>
