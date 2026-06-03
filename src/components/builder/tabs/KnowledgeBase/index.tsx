@@ -231,6 +231,7 @@ function PronunciationPanel({
 }) {
   const { isRevealed, isTyping } = usePronunciationReveal(rules);
   const phonemeApplies = PHONEME_MODELS.has(ttsModel);
+  const visible = rules.filter((r) => isRevealed(r.id));
 
   return (
     <div className="rounded-2xl border border-(--color-border) bg-(--color-panel) p-5">
@@ -245,45 +246,39 @@ function PronunciationPanel({
       <p className="mb-3 text-[11px] leading-relaxed text-(--color-muted)">
         Teach the agent how to say tricky names, products, or terms.
       </p>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {rules
-          .filter((r) => isRevealed(r.id))
-          .map((rule, i) => (
-            <div
-              key={rule.id}
-              style={{
-                animationDelay: isTyping(rule.id)
-                  ? "0ms"
-                  : `${Math.min(i, 8) * 40}ms`,
-              }}
-              className="animate-message-in"
-            >
-              <PronRuleCard
-                rule={rule}
-                typewriter={isTyping(rule.id)}
-                phonemeApplies={phonemeApplies}
-                onRemove={() => onRemove(rule.id)}
-              />
-            </div>
-          ))}
-        <div
-          style={{ animationDelay: `${Math.min(rules.length, 8) * 40}ms` }}
-          className="animate-message-in"
-        >
-          <PronAddCard onAdd={onAdd} />
-        </div>
+
+      <div className="overflow-hidden rounded-xl border border-(--color-border)">
+        {visible.map((rule, i) => (
+          <div
+            key={rule.id}
+            style={{
+              animationDelay: isTyping(rule.id)
+                ? "0ms"
+                : `${Math.min(i, 8) * 40}ms`,
+            }}
+            className="animate-message-in border-b border-(--color-border)"
+          >
+            <PronRuleRow
+              rule={rule}
+              typewriter={isTyping(rule.id)}
+              phonemeApplies={phonemeApplies}
+              onRemove={() => onRemove(rule.id)}
+            />
+          </div>
+        ))}
+        <PronAddRow onAdd={onAdd} />
       </div>
     </div>
   );
 }
 
-/** Human-readable pronunciation line for a rule. */
+/** Human-readable pronunciation for a rule (alias text or /phoneme/). */
 function pronunciationText(rule: PronunciationRule): string {
   if (rule.type === "alias") return rule.alias ?? "";
   return `/${rule.phoneme ?? ""}/`;
 }
 
-function PronRuleCard({
+function PronRuleRow({
   rule,
   typewriter,
   phonemeApplies,
@@ -310,66 +305,74 @@ function PronRuleCard({
     typewriter && wordDone && typedPron.length < pron.length;
 
   const showCaveat = rule.type === "phoneme" && !phonemeApplies;
+  const badge = rule.type === "alias" ? "alias" : (rule.alphabet ?? "ipa");
 
   return (
-    <div className="group relative flex h-full flex-col gap-2 rounded-xl border border-(--color-border) bg-(--color-panel) p-4 shadow-[0_1px_2px_rgba(0,0,0,0.03)] transition hover:-translate-y-0.5 hover:border-(--color-border-strong) hover:shadow-[0_6px_18px_rgba(0,0,0,0.06)]">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-col items-start text-left">
+    <div className="group flex items-center gap-2 bg-(--color-panel) px-3 py-2 transition hover:bg-(--color-panel-soft)">
+      {/* Word */}
+      <span
+        dir="auto"
+        className="min-w-0 flex-1 truncate text-sm font-semibold text-(--color-foreground-strong)"
+        title={word}
+      >
+        {typedWord}
+        {showWordCursor && (
           <span
-            dir="auto"
-            className="line-clamp-2 text-sm font-semibold leading-snug text-(--color-foreground-strong)"
-          >
-            {typedWord}
-            {showWordCursor && (
-              <span
-                aria-hidden
-                className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
-              />
-            )}
-          </span>
-          {(!typewriter || wordDone) && (
-            <span className="mt-1 flex items-center gap-1.5 font-mono text-[11px] text-(--color-muted)">
-              <span dir="auto" className="break-all">
-                {typedPron}
-                {showPronCursor && (
-                  <span
-                    aria-hidden
-                    className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
-                  />
-                )}
-              </span>
-              <span className="rounded bg-(--color-panel-soft) px-1 py-0.5 text-[9px] uppercase tracking-wider text-(--color-muted-soft)">
-                {rule.type === "alias" ? "alias" : (rule.alphabet ?? "ipa")}
-              </span>
-            </span>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          title="Remove"
-          aria-label="Remove"
-          className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-(--color-muted) opacity-0 transition hover:bg-(--color-danger)/10 hover:text-(--color-danger) group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <TrashIcon />
-        </button>
-      </div>
+            aria-hidden
+            className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+          />
+        )}
+      </span>
+
+      <span aria-hidden className="shrink-0 text-(--color-muted-soft)">
+        →
+      </span>
+
+      {/* Pronunciation */}
+      <span
+        dir="auto"
+        className="min-w-0 flex-1 truncate font-mono text-[12px] text-(--color-muted)"
+        title={pron}
+      >
+        {!typewriter || wordDone ? typedPron : ""}
+        {showPronCursor && (
+          <span
+            aria-hidden
+            className="ml-[1px] inline-block h-[1em] w-[2px] translate-y-[2px] animate-cursor bg-current align-baseline"
+          />
+        )}
+      </span>
+
       {showCaveat && (
-        <p
-          className="text-[10px] leading-tight"
+        <span
+          title="Phoneme rules only apply on eleven_flash_v2 / monolingual (English). Ignored on the current model."
+          className="shrink-0 cursor-help text-[12px]"
           style={{ color: "#c2410c" }}
         >
-          ⚠ Phoneme rules only apply on eleven_flash_v2 / monolingual (English).
-          Ignored on the current model.
-        </p>
+          ⚠
+        </span>
       )}
+
+      <span className="shrink-0 rounded bg-(--color-panel-soft) px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-(--color-muted-soft)">
+        {badge}
+      </span>
+
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Remove"
+        aria-label="Remove"
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-(--color-muted) opacity-0 transition hover:bg-(--color-danger)/10 hover:text-(--color-danger) group-hover:opacity-100 focus-visible:opacity-100"
+      >
+        <TrashIcon />
+      </button>
     </div>
   );
 }
 
 type PronType = "alias" | "ipa" | "cmu";
 
-function PronAddCard({
+function PronAddRow({
   onAdd,
 }: {
   onAdd: (input: {
@@ -385,12 +388,6 @@ function PronAddCard({
   const [value, setValue] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const reset = () => {
-    setWord("");
-    setValue("");
-    setType("alias");
-  };
-
   const submit = async () => {
     const w = word.trim();
     const v = value.trim();
@@ -400,32 +397,26 @@ function PronAddCard({
       if (type === "alias") {
         await onAdd({ word: w, type: "alias", alias: v });
       } else {
-        await onAdd({
-          word: w,
-          type: "phoneme",
-          phoneme: v,
-          alphabet: type,
-        });
+        await onAdd({ word: w, type: "phoneme", phoneme: v, alphabet: type });
       }
-      reset();
+      setWord("");
+      setValue("");
     } catch {
-      // Error surfaced by the parent's setError via the thrown rejection;
-      // keep the form populated so the user can retry.
+      // Error surfaced by the parent's setError; keep the form populated.
     } finally {
       setSaving(false);
     }
   };
 
-  const valueLabel = type === "alias" ? "Say it like…" : "Phonemes";
   const valuePlaceholder =
     type === "alias"
-      ? "e.g. tom-ay-toe"
+      ? "say it like… (tom-ay-toe)"
       : type === "ipa"
-        ? "e.g. tə'meɪtoʊ"
-        : "e.g. T AH0 M EY1 T OW2";
+        ? "tə'meɪtoʊ"
+        : "T AH0 M EY1 T OW2";
 
   return (
-    <div className="flex h-full flex-col gap-2 rounded-xl border-2 border-dashed border-(--color-border) bg-(--color-panel) p-4 transition focus-within:border-(--color-accent)/50">
+    <div className="flex flex-wrap items-center gap-2 bg-(--color-panel-soft) px-3 py-2">
       <input
         value={word}
         onChange={(e) => setWord(e.target.value)}
@@ -433,25 +424,12 @@ function PronAddCard({
           if (e.key === "Enter") void submit();
         }}
         placeholder="Word or phrase"
-        className="min-w-0 rounded-md border border-(--color-border) bg-(--color-panel-soft) px-2 py-1 text-sm font-semibold"
+        aria-label="Word or phrase"
+        className="min-w-0 flex-1 basis-[120px] rounded-md border border-(--color-border) bg-(--color-panel) px-2 py-1 text-sm font-semibold"
       />
-      <div className="flex gap-1">
-        {(["alias", "ipa", "cmu"] as PronType[]).map((t) => (
-          <button
-            key={t}
-            type="button"
-            onClick={() => setType(t)}
-            className={
-              "flex-1 rounded-md px-1.5 py-1 text-[10px] font-medium uppercase tracking-wider transition " +
-              (type === t
-                ? "bg-(--color-accent) text-white"
-                : "bg-(--color-panel-soft) text-(--color-muted) hover:text-(--color-foreground-strong)")
-            }
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <span aria-hidden className="text-(--color-muted-soft)">
+        →
+      </span>
       <input
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -459,16 +437,26 @@ function PronAddCard({
           if (e.key === "Enter") void submit();
         }}
         placeholder={valuePlaceholder}
-        aria-label={valueLabel}
-        className="min-w-0 rounded-md border border-(--color-border) bg-(--color-panel-soft) px-2 py-1 font-mono text-[12px]"
+        aria-label="Pronunciation"
+        className="min-w-0 flex-1 basis-[120px] rounded-md border border-(--color-border) bg-(--color-panel) px-2 py-1 font-mono text-[12px]"
       />
+      <select
+        value={type}
+        onChange={(e) => setType(e.target.value as PronType)}
+        aria-label="Rule type"
+        className="shrink-0 rounded-md border border-(--color-border) bg-(--color-panel) px-1.5 py-1 text-[11px] font-medium uppercase tracking-wider text-(--color-muted)"
+      >
+        <option value="alias">Alias</option>
+        <option value="ipa">IPA</option>
+        <option value="cmu">CMU</option>
+      </select>
       <button
         type="button"
         onClick={() => void submit()}
         disabled={!word.trim() || !value.trim() || saving}
-        className="mt-auto rounded-md bg-(--color-accent) px-2 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 rounded-md bg-(--color-accent) px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {saving ? "Adding…" : "Add pronunciation"}
+        {saving ? "Adding…" : "Add"}
       </button>
     </div>
   );
