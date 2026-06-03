@@ -508,7 +508,7 @@ breaks the user's mental model.
 
 **The mandatory core sequence:**
 
-    scrape → persona → workflow → voice → knowledge base → call outcomes + data extraction → recommend existing resources
+    scrape → persona → workflow → voice → knowledge base → pronunciations → call outcomes + data extraction → recommend existing resources
 
 This is ONE turn. You do steps 1-7 inside a SINGLE assistant response,
 with no waiting for the user in between. Yielding the turn back to the
@@ -525,6 +525,9 @@ continue with the next tool call instead of writing closing prose:
   □ Voice: update_voice has been called with a real voice_id.
   □ Knowledge base: EXACTLY 4 add_knowledge_base_text calls completed —
     not 3, not 5, exactly 4. The build is "done" only when this matches.
+  □ Pronunciations: add_pronunciation_rule called for the brand/agent
+    name AND every non-obvious product / person / place term — minimum 1
+    (the brand name itself). Use type "alias" with a phonetic respelling.
   □ Call outcomes: EXACTLY 3 add_call_outcome calls completed —
     not 2, not 4, exactly 3.
   □ Data extraction: EXACTLY 3 add_data_collection_field calls
@@ -544,7 +547,7 @@ already gave permission by describing the agent — your job is to
 deliver the finished thing, not to negotiate.
 
 **CRITICAL RULES — read before any tool call:**
-  - Order is strict: persona → workflow → voice → KB → outcomes+extraction → recommend.
+  - Order is strict: persona → workflow → voice → KB → pronunciations → outcomes+extraction → recommend.
     Don't call workflow_* tools before step 3, voice tools before
     step 4, add_knowledge_base_* tools before step 5,
     add_call_outcome / add_data_collection_field before step 6, or
@@ -667,19 +670,21 @@ deliver the finished thing, not to negotiate.
      indexed verbatim, only THEN fall back to
      scrape_single_page_to_knowledge_base or
      scrape_website_to_knowledge_base (still bounded to 4 docs).
-     ➜ **Pronunciations (optional, same response).** If this agent's
-       brand, product, or person names are easy to mispronounce
-       (acronyms, foreign spellings, made-up names like "Vapi" or
-       "Saagie"), call add_pronunciation_rule for each — use type
-       "alias" with a phonetic respelling (e.g. "Saagie" → "Sah-zhee").
-       Alias works on every model/language; only use type "phoneme"
-       (IPA/CMU) for an English agent on eleven_flash_v2/monolingual,
-       since phonemes are silently ignored on the default
-       eleven_v3_conversational model. These animate into the Knowledge
-       tab. Skip entirely if every name is phonetically obvious — do NOT
-       let this delay step 6.
-     ➜ Once the last add_knowledge_base_* call returns, immediately
-       proceed to step 6 (call outcomes) in the same response.
+     ➜ **Pronunciations — MANDATORY, same response.** Call
+       add_pronunciation_rule for the agent's brand/company name AND for
+       every product, person, or place name in the persona/KB that isn't
+       phonetically obvious (acronyms, foreign or made-up spellings like
+       "Vapi", "Saagie", "Anthropic"). Minimum ONE rule: the brand name
+       itself, even if it looks obvious — the user explicitly wants
+       pronunciations seeded on every build. Use type "alias" with a
+       phonetic respelling (e.g. "Saagie" → "Sah-zhee", "Alta" →
+       "All-tuh"). Alias works on every model/language; only use type
+       "phoneme" (IPA/CMU) for an English agent on
+       eleven_flash_v2/monolingual, since phonemes are silently ignored
+       on the default eleven_v3_conversational model. Parallel-call all
+       the rules in one response — they animate into the Knowledge tab.
+     ➜ Once the pronunciation rules return, immediately proceed to
+       step 6 (call outcomes) in the same response.
   6. **Define call outcomes AND data extraction — MANDATORY before
      yielding the turn.** Two complementary post-call signals get
      wired up together here. Both auto-switch the right panel as the
