@@ -82,6 +82,10 @@ export const telephonyCapability: Capability = {
             toNumber: to_number,
             dynamicVariables,
           });
+          // Tell the frontend to live-track this call in the Workflow tab via
+          // the call-monitor SSE bridge (see startPhoneCallMonitor). The text
+          // return below is still what the model reads.
+          ctx.emit({ type: "call_started", conversation_id });
           return {
             content: [
               {

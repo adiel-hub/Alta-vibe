@@ -9,6 +9,7 @@ import {
 import { appFetch } from "@/lib/apiClient";
 import { friendlyForTool } from "@/lib/capabilities/toolDisplay";
 import { createClientLogger } from "@/lib/clientLogger";
+import { startPhoneCallMonitor } from "@/lib/callMonitor/startPhoneCallMonitor";
 
 const log = createClientLogger("sse-client");
 
@@ -287,7 +288,11 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
         //   - list_*/read_* are pure discovery; they shouldn't yank the panel.
         //   - scrape_* tools take ~30 s and the user is usually mid-thought
         //     on Persona; the KB tab can update silently in the background.
-        const noAutoSwitch = /^(list_|read_|scrape_)/.test(bare);
+        //   - place_outbound_test_call: the call_started event switches to the
+        //     Workflow tab for live tracking; don't flash the Phone tab first.
+        const noAutoSwitch =
+          /^(list_|read_|scrape_)/.test(bare) ||
+          bare === "place_outbound_test_call";
         if (!noAutoSwitch) s.bumpActiveSection(section);
       }
       s.appendToolCallStart(assistantTurnId, event.tool_use_id, event.name, event.input);
@@ -366,6 +371,14 @@ function handleEvent(assistantTurnId: string, event: SSEEvent): void {
       log.warn("state_error", { section: event.section, message: event.message });
       s.setError(event.section, event.message);
       break;
+    case "call_started": {
+      log.info("call_started", { conversation_id: event.conversation_id });
+      // A tool placed a phone call. Attach to the monitor bridge so the
+      // Workflow tab tracks it live (start() flips status→live → tab opens).
+      const agentId = useAgentStore.getState().agent?.id;
+      if (agentId) startPhoneCallMonitor(agentId, event.conversation_id);
+      break;
+    }
     case "widget_inserted": {
       log.info("widget_inserted", {
         action_id: event.action_id,

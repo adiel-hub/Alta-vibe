@@ -543,6 +543,13 @@ export type SSEEvent =
       value: string;
     }
   | { type: "state_error"; section: string; message: string }
+  | {
+      /** A phone (outbound) call was placed by a tool. The frontend attaches
+       *  to the call-monitor SSE bridge for this conversation so the Workflow
+       *  tab tracks it live — same store the in-browser web call drives. */
+      type: "call_started";
+      conversation_id: string;
+    }
   | { type: "turn_aborted"; reason: string }
   | { type: "turn_done"; revision: number };
 

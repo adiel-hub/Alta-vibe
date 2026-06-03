@@ -116,3 +116,5 @@ export { getConversationSignedUrl } from "./conversations/signed-url";
 export { listConversations } from "./conversations/list";
 export { getConversationDetail } from "./conversations/detail";
 export { fetchConversationAudio } from "./conversations/audio";
+export { openConversationMonitor } from "./conversations/monitor";
+export type { MonitorToolResponse } from "./conversations/monitor";

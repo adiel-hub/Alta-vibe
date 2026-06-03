@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAgentStore } from "@/store/agentStore";
 import { appFetch } from "@/lib/apiClient";
+import { startPhoneCallMonitor } from "@/lib/callMonitor/startPhoneCallMonitor";
 import { Button } from "@/components/ui/Button";
 import { ChevronLeftIcon } from "./icons/ChevronLeftIcon";
 
@@ -47,11 +48,17 @@ export function OutboundForm({
           agent_phone_number_id: selectedPhoneId,
         }),
       });
+      const body = (await res.json().catch(() => null)) as {
+        error?: string;
+        conversation_id?: string;
+      } | null;
       if (!res.ok) {
-        const body = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
         throw new Error(body?.error ?? `Call failed (${res.status})`);
+      }
+      // Track this call live in the Workflow tab (same store the web call
+      // drives). start() flips status to "live", which auto-opens the tab.
+      if (body?.conversation_id) {
+        startPhoneCallMonitor(agentId, body.conversation_id);
       }
       setResult("Call placed.");
       // Close after a beat so the operator sees confirmation.
