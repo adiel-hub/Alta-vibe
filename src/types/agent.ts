@@ -328,6 +328,9 @@ export type AgentConfigCache = {
   llm: string;
   temperature: number;
   max_duration_seconds: number;
+  /** ASR: filter out far-field/background human speech before transcription.
+   *  Maps to ElevenLabs conversation_config.vad.background_voice_detection. */
+  background_voice_detection: boolean;
   knowledge_base: KnowledgeBaseDocument[];
   tools: RuntimeTool[];
   mcp_servers: McpIntegration[];

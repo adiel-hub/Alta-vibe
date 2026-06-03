@@ -86,6 +86,7 @@ export type ElevenAgentRaw = {
     };
     asr?: { quality?: string };
     turn?: { turn_timeout?: number };
+    vad?: { background_voice_detection?: boolean };
     conversation?: { max_duration_seconds?: number };
   };
   platform_settings?: {
@@ -178,6 +179,8 @@ export type AgentPatch = {
   asr_quality?: "high" | "low";
   asr_provider?: "elevenlabs" | "deepgram";
   asr_keywords?: string[];
+  /** conversation_config.vad.background_voice_detection */
+  background_voice_detection?: boolean;
   // Turn detection
   turn_timeout?: number;
   initial_wait_time?: number;

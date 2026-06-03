@@ -40,6 +40,7 @@ const Body = z
     llm: z.string().optional(),
     temperature: z.number().min(0).max(1).optional(),
     max_duration_seconds: z.number().int().min(30).max(7200).optional(),
+    background_voice_detection: z.boolean().optional(),
   })
   .strict()
   .refine((v) => Object.keys(v).length > 0, "empty patch");
@@ -88,6 +89,8 @@ export async function PATCH(
     if (parsed.data.temperature !== undefined) next.temperature = parsed.data.temperature;
     if (parsed.data.max_duration_seconds !== undefined)
       next.max_duration_seconds = parsed.data.max_duration_seconds;
+    if (parsed.data.background_voice_detection !== undefined)
+      next.background_voice_detection = parsed.data.background_voice_detection;
 
     const $set: Record<string, unknown> = {
       config_cache: next,

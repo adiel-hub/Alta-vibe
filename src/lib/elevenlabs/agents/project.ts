@@ -174,6 +174,9 @@ export function projectAgentConfig(
     max_duration_seconds:
       el.conversation_config?.conversation?.max_duration_seconds ??
       fallback.max_duration_seconds,
+    background_voice_detection:
+      el.conversation_config?.vad?.background_voice_detection ??
+      fallback.background_voice_detection,
     knowledge_base: kb,
     tools,
     mcp_servers: mcp,

@@ -6,15 +6,9 @@ import { useAgentStore } from "@/store/agentStore";
 import type { AgentConfigCache } from "@/types/agent";
 
 const LLM_OPTIONS = {
-  Gemini: [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
-  ],
+  Gemini: ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
   OpenAI: [
+    "gpt-5.4",
     "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",
@@ -61,7 +55,7 @@ type Voice = {
   labels?: Record<string, string>;
 };
 
-const TOTAL_REVEAL_STEPS = 10;
+const TOTAL_REVEAL_STEPS = 11;
 const STEP_MS = 300;
 
 export function VoiceTab({ agentId }: { agentId: string }) {
@@ -349,11 +343,39 @@ export function VoiceTab({ agentId }: { agentId: string }) {
             </p>
           </div>
         </div>
+
+        <div className="vb-field">
+          <div className="vb-field-label">Filter background speech</div>
+          <div className="vb-toggle-row">
+            {isFieldPending(3) ? (
+              <TogglePillSkeleton />
+            ) : (
+              <button
+                type="button"
+                className={`vb-toggle-pill ${
+                  config.background_voice_detection ? "on" : ""
+                } ${wasJustRevealed(3) ? "animate-scale-in" : ""}`}
+                onClick={() =>
+                  patch({
+                    background_voice_detection:
+                      !config.background_voice_detection,
+                  })
+                }
+              >
+                {config.background_voice_detection ? "Enabled" : "Disabled"}
+              </button>
+            )}
+            <span className="vb-field-hint">
+              Detects and filters out far-field human speech so the agent
+              doesn&rsquo;t react to background voices.
+            </span>
+          </div>
+        </div>
       </Section>
 
       <Section title="Voice settings" meta="ElevenLabs">
         <div className="vb-field-grid">
-          {isFieldPending(3) ? (
+          {isFieldPending(4) ? (
             <SliderSkeleton
               label="Stability"
               hint="Low = expressive · High = consistent"
@@ -366,7 +388,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               min={0}
               max={1}
               step={0.05}
-              intro={wasJustRevealed(3)}
+              intro={wasJustRevealed(4)}
               onCommit={(v) =>
                 patch({
                   voice_settings: { ...config.voice_settings, stability: v },
@@ -374,7 +396,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               }
             />
           )}
-          {isFieldPending(4) ? (
+          {isFieldPending(5) ? (
             <SliderSkeleton
               label="Similarity"
               hint="How close to the source voice"
@@ -387,7 +409,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               min={0}
               max={1}
               step={0.05}
-              intro={wasJustRevealed(4)}
+              intro={wasJustRevealed(5)}
               onCommit={(v) =>
                 patch({
                   voice_settings: {
@@ -398,7 +420,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               }
             />
           )}
-          {isFieldPending(5) ? (
+          {isFieldPending(6) ? (
             <SliderSkeleton
               label="Style"
               hint="v3 expressiveness (0 = neutral)"
@@ -411,7 +433,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               min={0}
               max={1}
               step={0.05}
-              intro={wasJustRevealed(5)}
+              intro={wasJustRevealed(6)}
               onCommit={(v) =>
                 patch({
                   voice_settings: { ...config.voice_settings, style: v },
@@ -419,7 +441,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               }
             />
           )}
-          {isFieldPending(6) ? (
+          {isFieldPending(7) ? (
             <SliderSkeleton label="Speed" hint="0.7 slow … 1.2 fast" />
           ) : (
             <SliderField
@@ -429,7 +451,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               min={0.7}
               max={1.2}
               step={0.05}
-              intro={wasJustRevealed(6)}
+              intro={wasJustRevealed(7)}
               onCommit={(v) =>
                 patch({
                   voice_settings: { ...config.voice_settings, speed: v },
@@ -442,14 +464,14 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         <div className="vb-field">
           <div className="vb-field-label">Speaker boost</div>
           <div className="vb-toggle-row">
-            {isFieldPending(7) ? (
+            {isFieldPending(8) ? (
               <TogglePillSkeleton />
             ) : (
               <button
                 type="button"
                 className={`vb-toggle-pill ${
                   config.voice_settings.use_speaker_boost ? "on" : ""
-                } ${wasJustRevealed(7) ? "animate-scale-in" : ""}`}
+                } ${wasJustRevealed(8) ? "animate-scale-in" : ""}`}
                 onClick={() =>
                   patch({
                     voice_settings: {
@@ -477,14 +499,14 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         <div className="vb-field-grid">
           <div className="vb-field">
             <div className="vb-field-label">Model</div>
-            {isFieldPending(8) ? (
+            {isFieldPending(9) ? (
               <InputSkeleton />
             ) : (
               <select
                 value={config.llm}
                 onChange={(e) => patch({ llm: e.target.value })}
                 className={`vb-field-input font-mono ${
-                  wasJustRevealed(8) ? "animate-message-in" : ""
+                  wasJustRevealed(9) ? "animate-message-in" : ""
                 }`}
               >
                 {!Object.values(LLM_OPTIONS)
@@ -507,7 +529,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               The LLM that drives the agent during calls.
             </p>
           </div>
-          {isFieldPending(9) ? (
+          {isFieldPending(10) ? (
             <SliderSkeleton
               label="Temperature"
               hint="0 deterministic … 1 creative"
@@ -520,7 +542,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
               min={0}
               max={1}
               step={0.05}
-              intro={wasJustRevealed(9)}
+              intro={wasJustRevealed(10)}
               onCommit={(v) => patch({ temperature: v })}
             />
           )}
@@ -531,7 +553,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
         <div className="vb-field">
           <div className="vb-field-label">Max call duration</div>
           <div className="flex items-center gap-2">
-            {isFieldPending(10) ? (
+            {isFieldPending(11) ? (
               <InputSkeleton width={120} />
             ) : (
               <CountUpInput
@@ -539,7 +561,7 @@ export function VoiceTab({ agentId }: { agentId: string }) {
                 min={30}
                 max={7200}
                 onCommit={(v) => patch({ max_duration_seconds: v })}
-                intro={wasJustRevealed(10)}
+                intro={wasJustRevealed(11)}
               />
             )}
             <span className="vb-field-hint">seconds</span>

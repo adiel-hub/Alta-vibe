@@ -8,14 +8,14 @@ export const llmCapability: Capability = {
   id: "llm",
   label: "LLM",
   defaultSlice: () => ({
-    llm: "gemini-2.0-flash",
+    llm: "gpt-5.4",
     temperature: 0.5,
     max_duration_seconds: 600,
   }),
   tools: (ctx) => [
     tool(
       "update_llm_settings",
-      "Set the LLM model (e.g. 'gemini-2.0-flash', 'gpt-4o-mini', 'claude-sonnet-4-6') and/or temperature (0-1).",
+      "Set the LLM model (e.g. 'gpt-5.4', 'gemini-2.5-flash', 'claude-sonnet-4-6') and/or temperature (0-1).",
       {
         llm: z.string().optional(),
         temperature: z.number().min(0).max(1).optional(),

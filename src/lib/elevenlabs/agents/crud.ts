@@ -16,7 +16,7 @@ export async function createAgent(seed: {
         language: "en",
         prompt: {
           prompt: seed.system_prompt,
-          llm: "gemini-2.0-flash",
+          llm: "gpt-5.4",
         },
       },
       tts: {
@@ -25,6 +25,9 @@ export async function createAgent(seed: {
         ...DEFAULT_VOICE_SETTINGS,
       },
       conversation: { max_duration_seconds: 600 },
+      // Filter out far-field human speech by default so agents don't react to
+      // background voices. Maps to ElevenLabs' conversation_config.vad.
+      vad: { background_voice_detection: true },
     },
   };
   const res = await elFetch("/v1/convai/agents/create", {

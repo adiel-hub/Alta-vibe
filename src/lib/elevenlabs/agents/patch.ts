@@ -122,6 +122,11 @@ export async function patchAgent(
   if (patch.asr_provider !== undefined) asrSlice.provider = patch.asr_provider;
   if (patch.asr_keywords !== undefined) asrSlice.keywords = patch.asr_keywords;
 
+  // --- vad ----------------------------------------------------------------
+  const vadSlice: Record<string, unknown> = {};
+  if (patch.background_voice_detection !== undefined)
+    vadSlice.background_voice_detection = patch.background_voice_detection;
+
   // --- turn ---------------------------------------------------------------
   const turnSlice: Record<string, unknown> = {};
   if (patch.turn_timeout !== undefined) turnSlice.turn_timeout = patch.turn_timeout;
@@ -145,6 +150,7 @@ export async function patchAgent(
   if (Object.keys(agentSlice).length > 0) conversationConfig.agent = agentSlice;
   if (Object.keys(ttsSlice).length > 0) conversationConfig.tts = ttsSlice;
   if (Object.keys(asrSlice).length > 0) conversationConfig.asr = asrSlice;
+  if (Object.keys(vadSlice).length > 0) conversationConfig.vad = vadSlice;
   if (Object.keys(turnSlice).length > 0) conversationConfig.turn = turnSlice;
   if (Object.keys(conversationSlice).length > 0)
     conversationConfig.conversation = conversationSlice;
