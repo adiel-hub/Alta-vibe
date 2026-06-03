@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { appFetch } from "@/lib/apiClient";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 export type AgentListItem = {
   id: string;
@@ -19,13 +20,26 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
   const router = useRouter();
   const [items, setItems] = useState(initial);
   const [pendingId, setPendingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The agent the user is confirming deletion for; null means no dialog open.
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const remove = async (id: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This removes the agent on ElevenLabs and clears its chat history.`))
-      return;
+  const closeDelete = () => {
+    if (deleteBusy) return; // don't dismiss mid-request
+    setDeleteTarget(null);
+    setDeleteError(null);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const { id } = deleteTarget;
+    setDeleteBusy(true);
+    setDeleteError(null);
     setPendingId(id);
-    setError(null);
     try {
       const res = await appFetch(`/api/agents/${id}`, { method: "DELETE" });
       if (!res.ok) {
@@ -35,11 +49,14 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
         throw new Error(body?.error ?? `Delete failed (${res.status})`);
       }
       setItems((prev) => prev.filter((a) => a.id !== id));
+      setDeleteTarget(null);
       // Re-fetch the page in case the server-side list cache went stale.
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delete failed");
+      // Keep the dialog open so the user can read the error and retry.
+      setDeleteError(err instanceof Error ? err.message : "Delete failed");
     } finally {
+      setDeleteBusy(false);
       setPendingId(null);
     }
   };
@@ -48,7 +65,6 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
 
   return (
     <div>
-      {error && <div className="agent-list-error">{error}</div>}
       <ul className="agent-list">
         {items.map((a) => {
           const isPending = pendingId === a.id;
@@ -95,7 +111,7 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
                 title={`Delete ${a.name}`}
                 aria-label={`Delete ${a.name}`}
                 disabled={isPending}
-                onClick={() => void remove(a.id, a.name)}
+                onClick={() => setDeleteTarget({ id: a.id, name: a.name })}
               >
                 <svg
                   width="16"
@@ -119,6 +135,27 @@ export function AgentList({ initial }: { initial: AgentListItem[] }) {
           );
         })}
       </ul>
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete agent"
+          message={
+            <>
+              Delete &ldquo;
+              <span className="font-medium text-(--color-foreground-strong)">
+                {deleteTarget.name}
+              </span>
+              &rdquo;? This removes the agent on ElevenLabs and clears its chat
+              history. This can&rsquo;t be undone.
+            </>
+          }
+          confirmLabel="Delete"
+          busy={deleteBusy}
+          error={deleteError}
+          onConfirm={() => void confirmDelete()}
+          onCancel={closeDelete}
+        />
+      )}
     </div>
   );
 }
