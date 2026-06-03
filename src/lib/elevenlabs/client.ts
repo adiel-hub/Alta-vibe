@@ -55,6 +55,15 @@ export {
   searchKnowledgeBase,
 } from "./knowledge-base";
 
+// --- Pronunciation dictionaries ---------------------------------------------
+export type { ElevenPronunciationDictionary } from "./pronunciation-dictionaries";
+export {
+  addRules,
+  createDictionaryFromRules,
+  getDictionary,
+  removeRules,
+} from "./pronunciation-dictionaries";
+
 // --- Batch calling ----------------------------------------------------------
 export type { BatchCallRecipient } from "./batch-calling";
 export {

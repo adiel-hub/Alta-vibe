@@ -36,6 +36,7 @@ const SECTION_TO_TAB: Partial<Record<SectionKey, TabId>> = {
   voice: "voice",
   llm: "voice",
   knowledge_base: "kb",
+  pronunciation: "kb",
   tools: "tools",
   mcp: "tools",
   phone: "phone",

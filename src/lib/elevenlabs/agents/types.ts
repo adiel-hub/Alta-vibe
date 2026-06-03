@@ -83,6 +83,10 @@ export type ElevenAgentRaw = {
       style?: number;
       use_speaker_boost?: boolean;
       speed?: number;
+      pronunciation_dictionary_locators?: Array<{
+        pronunciation_dictionary_id: string;
+        version_id: string;
+      }>;
     };
     asr?: { quality?: string };
     turn?: { turn_timeout?: number };
@@ -193,6 +197,13 @@ export type AgentPatch = {
   agent_output_audio_format?: string;
   optimize_streaming_latency?: number;
   text_normalisation_type?: "system_prompt" | "elevenlabs" | "off";
+  /** Attach pronunciation dictionaries to the agent's TTS. Each locator pins a
+   *  specific dictionary version; re-send after every rule mutation. An empty
+   *  array detaches all dictionaries. */
+  pronunciation_dictionary_locators?: Array<{
+    pronunciation_dictionary_id: string;
+    version_id: string;
+  }>;
   /**
    * Structured workflow graph stored at conversation_config.workflow.
    * Object-keyed maps (not arrays) per the ElevenAgents schema:

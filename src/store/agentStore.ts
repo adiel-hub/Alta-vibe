@@ -56,6 +56,7 @@ export type SectionKey =
   | "voice"
   | "llm"
   | "knowledge_base"
+  | "pronunciation"
   | "tools"
   | "mcp"
   | "data"
@@ -130,6 +131,10 @@ type State = {
    *  KB cards. Empty on hydrate so opening the KB tab on a fresh load
    *  doesn't replay animations the user already saw. */
   kbPendingAnimationIds: Set<string>;
+  /** Same idea for pronunciation rules — populated when add_pronunciation_rule
+   *  lands a previously-unseen rule id. Drives the typewriter on the
+   *  Pronunciation cards inside the Knowledge tab. */
+  pronPendingAnimationIds: Set<string>;
   /** Same idea for call outcomes (evaluation criteria) — populated when
    *  add_call_outcome / update_call_outcome / remove_call_outcome cause
    *  a patch with a previously-unseen criterion id. */
@@ -221,6 +226,7 @@ type Actions = {
   setLiveTool: (live: LiveTool | null) => void;
   bumpActiveSection: (key: SectionKey) => void;
   markKbAnimationDone: (id: string) => void;
+  markPronAnimationDone: (id: string) => void;
   markEvalAnimationDone: (id: string) => void;
   markDataAnimationDone: (id: string) => void;
 };
@@ -241,6 +247,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
   liveTool: null,
   lastActiveSection: null,
   kbPendingAnimationIds: new Set(),
+  pronPendingAnimationIds: new Set(),
   evalPendingAnimationIds: new Set(),
   dataPendingAnimationIds: new Set(),
   pendingToolFocus: null,
@@ -267,6 +274,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
       liveTool: null,
       // Page load / agent switch: docs are already there, no animation.
       kbPendingAnimationIds: new Set(),
+      pronPendingAnimationIds: new Set(),
       evalPendingAnimationIds: new Set(),
       dataPendingAnimationIds: new Set(),
       pendingToolFocus: null,
@@ -308,6 +316,11 @@ export const useAgentStore = create<State & Actions>((set) => ({
         patch.knowledge_base,
         s.kbPendingAnimationIds,
       );
+      const pronPendingAnimationIds = diffPronForAnimation(
+        s.config.pronunciation_dictionary,
+        patch.pronunciation_dictionary,
+        s.pronPendingAnimationIds,
+      );
       const evalPendingAnimationIds = diffEvalForAnimation(
         s.config.evaluation_criteria,
         patch.evaluation_criteria,
@@ -345,6 +358,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
         config: merged,
         revision,
         kbPendingAnimationIds,
+        pronPendingAnimationIds,
         evalPendingAnimationIds,
         dataPendingAnimationIds,
         pendingToolFocus,
@@ -364,6 +378,11 @@ export const useAgentStore = create<State & Actions>((set) => ({
         s.config.knowledge_base,
         patch.knowledge_base,
         s.kbPendingAnimationIds,
+      );
+      const pronPendingAnimationIds = diffPronForAnimation(
+        s.config.pronunciation_dictionary,
+        patch.pronunciation_dictionary,
+        s.pronPendingAnimationIds,
       );
       const evalPendingAnimationIds = diffEvalForAnimation(
         s.config.evaluation_criteria,
@@ -386,6 +405,7 @@ export const useAgentStore = create<State & Actions>((set) => ({
         config: merged,
         revision: Math.max(s.revision, revision),
         kbPendingAnimationIds,
+        pronPendingAnimationIds,
         evalPendingAnimationIds,
         dataPendingAnimationIds,
         nameAuthored,
@@ -572,6 +592,14 @@ export const useAgentStore = create<State & Actions>((set) => ({
       return { kbPendingAnimationIds: next };
     }),
 
+  markPronAnimationDone: (id) =>
+    set((s) => {
+      if (!s.pronPendingAnimationIds.has(id)) return s;
+      const next = new Set(s.pronPendingAnimationIds);
+      next.delete(id);
+      return { pronPendingAnimationIds: next };
+    }),
+
   markEvalAnimationDone: (id) =>
     set((s) => {
       if (!s.evalPendingAnimationIds.has(id)) return s;
@@ -610,6 +638,28 @@ function diffKbForAnimation(
     if (current.has(doc.id)) continue;
     next ??= new Set(current);
     next.add(doc.id);
+  }
+  return next ?? current;
+}
+
+/**
+ * Mirror of `diffKbForAnimation` for pronunciation rules. Any rule id in the
+ * patched dictionary that wasn't in the previous one is "newly created by a
+ * tool" and should typewriter-in on the Pronunciation cards.
+ */
+function diffPronForAnimation(
+  prev: AgentConfigCache["pronunciation_dictionary"] | undefined,
+  patchDict: AgentConfigCache["pronunciation_dictionary"] | undefined,
+  current: Set<string>,
+): Set<string> {
+  if (patchDict === undefined) return current;
+  const prevIds = new Set((prev?.rules ?? []).map((r) => r.id));
+  let next: Set<string> | null = null;
+  for (const rule of patchDict?.rules ?? []) {
+    if (prevIds.has(rule.id)) continue;
+    if (current.has(rule.id)) continue;
+    next ??= new Set(current);
+    next.add(rule.id);
   }
   return next ?? current;
 }

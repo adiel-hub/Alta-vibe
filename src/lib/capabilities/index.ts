@@ -13,6 +13,7 @@ import { introspectionCapability } from "./meta/introspection";
 import { voiceCapability } from "./voice/voice";
 import { llmCapability } from "./intelligence/llm";
 import { knowledgeBaseCapability } from "./intelligence/knowledge_base";
+import { pronunciationCapability } from "./intelligence/pronunciation";
 import { runtimeToolsCapability } from "./tools/runtime_tools";
 import { writeToolCapability } from "./tools/write_tool";
 import { mcpCapability } from "./tools/mcp";
@@ -34,6 +35,7 @@ export const CAPABILITIES: Capability[] = [
   voiceCapability,
   llmCapability,
   knowledgeBaseCapability,
+  pronunciationCapability,
   runtimeToolsCapability,
   writeToolCapability,
   mcpCapability,
@@ -65,6 +67,7 @@ export function defaultAgentConfig(): AgentConfigCache {
     max_duration_seconds: 600,
     background_voice_detection: true,
     knowledge_base: [],
+    pronunciation_dictionary: null,
     tools: [],
     mcp_servers: [],
     data_collection: [],

@@ -33,6 +33,10 @@ const MAP: Record<string, { emoji: string; label: string }> = {
   scrape_single_page_to_knowledge_base: { emoji: "🕸️", label: "Scraping the page" },
   remove_knowledge_base_document: { emoji: "🗑️", label: "Removing a document" },
   rename_knowledge_base_document: { emoji: "✏️", label: "Renaming a document" },
+  // pronunciation
+  add_pronunciation_rule: { emoji: "🗣️", label: "Teaching a pronunciation" },
+  remove_pronunciation_rule: { emoji: "🗣️", label: "Removing a pronunciation" },
+  list_pronunciation_rules: { emoji: "🔤", label: "Reviewing pronunciations" },
   // runtime tools
   create_custom_runtime_tool: { emoji: "🛠️", label: "Building a runtime tool" },
   remove_runtime_tool: { emoji: "🗑️", label: "Removing a runtime tool" },

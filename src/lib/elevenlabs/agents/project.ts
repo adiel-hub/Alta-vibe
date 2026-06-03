@@ -178,6 +178,10 @@ export function projectAgentConfig(
       el.conversation_config?.vad?.background_voice_detection ??
       fallback.background_voice_detection,
     knowledge_base: kb,
+    pronunciation_dictionary: projectPronunciation(
+      t?.pronunciation_dictionary_locators,
+      fallback.pronunciation_dictionary,
+    ),
     tools,
     mcp_servers: mcp,
     data_collection: dataCollection,
@@ -383,6 +387,37 @@ function projectWorkflow(
     nodes,
     edges,
     ...(fallback.bindings !== undefined ? { bindings: fallback.bindings } : {}),
+  };
+}
+
+/**
+ * Reconcile the agent's pronunciation dictionary. Rules are local-authoritative
+ * (ElevenLabs assigns no per-rule id and we don't download the PLS here), so we
+ * trust the cached rule list and only sync the locator id/version from upstream.
+ */
+function projectPronunciation(
+  locators:
+    | Array<{ pronunciation_dictionary_id: string; version_id: string }>
+    | undefined,
+  fallback: AgentConfigCache["pronunciation_dictionary"],
+): AgentConfigCache["pronunciation_dictionary"] {
+  const loc = locators?.[0];
+  // No upstream locator → trust the cache (may itself be null).
+  if (!loc) return fallback;
+  // Cache already tracks this dictionary → keep its rules, sync the version.
+  if (fallback && fallback.id === loc.pronunciation_dictionary_id) {
+    return fallback.version_id === loc.version_id
+      ? fallback
+      : { ...fallback, version_id: loc.version_id };
+  }
+  // Upstream references a dictionary we have no cached rules for (created out
+  // of band). Preserve the locator so we don't detach it; rules stay empty
+  // until edited through the app.
+  return {
+    id: loc.pronunciation_dictionary_id,
+    version_id: loc.version_id,
+    name: fallback?.name ?? "Pronunciations",
+    rules: fallback?.rules ?? [],
   };
 }
 

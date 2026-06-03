@@ -9,6 +9,48 @@ export type KnowledgeBaseDocument = {
   source: string;
 };
 
+// --- Pronunciation dictionary ----------------------------------------------
+
+/** Phonetic alphabet for a phoneme rule. Note: phoneme rules only apply on
+ *  `eleven_flash_v2` / `eleven_monolingual_v1` (English) — they are silently
+ *  skipped on other models (e.g. the default `eleven_v3_conversational`). */
+export type PronunciationAlphabet = "ipa" | "cmu";
+
+/**
+ * A single pronunciation rule. `alias` rules replace the grapheme with an
+ * alternative spelling/phrase (works on all models/languages). `phoneme`
+ * rules give an explicit IPA/CMU transcription (model-limited — see above).
+ * `id` is a local nanoid: ElevenLabs rules carry no id, so we mint one to key
+ * the UI list, animations, and per-rule removal.
+ */
+export type PronunciationRule = {
+  id: string;
+  type: "alias" | "phoneme";
+  /** The grapheme to match, e.g. "tomato". Case-sensitive upstream (PLS). */
+  string_to_replace: string;
+  /** Set when type === "alias". */
+  alias?: string;
+  /** Set when type === "phoneme". */
+  phoneme?: string;
+  /** Set when type === "phoneme". */
+  alphabet?: PronunciationAlphabet;
+};
+
+/**
+ * The agent's single pronunciation dictionary. An ElevenLabs dictionary is a
+ * versioned PLS lexicon; we cache its `{ id, version_id }` locator (attached
+ * to the agent via `conversation_config.tts.pronunciation_dictionary_locators`)
+ * plus the local rule list. Every rule mutation creates a new upstream version
+ * → `version_id` is refreshed and the agent locator re-PATCHed each time.
+ * `null` until the first rule is added.
+ */
+export type PronunciationDictionary = {
+  id: string;
+  version_id: string;
+  name: string;
+  rules: PronunciationRule[];
+} | null;
+
 export type RuntimePhase = "pre_call" | "in_call" | "post_call";
 
 export type RuntimeTool = {
@@ -332,6 +374,9 @@ export type AgentConfigCache = {
    *  Maps to ElevenLabs conversation_config.vad.background_voice_detection. */
   background_voice_detection: boolean;
   knowledge_base: KnowledgeBaseDocument[];
+  /** Single pronunciation dictionary (custom word pronunciations). null until
+   *  the first rule is added. */
+  pronunciation_dictionary: PronunciationDictionary;
   tools: RuntimeTool[];
   mcp_servers: McpIntegration[];
   data_collection: DataCollectionField[];

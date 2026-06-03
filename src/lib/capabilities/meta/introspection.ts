@@ -24,6 +24,7 @@ const SECTIONS = [
   "workflow",
   "tools",
   "knowledge_base",
+  "pronunciation",
   "mcp",
   "telephony",
   "phone_numbers",
@@ -63,6 +64,8 @@ function sliceConfig(cfg: AgentConfigCache, section: Section): unknown {
       return cfg.tools;
     case "knowledge_base":
       return cfg.knowledge_base;
+    case "pronunciation":
+      return cfg.pronunciation_dictionary;
     case "mcp":
       return cfg.mcp_servers;
     case "telephony":
@@ -92,9 +95,9 @@ export const introspectionCapability: Capability = {
           .enum(SECTIONS)
           .optional()
           .describe(
-            "identity | voice | llm | workflow | tools | knowledge_base | mcp | " +
-              "telephony | phone_numbers | integrations | data_collection | " +
-              "evaluation_criteria | all (default)",
+            "identity | voice | llm | workflow | tools | knowledge_base | " +
+              "pronunciation | mcp | telephony | phone_numbers | integrations | " +
+              "data_collection | evaluation_criteria | all (default)",
           ),
       },
       async ({ section }) => {

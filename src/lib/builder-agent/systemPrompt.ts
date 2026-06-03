@@ -667,6 +667,17 @@ deliver the finished thing, not to negotiate.
      indexed verbatim, only THEN fall back to
      scrape_single_page_to_knowledge_base or
      scrape_website_to_knowledge_base (still bounded to 4 docs).
+     ➜ **Pronunciations (optional, same response).** If this agent's
+       brand, product, or person names are easy to mispronounce
+       (acronyms, foreign spellings, made-up names like "Vapi" or
+       "Saagie"), call add_pronunciation_rule for each — use type
+       "alias" with a phonetic respelling (e.g. "Saagie" → "Sah-zhee").
+       Alias works on every model/language; only use type "phoneme"
+       (IPA/CMU) for an English agent on eleven_flash_v2/monolingual,
+       since phonemes are silently ignored on the default
+       eleven_v3_conversational model. These animate into the Knowledge
+       tab. Skip entirely if every name is phonetically obvious — do NOT
+       let this delay step 6.
      ➜ Once the last add_knowledge_base_* call returns, immediately
        proceed to step 6 (call outcomes) in the same response.
   6. **Define call outcomes AND data extraction — MANDATORY before

@@ -115,6 +115,9 @@ export async function patchAgent(
     ttsSlice.optimize_streaming_latency = patch.optimize_streaming_latency;
   if (patch.text_normalisation_type !== undefined)
     ttsSlice.text_normalisation_type = patch.text_normalisation_type;
+  if (patch.pronunciation_dictionary_locators !== undefined)
+    ttsSlice.pronunciation_dictionary_locators =
+      patch.pronunciation_dictionary_locators;
 
   // --- asr ----------------------------------------------------------------
   const asrSlice: Record<string, unknown> = {};
