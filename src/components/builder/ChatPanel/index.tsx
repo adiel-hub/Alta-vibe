@@ -98,6 +98,34 @@ export function ChatPanel({
     };
   }, [agentId]);
 
+  // Liveness net for mid-turn stream drops. The live SSE stream can be cut
+  // while the tab is backgrounded/asleep or the network blips (notably on
+  // Vercel, whose edge drops idle streaming connections). On refocus / when
+  // the network is back, if a turn is still active, re-attach from the last
+  // seq we applied. attachToTurn's generation guard makes this supersede any
+  // stale loop without double-applying events.
+  useEffect(() => {
+    const resumeIfActive = () => {
+      const { activeJobId, lastSeq } = useAgentStore.getState();
+      if (!activeJobId) return;
+      log.info("liveness re-attach", {
+        agent_id: agentId,
+        job_id: activeJobId,
+        last_seq: lastSeq,
+      });
+      void attachToTurn(agentId, activeJobId, Math.max(0, lastSeq + 1));
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") resumeIfActive();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", resumeIfActive);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", resumeIfActive);
+    };
+  }, [agentId]);
+
   useEffect(() => {
     if (scrollerRef.current) {
       scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;

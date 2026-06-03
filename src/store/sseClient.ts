@@ -67,7 +67,15 @@ export async function sendMessage(
  * matching the agentId this attach was started for. The moment they diverge
  * we cancel the reader and stop touching the store so A's stream doesn't
  * spill into B's chat.
+ *
+ * Supersede safety: a liveness re-attach (tab refocus, network back online)
+ * can fire while a prior attach loop is still alive. Each call bumps
+ * `attachGeneration`; older loops notice they're no longer current, cancel
+ * their reader, and bail without finalizing — so only the newest attach
+ * writes to the store and exactly one loop owns finalization.
  */
+let attachGeneration = 0;
+
 export async function attachToTurn(
   agentId: string,
   jobId: string,
@@ -92,49 +100,132 @@ export async function attachToTurn(
   }
   store.setActiveTurn(jobId, assistantTurnId);
 
-  const secret = process.env.NEXT_PUBLIC_APP_SHARED_SECRET;
-  const res = await fetch(
-    `/api/agents/${agentId}/turns/${jobId}/stream?since=${since}`,
-    {
-      headers: secret ? { "x-app-secret": secret } : undefined,
-    },
-  );
-  if (!res.ok || !res.body) {
-    log.error("attach failed", { status: res.status });
-    if (isLive()) store.setActiveTurn(null, null);
-    throw new Error(`Stream failed (${res.status})`);
-  }
+  // This call's generation. If a newer attachToTurn starts, `live()` flips
+  // false here and this loop stands down (see "Supersede safety" above).
+  const myGeneration = ++attachGeneration;
+  const live = () => isLive() && attachGeneration === myGeneration;
 
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
+  // Highest seq applied so far. Survives reconnects so we resume the tail
+  // exactly where we left off (server replays events with seq >= since).
   let lastSeq = since - 1;
+  let abandoned = false;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (!isLive()) {
-      log.info("attach abandoned — user switched agents", {
-        attach_for: agentId,
-      });
-      void reader.cancel().catch(() => {});
-      return;
+  // One connection attempt. Returns whether it observed a terminal event
+  // (turn_done/turn_aborted) — the only reliable signal that the turn truly
+  // ended, as opposed to the socket merely dropping mid-turn (which Vercel's
+  // edge does during the quiet gaps between events).
+  const connectOnce = async (): Promise<{ sawTerminal: boolean }> => {
+    const secret = process.env.NEXT_PUBLIC_APP_SHARED_SECRET;
+    const res = await fetch(
+      `/api/agents/${agentId}/turns/${jobId}/stream?since=${lastSeq + 1}`,
+      { headers: secret ? { "x-app-secret": secret } : undefined },
+    );
+    if (!res.ok || !res.body) {
+      log.warn("attach connect failed", { status: res.status });
+      return { sawTerminal: false };
     }
-    buf += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const block = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      const parsed = parseBlock(block);
-      if (parsed && parsed.seq > lastSeq) {
-        handleEvent(assistantTurnId, parsed.event);
-        lastSeq = parsed.seq;
-        useAgentStore.getState().setLastSeq(lastSeq);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let sawTerminal = false;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!live()) {
+        log.info("attach abandoned — superseded or agent switched", {
+          attach_for: agentId,
+        });
+        void reader.cancel().catch(() => {});
+        abandoned = true;
+        return { sawTerminal: false };
+      }
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const parsed = parseBlock(block);
+        if (parsed && parsed.seq > lastSeq) {
+          // Re-check per event (not just per chunk) so a superseded loop stops
+          // applying the instant a newer attach takes over — otherwise it could
+          // apply one more event and duplicate a tool card.
+          if (!live()) {
+            void reader.cancel().catch(() => {});
+            abandoned = true;
+            return { sawTerminal };
+          }
+          handleEvent(assistantTurnId, parsed.event);
+          lastSeq = parsed.seq;
+          useAgentStore.getState().setLastSeq(lastSeq);
+          if (
+            parsed.event.type === "turn_done" ||
+            parsed.event.type === "turn_aborted"
+          ) {
+            sawTerminal = true;
+          }
+        }
       }
     }
+    return { sawTerminal };
+  };
+
+  // Is THIS job still queued/running on the backend? Used to decide whether a
+  // stream that ended without a terminal event was a transient drop (reconnect)
+  // or a genuinely-finished/reaped job (stop). /turns/active also runs the
+  // stuck-job reaper, so a crashed job resolves to "not active" here.
+  const jobStillActive = async (): Promise<boolean> => {
+    try {
+      const r = await appFetch(`/api/agents/${agentId}/turns/active`);
+      if (!r.ok) return false;
+      const j = (await r.json()) as { active: { id: string } | null };
+      return j.active?.id === jobId;
+    } catch {
+      return false;
+    }
+  };
+
+  const MAX_RECONNECTS = 6;
+  let attempts = 0;
+  while (true) {
+    const { sawTerminal } = await connectOnce();
+    if (abandoned || !live()) return; // superseded or agent switched — leave store alone
+
+    if (sawTerminal) break; // turn genuinely ended
+
+    // Stream closed without a terminal event. Distinguish a dropped socket
+    // from a finished/reaped job before deciding to finalize.
+    if (!(await jobStillActive())) {
+      log.info("stream ended; job no longer active — finalizing", {
+        job_id: jobId,
+        last_seq: lastSeq,
+      });
+      break;
+    }
+    if (abandoned || !live()) return;
+
+    if (++attempts > MAX_RECONNECTS) {
+      log.warn("reconnect attempts exhausted", { job_id: jobId, last_seq: lastSeq });
+      useAgentStore
+        .getState()
+        .setError(
+          "turn",
+          "Lost the live update stream. Refresh to see the latest.",
+        );
+      break;
+    }
+    const backoffMs = Math.min(500 * 2 ** (attempts - 1), 4000);
+    log.info("stream dropped mid-turn — reconnecting", {
+      job_id: jobId,
+      last_seq: lastSeq,
+      attempt: attempts,
+      backoff_ms: backoffMs,
+    });
+    await new Promise((r) => setTimeout(r, backoffMs));
+    if (abandoned || !live()) return;
   }
+
   log.info("stream end", { job_id: jobId, last_seq: lastSeq });
-  if (!isLive()) return;
+  if (!live()) return;
   useAgentStore.getState().finalizeAssistantTurn();
   useAgentStore.getState().setActiveTurn(null, null);
 }

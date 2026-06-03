@@ -88,15 +88,29 @@ export async function GET(
 
       const drain = async () => {
         const fresh = await jobs.findOne({ _id: _jobId });
-        if (!fresh) return { done: true };
+        if (!fresh) return { done: true, emitted: false };
+        let emitted = false;
         for (const ev of fresh.events) {
           if (ev.seq > lastSeq) {
             safeEnqueue(encodeEvent(ev));
             lastSeq = ev.seq;
+            emitted = true;
           }
         }
-        return { done: fresh.status === "done" || fresh.status === "failed" };
+        return {
+          done: fresh.status === "done" || fresh.status === "failed",
+          emitted,
+        };
       };
+
+      // Heartbeat: Vercel's edge terminates a streaming response that goes
+      // idle (no bytes) during the quiet gaps between events — e.g. while the
+      // worker is crawling a site or indexing the knowledge base. The browser
+      // then sees the stream close and (with the client's reconnect) re-attaches,
+      // but keeping the socket warm avoids the drop in the first place. Comments
+      // (`: …`) are ignored by the client's parseBlock, so they're inert.
+      // 250ms poll × 60 ticks ≈ 15s of silence between pings.
+      const PING_EVERY_TICKS = 60;
 
       try {
         // initial fast drain
@@ -106,12 +120,21 @@ export async function GET(
           if (!closed) controller.close();
           return;
         }
+        // Prime the connection with a comment so there's traffic from the start.
+        safeEnqueue(encodeComment("ping"));
         // poll loop
+        let idleTicks = 0;
         while (!closed) {
           await new Promise((r) => setTimeout(r, 250));
           if (closed) break;
           const res = await drain();
           if (res.done) break;
+          if (res.emitted) {
+            idleTicks = 0;
+          } else if (++idleTicks >= PING_EVERY_TICKS) {
+            idleTicks = 0;
+            safeEnqueue(encodeComment("ping"));
+          }
         }
         if (!closed) {
           log.info("turn complete; closing stream", { last_seq: lastSeq });

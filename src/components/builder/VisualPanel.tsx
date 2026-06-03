@@ -50,9 +50,6 @@ export function VisualPanel({ agentId }: { agentId: string }) {
   const [tab, setTab] = useState<TabId>("persona");
   const callStatus = useCallMonitorStore((s) => s.status);
   const prevCallStatus = useRef(callStatus);
-  const elevenLabsAgentId = useAgentStore(
-    (s) => s.agent?.elevenlabs_agent_id,
-  );
   const lastError = useAgentStore((s) => s.agent?.last_error);
   const activeJobId = useAgentStore((s) => s.activeJobId);
   const lastActiveSection = useAgentStore((s) => s.lastActiveSection);
@@ -171,18 +168,6 @@ export function VisualPanel({ agentId }: { agentId: string }) {
           })}
         </nav>
         <div className="flex items-center gap-2 pb-2 pl-3">
-          {elevenLabsAgentId && (
-            <a
-              href={`https://elevenlabs.io/app/conversational-ai/agents/${elevenLabsAgentId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Open this agent in the 11labs builder"
-              className="inline-flex items-center gap-2 rounded-full border border-(--color-border) bg-(--color-panel) px-3.5 py-1.5 text-[12px] font-semibold text-(--color-foreground-strong) transition hover:border-(--color-accent) hover:text-(--color-accent)"
-            >
-              <ExternalLinkIcon />
-              Open in 11labs
-            </a>
-          )}
           <TestCallButton agentId={agentId} />
         </div>
       </header>
@@ -222,25 +207,5 @@ export function VisualPanel({ agentId }: { agentId: string }) {
         {tab === "dashboard" && <DashboardTab agentId={agentId} />}
       </div>
     </div>
-  );
-}
-
-function ExternalLinkIcon() {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-      <polyline points="15 3 21 3 21 9" />
-      <line x1="10" y1="14" x2="21" y2="3" />
-    </svg>
   );
 }

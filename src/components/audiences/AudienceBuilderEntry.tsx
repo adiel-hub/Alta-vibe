@@ -184,7 +184,7 @@ function AudienceHero({ agentId }: { agentId: string }) {
                 disabled={submitting || description.trim().length < 6}
                 className="welcome-btn"
               >
-                {submitting ? "Building…" : "Build it"}
+                {submitting ? "Finding…" : "Find it"}
                 <svg
                   width="13"
                   height="13"

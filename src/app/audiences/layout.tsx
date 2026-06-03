@@ -1,4 +1,3 @@
-import Image from "next/image";
 import Link from "next/link";
 import {
   audienceChatSessionsCol,
@@ -42,16 +41,6 @@ export default async function AudiencesLayout({
       <div className="hero-glow hero-glow--soft" aria-hidden />
 
       <header className="hero-masthead">
-        <Link href="/" className="hero-brand" aria-label="Alta — home">
-          <Image
-            src="/alta-logo.svg"
-            alt="Alta"
-            width={194}
-            height={84}
-            className="hero-logo-mark"
-            priority
-          />
-        </Link>
         <nav className="ml-auto flex gap-6 text-sm">
           <Link
             href="/"

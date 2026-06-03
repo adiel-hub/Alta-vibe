@@ -14,16 +14,6 @@ export default async function Home() {
       <div className="hero-glow" aria-hidden />
 
       <header className="hero-masthead">
-        <a href="/" className="hero-brand" aria-label="Alta — home">
-          <Image
-            src="/alta-logo.svg"
-            alt="Alta"
-            width={194}
-            height={84}
-            className="hero-logo-mark"
-            priority
-          />
-        </a>
         <nav className="ml-auto flex gap-4 text-sm">
           <span className="font-semibold text-(--color-foreground-strong)">
             Agents
