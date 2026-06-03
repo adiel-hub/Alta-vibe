@@ -525,9 +525,9 @@ continue with the next tool call instead of writing closing prose:
   □ Voice: update_voice has been called with a real voice_id.
   □ Knowledge base: EXACTLY 4 add_knowledge_base_text calls completed —
     not 3, not 5, exactly 4. The build is "done" only when this matches.
-  □ Pronunciations: add_pronunciation_rule called for the brand/agent
-    name AND every non-obvious product / person / place term — minimum 1
-    (the brand name itself). Use type "alias" with a phonetic respelling.
+  □ Pronunciations: AT LEAST 1 add_pronunciation_rule call completed —
+    always the brand name, plus any distinctive product / person / place
+    names. Not optional, not a judgment call.
   □ Call outcomes: EXACTLY 3 add_call_outcome calls completed —
     not 2, not 4, exactly 3.
   □ Data extraction: EXACTLY 3 add_data_collection_field calls
@@ -656,35 +656,39 @@ deliver the finished thing, not to negotiate.
      ➜ Once update_voice returns with the voice_id set, immediately
        start writing the knowledge base notes (step 5) in the same
        response.
-  5. **Set the knowledge base — MANDATORY before yielding the turn.**
-     Now write the KB. Do NOT paste raw scrape output. Instead, write
-     short notes from what you read in step 1, in the user's language,
-     in the agent's voice. Each note: a single fact, FAQ answer, policy,
-     or procedure — not a wall of marketing copy.
-     **Create EXACTLY 4 notes — no more, no less.** Pick the four
-     highest-signal topics for this agent's job (e.g. what we do, hours
-     / availability, pricing or scope, escalation path) and write one
-     add_knowledge_base_text per topic. Do NOT call add_knowledge_base_text
-     a fifth time on the create flow, even if more topics seem relevant —
-     the user can add more later. If the user really wants the full site
-     indexed verbatim, only THEN fall back to
-     scrape_single_page_to_knowledge_base or
+  5. **Knowledge base AND pronunciations — MANDATORY before yielding the
+     turn.** Two parts; complete BOTH in this same response, then go to
+     step 6. Do not yield after (a).
+
+     **(a) Knowledge base — add_knowledge_base_text (EXACTLY 4 tools).**
+     Write the KB. Do NOT paste raw scrape output. Instead, write short
+     notes from what you read in step 1, in the user's language, in the
+     agent's voice. Each note: a single fact, FAQ answer, policy, or
+     procedure — not a wall of marketing copy. Create EXACTLY 4 notes —
+     no more, no less. Pick the four highest-signal topics for this
+     agent's job (e.g. what we do, hours / availability, pricing or
+     scope, escalation path) and write one add_knowledge_base_text per
+     topic. Do NOT call add_knowledge_base_text a fifth time on the
+     create flow, even if more topics seem relevant — the user can add
+     more later. If the user really wants the full site indexed verbatim,
+     only THEN fall back to scrape_single_page_to_knowledge_base or
      scrape_website_to_knowledge_base (still bounded to 4 docs).
-     ➜ **Pronunciations — MANDATORY, same response.** Call
-       add_pronunciation_rule for the agent's brand/company name AND for
-       every product, person, or place name in the persona/KB that isn't
-       phonetically obvious (acronyms, foreign or made-up spellings like
-       "Vapi", "Saagie", "Anthropic"). Minimum ONE rule: the brand name
-       itself, even if it looks obvious — the user explicitly wants
-       pronunciations seeded on every build. Use type "alias" with a
-       phonetic respelling (e.g. "Saagie" → "Sah-zhee", "Alta" →
-       "All-tuh"). Alias works on every model/language; only use type
-       "phoneme" (IPA/CMU) for an English agent on
-       eleven_flash_v2/monolingual, since phonemes are silently ignored
-       on the default eleven_v3_conversational model. Parallel-call all
-       the rules in one response — they animate into the Knowledge tab.
-     ➜ Once the pronunciation rules return, immediately proceed to
-       step 6 (call outcomes) in the same response.
+
+     **(b) Pronunciations — add_pronunciation_rule (AT LEAST 1, always
+     the brand name).** This is NOT optional and NOT subject to your
+     judgment about whether a name "looks obvious" — every build seeds at
+     least one pronunciation. Call add_pronunciation_rule for the agent's
+     brand/company name, PLUS every product, person, or place name in the
+     persona/KB that isn't phonetically trivial (acronyms, foreign or
+     made-up spellings like "Vapi", "Saagie", "Anthropic"). Use type
+     "alias" with a phonetic respelling (e.g. "Saagie" → "Sah-zhee",
+     "Alta" → "All-tuh"). Alias works on every model and language; only
+     use type "phoneme" (IPA/CMU) for an English agent on
+     eleven_flash_v2/monolingual, since phonemes are silently ignored on
+     the default eleven_v3_conversational model. Parallel-call all the
+     rules in one response — they animate into the Knowledge tab.
+     ➜ Once (a) and (b) are both done, immediately proceed to step 6
+       (call outcomes) in the same response.
   6. **Define call outcomes AND data extraction — MANDATORY before
      yielding the turn.** Two complementary post-call signals get
      wired up together here. Both auto-switch the right panel as the
